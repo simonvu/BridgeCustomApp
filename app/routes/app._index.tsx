@@ -1,334 +1,246 @@
-import { useEffect } from "react";
-import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { useFetcher } from "@remix-run/react";
+import { json, type LoaderFunctionArgs } from "@remix-run/node";
+import { useLoaderData } from "@remix-run/react";
+import { useState, useCallback } from "react";
 import {
   Page,
   Layout,
-  Text,
   Card,
+  IndexTable,
+  Text,
+  Badge,
   Button,
-  BlockStack,
-  Box,
-  List,
-  Link,
   InlineStack,
+  BlockStack,
+  Select,
+  TextField,
+  Tabs,
+  Box,
 } from "@shopify/polaris";
-import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
-import { authenticate } from "../shopify.server";
+import DashboardLayout from "../components/DashboardLayout";
+import prisma from "../db.server";
+import { requireTeamUserId } from "../services/auth.server";
 
-export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+export async function loader({ request }: LoaderFunctionArgs) {
+  const currentUserId = await requireTeamUserId(request);
+  const currentUser = await prisma.user.findUnique({
+    where: { id: currentUserId },
+    include: { userRoles: { include: { role: true } } },
+  });
 
-  return null;
-};
+  const roleName = currentUser?.userRoles?.[0]?.role?.code?.toUpperCase() || "SUPER_ADMIN";
 
-export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
-  const color = ["Red", "Orange", "Yellow", "Green"][
-    Math.floor(Math.random() * 4)
+  // Demo Shopify Orders Data
+  const mockOrders = [
+    {
+      id: "#1001",
+      orderNumber: "577530863834861644",
+      date: "Today, 10:42 AM",
+      customer: "Karen Sharrer",
+      status: "Awaiting Shipment",
+      tone: "attention" as const,
+      shippingFee: "$4.44",
+      total: "$25.94",
+      shippingMethod: "Shopify Shipping",
+      items: "Custom Graphic T-Shirt x 1",
+    },
+    {
+      id: "#1002",
+      orderNumber: "577530881427149492",
+      date: "Today, 09:15 AM",
+      customer: "John Gayla Duerr",
+      status: "Awaiting Shipment",
+      tone: "attention" as const,
+      shippingFee: "$8.39",
+      total: "$23.88",
+      shippingMethod: "Standard Delivery",
+      items: "Personalized Ceramic Mug x 2",
+    },
   ];
-  const response = await admin.graphql(
-    `#graphql
-      mutation populateProduct($product: ProductCreateInput!) {
-        productCreate(product: $product) {
-          product {
-            id
-            title
-            handle
-            status
-            variants(first: 10) {
-              edges {
-                node {
-                  id
-                  price
-                  barcode
-                  createdAt
-                }
-              }
-            }
-          }
-        }
-      }`,
-    {
-      variables: {
-        product: {
-          title: `${color} Snowboard`,
-        },
-      },
+
+  return json({
+    currentUser: {
+      email: currentUser?.email || "admin@bridgecustom.com",
+      name: currentUser?.name || "Super Admin",
+      roleName,
     },
-  );
-  const responseJson = await response.json();
+    orders: mockOrders,
+  });
+}
 
-  const product = responseJson.data!.productCreate!.product!;
-  const variantId = product.variants.edges[0]!.node!.id!;
+export default function AppDashboardRoute() {
+  const { currentUser, orders } = useLoaderData<typeof loader>();
+  const [selectedTab, setSelectedTab] = useState(1);
+  const [queryValue, setQueryValue] = useState("");
+  const [shippingFilter, setShippingFilter] = useState("all");
 
-  const variantResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyRemixTemplateUpdateVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-        productVariants {
-          id
-          price
-          barcode
-          createdAt
-        }
-      }
-    }`,
-    {
-      variables: {
-        productId: product.id,
-        variants: [{ id: variantId, price: "100.00" }],
-      },
-    },
-  );
+  const handleTabChange = useCallback((selectedTabIndex: number) => setSelectedTab(selectedTabIndex), []);
 
-  const variantResponseJson = await variantResponse.json();
+  const tabs = [
+    { id: "all", content: "All Orders", badge: "9,999+" },
+    { id: "awaiting-shipment", content: "Awaiting Shipment", badge: "2" },
+    { id: "awaiting-collection", content: "Awaiting Collection", badge: "215" },
+    { id: "shipped", content: "Shipped", badge: "4,174" },
+    { id: "completed", content: "Completed", badge: "9,999+" },
+  ];
 
-  return {
-    product: responseJson!.data!.productCreate!.product,
-    variant:
-      variantResponseJson!.data!.productVariantsBulkUpdate!.productVariants,
+  const shippingOptions = [
+    { label: "All Shipping Methods", value: "all" },
+    { label: "Shopify Shipping", value: "shopify" },
+    { label: "Standard Delivery", value: "standard" },
+  ];
+
+  const resourceName = {
+    singular: "order",
+    plural: "orders",
   };
-};
 
-export default function Index() {
-  const fetcher = useFetcher<typeof action>();
-
-  const shopify = useAppBridge();
-  const isLoading =
-    ["loading", "submitting"].includes(fetcher.state) &&
-    fetcher.formMethod === "POST";
-  const productId = fetcher.data?.product?.id.replace(
-    "gid://shopify/Product/",
-    "",
+  const rowMarkup = orders.map(
+    ({ id, orderNumber, date, customer, status, tone, shippingFee, total, shippingMethod, items }, index) => (
+      <IndexTable.Row id={id} key={id} position={index}>
+        <IndexTable.Cell>
+          <BlockStack gap="050">
+            <Text variant="bodyMd" fontWeight="bold" as="span">
+              {id}
+            </Text>
+            <Text variant="bodyXs" tone="subdued" as="span">
+              {orderNumber}
+            </Text>
+          </BlockStack>
+        </IndexTable.Cell>
+        <IndexTable.Cell>{date}</IndexTable.Cell>
+        <IndexTable.Cell>
+          <Text variant="bodyMd" fontWeight="semibold" as="span">
+            {customer}
+          </Text>
+        </IndexTable.Cell>
+        <IndexTable.Cell>
+          <Badge tone={tone}>{status}</Badge>
+        </IndexTable.Cell>
+        <IndexTable.Cell>{items}</IndexTable.Cell>
+        <IndexTable.Cell>{shippingFee}</IndexTable.Cell>
+        <IndexTable.Cell>
+          <Text variant="bodyMd" fontWeight="bold" as="span">
+            {total}
+          </Text>
+        </IndexTable.Cell>
+        <IndexTable.Cell>
+          <Badge tone="info">{shippingMethod}</Badge>
+        </IndexTable.Cell>
+        <IndexTable.Cell>
+          <InlineStack gap="200" align="end">
+            <Button size="micro" variant="secondary">
+              View
+            </Button>
+            <Button size="micro" variant="tertiary">
+              Sync
+            </Button>
+          </InlineStack>
+        </IndexTable.Cell>
+      </IndexTable.Row>
+    )
   );
-
-  useEffect(() => {
-    if (productId) {
-      shopify.toast.show("Product created");
-    }
-  }, [productId, shopify]);
-  const generateProduct = () => fetcher.submit({}, { method: "POST" });
 
   return (
-    <Page>
-      <TitleBar title="Remix app template">
-        <button variant="primary" onClick={generateProduct}>
-          Generate a product
-        </button>
-      </TitleBar>
-      <BlockStack gap="500">
+    <DashboardLayout currentUser={currentUser}>
+      <Page
+        fullWidth
+        title="Orders"
+        subtitle="Manage and fulfill customer orders seamlessly with Shopify Admin UI"
+        primaryAction={{
+          content: "Export Orders",
+          onAction: () => {},
+        }}
+      >
         <Layout>
+          {/* Top Metric Cards */}
           <Layout.Section>
-            <Card>
-              <BlockStack gap="500">
-                <BlockStack gap="200">
-                  <Text as="h2" variant="headingMd">
-                    Congrats on creating a new Shopify app 🎉
+            <InlineStack gap="400" wrap={false}>
+              <div className="flex-1 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                <BlockStack gap="100">
+                  <Text variant="bodySm" tone="subdued" as="span">
+                    Today Orders
                   </Text>
-                  <Text variant="bodyMd" as="p">
-                    This embedded app template uses{" "}
-                    <Link
-                      url="https://shopify.dev/docs/apps/tools/app-bridge"
-                      target="_blank"
-                      removeUnderline
-                    >
-                      App Bridge
-                    </Link>{" "}
-                    interface examples like an{" "}
-                    <Link url="/app/additional" removeUnderline>
-                      additional page in the app nav
-                    </Link>
-                    , as well as an{" "}
-                    <Link
-                      url="https://shopify.dev/docs/api/admin-graphql"
-                      target="_blank"
-                      removeUnderline
-                    >
-                      Admin GraphQL
-                    </Link>{" "}
-                    mutation demo, to provide a starting point for app
-                    development.
+                  <Text variant="headingXl" as="h2" tone="success">
+                    43
                   </Text>
                 </BlockStack>
-                <BlockStack gap="200">
-                  <Text as="h3" variant="headingMd">
-                    Get started with products
+              </div>
+
+              <div className="flex-1 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                <BlockStack gap="100">
+                  <Text variant="bodySm" tone="subdued" as="span">
+                    Yesterday Orders
                   </Text>
-                  <Text as="p" variant="bodyMd">
-                    Generate a product with GraphQL and get the JSON output for
-                    that product. Learn more about the{" "}
-                    <Link
-                      url="https://shopify.dev/docs/api/admin-graphql/latest/mutations/productCreate"
-                      target="_blank"
-                      removeUnderline
-                    >
-                      productCreate
-                    </Link>{" "}
-                    mutation in our API references.
+                  <Text variant="headingXl" as="h2">
+                    70
                   </Text>
                 </BlockStack>
-                <InlineStack gap="300">
-                  <Button loading={isLoading} onClick={generateProduct}>
-                    Generate a product
-                  </Button>
-                  {fetcher.data?.product && (
-                    <Button
-                      url={`shopify:admin/products/${productId}`}
-                      target="_blank"
-                      variant="plain"
-                    >
-                      View product
-                    </Button>
-                  )}
-                </InlineStack>
-                {fetcher.data?.product && (
-                  <>
-                    <Text as="h3" variant="headingMd">
-                      {" "}
-                      productCreate mutation
-                    </Text>
-                    <Box
-                      padding="400"
-                      background="bg-surface-active"
-                      borderWidth="025"
-                      borderRadius="200"
-                      borderColor="border"
-                      overflowX="scroll"
-                    >
-                      <pre style={{ margin: 0 }}>
-                        <code>
-                          {JSON.stringify(fetcher.data.product, null, 2)}
-                        </code>
-                      </pre>
-                    </Box>
-                    <Text as="h3" variant="headingMd">
-                      {" "}
-                      productVariantsBulkUpdate mutation
-                    </Text>
-                    <Box
-                      padding="400"
-                      background="bg-surface-active"
-                      borderWidth="025"
-                      borderRadius="200"
-                      borderColor="border"
-                      overflowX="scroll"
-                    >
-                      <pre style={{ margin: 0 }}>
-                        <code>
-                          {JSON.stringify(fetcher.data.variant, null, 2)}
-                        </code>
-                      </pre>
-                    </Box>
-                  </>
-                )}
-              </BlockStack>
+              </div>
+
+              <div className="flex-1 bg-white p-4 rounded-xl border border-gray-200 shadow-sm">
+                <BlockStack gap="100">
+                  <Text variant="bodySm" tone="subdued" as="span">
+                    Last 7 Days
+                  </Text>
+                  <Text variant="headingXl" as="h2">
+                    760
+                  </Text>
+                </BlockStack>
+              </div>
+            </InlineStack>
+          </Layout.Section>
+
+          {/* Main Table Card with Tabs */}
+          <Layout.Section>
+            <Card padding="0">
+              <Tabs tabs={tabs} selected={selectedTab} onSelect={handleTabChange}>
+                <Box padding="400">
+                  <InlineStack gap="300" align="space-between">
+                    <div className="flex-1">
+                      <TextField
+                        label="Search orders"
+                        labelHidden
+                        value={queryValue}
+                        onChange={setQueryValue}
+                        placeholder="Search by order ID, customer name..."
+                        autoComplete="off"
+                      />
+                    </div>
+                    <div className="w-64">
+                      <Select
+                        label="Filter Shipping"
+                        labelHidden
+                        options={shippingOptions}
+                        value={shippingFilter}
+                        onChange={setShippingFilter}
+                      />
+                    </div>
+                  </InlineStack>
+                </Box>
+
+                <IndexTable
+                  resourceName={resourceName}
+                  itemCount={orders.length}
+                  selectable={false}
+                  headings={[
+                    { title: "Order" },
+                    { title: "Date" },
+                    { title: "Customer" },
+                    { title: "Status" },
+                    { title: "Items" },
+                    { title: "Shipping Fee" },
+                    { title: "Total" },
+                    { title: "Method" },
+                    { title: "Actions", alignment: "end" },
+                  ]}
+                >
+                  {rowMarkup}
+                </IndexTable>
+              </Tabs>
             </Card>
           </Layout.Section>
-          <Layout.Section variant="oneThird">
-            <BlockStack gap="500">
-              <Card>
-                <BlockStack gap="200">
-                  <Text as="h2" variant="headingMd">
-                    App template specs
-                  </Text>
-                  <BlockStack gap="200">
-                    <InlineStack align="space-between">
-                      <Text as="span" variant="bodyMd">
-                        Framework
-                      </Text>
-                      <Link
-                        url="https://remix.run"
-                        target="_blank"
-                        removeUnderline
-                      >
-                        Remix
-                      </Link>
-                    </InlineStack>
-                    <InlineStack align="space-between">
-                      <Text as="span" variant="bodyMd">
-                        Database
-                      </Text>
-                      <Link
-                        url="https://www.prisma.io/"
-                        target="_blank"
-                        removeUnderline
-                      >
-                        Prisma
-                      </Link>
-                    </InlineStack>
-                    <InlineStack align="space-between">
-                      <Text as="span" variant="bodyMd">
-                        Interface
-                      </Text>
-                      <span>
-                        <Link
-                          url="https://polaris.shopify.com"
-                          target="_blank"
-                          removeUnderline
-                        >
-                          Polaris
-                        </Link>
-                        {", "}
-                        <Link
-                          url="https://shopify.dev/docs/apps/tools/app-bridge"
-                          target="_blank"
-                          removeUnderline
-                        >
-                          App Bridge
-                        </Link>
-                      </span>
-                    </InlineStack>
-                    <InlineStack align="space-between">
-                      <Text as="span" variant="bodyMd">
-                        API
-                      </Text>
-                      <Link
-                        url="https://shopify.dev/docs/api/admin-graphql"
-                        target="_blank"
-                        removeUnderline
-                      >
-                        GraphQL API
-                      </Link>
-                    </InlineStack>
-                  </BlockStack>
-                </BlockStack>
-              </Card>
-              <Card>
-                <BlockStack gap="200">
-                  <Text as="h2" variant="headingMd">
-                    Next steps
-                  </Text>
-                  <List>
-                    <List.Item>
-                      Build an{" "}
-                      <Link
-                        url="https://shopify.dev/docs/apps/getting-started/build-app-example"
-                        target="_blank"
-                        removeUnderline
-                      >
-                        {" "}
-                        example app
-                      </Link>{" "}
-                      to get started
-                    </List.Item>
-                    <List.Item>
-                      Explore Shopify’s API with{" "}
-                      <Link
-                        url="https://shopify.dev/docs/apps/tools/graphiql-admin-api"
-                        target="_blank"
-                        removeUnderline
-                      >
-                        GraphiQL
-                      </Link>
-                    </List.Item>
-                  </List>
-                </BlockStack>
-              </Card>
-            </BlockStack>
-          </Layout.Section>
         </Layout>
-      </BlockStack>
-    </Page>
+      </Page>
+    </DashboardLayout>
   );
 }

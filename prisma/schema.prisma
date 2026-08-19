@@ -32,3 +32,86 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+
+// ==========================================
+// BACKEND TEAM MANAGEMENT & RBAC MODELS
+// ==========================================
+
+model User {
+  id           String      @id @default(uuid())
+  email        String      @unique
+  name         String
+  passwordHash String?     // Null nếu dùng OAuth SSO
+  avatarUrl    String?
+  isActive     Boolean     @default(true)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  userRoles    UserRole[]
+  auditLogs    AuditLog[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String           @id @default(uuid())
+  name        String           @unique // Ví dụ: "Super Admin", "Designer", "CSKH"
+  code        String           @unique // Ví dụ: "super_admin", "designer"
+  description String?
+  isSystem    Boolean          @default(false) // Role hệ thống không thể xóa
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  userRoles       UserRole[]
+  rolePermissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(uuid())
+  module      String   // system, personalization, reviews, upsell
+  resource    String   // users, templates, items, campaigns
+  action      String   // read, create, update, delete, moderate...
+  code        String   @unique // Ví dụ: "personalization:templates:create"
+  name        String   // Tên hiển thị tiếng Việt
+  description String?
+
+  rolePermissions RolePermission[]
+
+  @@map("permissions")
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String   // VD: "CREATE_USER", "UPDATE_TEMPLATE", "APPROVE_REVIEW"
+  resource  String   // VD: "user:123", "template:456"
+  payload   String?  // JSON stringified chi tiết thao tác
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@map("audit_logs")
+}
+
