@@ -15,6 +15,7 @@ import {
   ChevronsRight,
   Palette,
   FolderKanban,
+  Type,
 } from "lucide-react";
 
 interface DashboardLayoutProps {
@@ -230,6 +231,19 @@ export default function DashboardLayout({ children, currentUser }: DashboardLayo
                       >
                         <Palette className="w-3.5 h-3.5 text-[#616161] shrink-0" />
                         <span>Artworks</span>
+                      </Link>
+
+                      <Link
+                        to="/app/fonts"
+                        title="Font Library"
+                        className={`flex items-center gap-2 px-3 py-1.5 rounded-lg transition text-xs font-medium ${
+                          isActive("/app/fonts")
+                            ? "bg-white text-[#303030] shadow-xs border border-gray-200/80 font-semibold text-[#005bd3]"
+                            : "text-[#616161] hover:bg-[#e3e3e3] hover:text-[#303030]"
+                        }`}
+                      >
+                        <Type className="w-3.5 h-3.5 text-[#616161] shrink-0" />
+                        <span>Font Library</span>
                       </Link>
                     </div>
                   )}

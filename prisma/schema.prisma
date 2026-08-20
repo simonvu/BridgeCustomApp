@@ -5,88 +5,80 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// Note that some adapters may set a maximum length for the String type by default, please ensure your strings are long
-// enough when changing adapters.
-// See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
   provider = "sqlite"
   url      = "file:dev.sqlite"
 }
 
 model Session {
-  id                  String    @id
-  shop                String
-  state               String
-  isOnline            Boolean   @default(false)
-  scope               String?
-  expires             DateTime?
-  accessToken         String
-  userId              BigInt?
-  firstName           String?
-  lastName            String?
-  email               String?
-  accountOwner        Boolean   @default(false)
-  locale              String?
-  collaborator        Boolean?  @default(false)
-  emailVerified       Boolean?  @default(false)
-  refreshToken        String?
-  refreshTokenExpires DateTime?
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
 }
 
 // ==========================================
-// BACKEND TEAM MANAGEMENT & RBAC MODELS
+// USER & ROLE-BASED ACCESS CONTROL (RBAC)
 // ==========================================
 
 model User {
-  id           String      @id @default(uuid())
-  email        String      @unique
-  name         String
-  passwordHash String?     // Null nếu dùng OAuth SSO
-  avatarUrl    String?
-  isActive     Boolean     @default(true)
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
-
-  userRoles    UserRole[]
-  auditLogs    AuditLog[]
+  id            String     @id @default(uuid())
+  email         String     @unique
+  passwordHash  String
+  name          String
+  avatarUrl     String?
+  isActive      Boolean    @default(true)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  userRoles     UserRole[]
 
   @@map("users")
 }
 
 model Role {
-  id          String           @id @default(uuid())
-  name        String           @unique // Ví dụ: "Super Admin", "Designer", "CSKH"
-  code        String           @unique // Ví dụ: "super_admin", "designer"
+  id          String         @id @default(uuid())
+  code        String         @unique // VD: "SUPER_ADMIN", "ADMIN", "EDITOR", "VIEWER"
+  name        String         // VD: "Super Admin", "Admin", "Editor", "Viewer"
   description String?
-  isSystem    Boolean          @default(false) // Role hệ thống không thể xóa
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
-
-  userRoles       UserRole[]
-  rolePermissions RolePermission[]
+  isSystem    Boolean        @default(false)
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  userRoles   UserRole[]
+  permissions RolePermission[]
 
   @@map("roles")
 }
 
 model Permission {
-  id          String   @id @default(uuid())
-  module      String   // system, personalization, reviews, upsell
-  resource    String   // users, templates, items, campaigns
-  action      String   // read, create, update, delete, moderate...
-  code        String   @unique // Ví dụ: "personalization:templates:create"
-  name        String   // Tên hiển thị tiếng Việt
+  id          String         @id @default(uuid())
+  code        String         @unique // VD: "artworks:create", "artworks:edit", "artworks:delete", "users:manage"
+  name        String
+  category    String         @default("General") // VD: "Artworks", "Users", "Settings"
   description String?
-
-  rolePermissions RolePermission[]
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+  roles       RolePermission[]
 
   @@map("permissions")
 }
 
 model UserRole {
-  userId String
-  roleId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  userId    String
+  roleId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  assignedAt DateTime @default(now())
 
   @@id([userId, roleId])
   @@map("user_roles")
@@ -97,36 +89,28 @@ model RolePermission {
   permissionId String
   role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
   permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  grantedAt    DateTime   @default(now())
 
   @@id([roleId, permissionId])
   @@map("role_permissions")
 }
 
-model AuditLog {
-  id        String   @id @default(uuid())
-  userId    String?
-  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
-  action    String   // VD: "CREATE_USER", "UPDATE_TEMPLATE", "APPROVE_REVIEW"
-  resource  String   // VD: "user:123", "template:456"
-  payload   String?  // JSON stringified chi tiết thao tác
-  ipAddress String?
-  createdAt DateTime @default(now())
-
-  @@map("audit_logs")
-}
-
 // ==========================================
-// PERSONALIZATION & ARTWORK MODELS
+// ARTWORK & PERSONALIZATION ENGINE
 // ==========================================
 
 model Artwork {
   id              String   @id @default(uuid())
   title           String
+  sku             String?  @unique
   category        String   @default("Best Friends")
   niche           String   @default("Quotes")
-  imageUrl        String
-  dimensions      String   @default("1000x1000")
-  layerCount      Int      @default(1)
+  thumbnailUrl    String?
+  previewUrl      String?
+  status          String   @default("DRAFT") // "DRAFT" | "PUBLISHED" | "ARCHIVED"
+  widthPx         Int      @default(1000)
+  heightPx        Int      @default(1000)
+  fieldCount      Int      @default(0)
   optionCount     Int      @default(1)
   createdBy       String   @default("Admin")
   createdByName   String?  @default("Super Admin")
@@ -135,6 +119,112 @@ model Artwork {
   updatedAt       DateTime @updatedAt
 
   @@map("artworks")
+}
+
+// ==========================================
+// VISUAL ARTWORK STUDIO MODELS (RELATIONAL 3NF SCHEMATIC)
+// ==========================================
+
+model StudioArtwork {
+  id                  String   @id @default(uuid())
+  title               String
+  category            String   @default("Best Friends")
+  niche               String   @default("Quotes")
+  widthPx             Int      @default(1000)
+  heightPx            Int      @default(1000)
+  bgUrl               String?
+  thumbnailUrl        String?
+
+  // STOREFRONT MAIN CUSTOMIZATION FIELD CONFIG FOR SCREENS
+  enableScreenField   Boolean  @default(false)
+  screenCustomerLabel String?  @default("Number Of Grandkids")
+  screenDisplayMode   String?  @default("BUTTON") // "BUTTON" | "DROPDOWN" | "ICON" | "THUMBNAIL"
+  
+  // JSON BACKUPS FOR COMPATIBILITY AND PERFORMANCE SNAPSHOTS
+  screens             String?  // JSON String storing screens array
+  screenFieldConfig   String?  // JSON String storing screenFieldConfig
+
+  createdByName       String?  @default("Super Admin")
+  createdByAvatar     String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  studioScreens       StudioScreen[]
+  layers              StudioLayer[]
+  fields              StudioField[]
+  rules               StudioConditionRule[]
+
+  @@map("studio_artworks")
+}
+
+model StudioScreen {
+  id                  String        @id @default(uuid())
+  artworkId           String
+  artwork             StudioArtwork @relation(fields: [artworkId], references: [id], onDelete: Cascade)
+  name                String        // VD: "1 Grandkid", "4 Grandkids"
+  bgUrl               String?       // Cloudflare R2 Background Image URL
+  bgColor             String?       @default("#ffffff")
+  iconUrl             String?       // Swatch Icon Image URL
+  sortOrder           Int           @default(0)
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  layers              StudioLayer[]
+  fields              StudioField[]
+
+  @@map("studio_screens")
+}
+
+model StudioLayer {
+  id              String        @id @default(uuid())
+  artworkId       String
+  artwork         StudioArtwork @relation(fields: [artworkId], references: [id], onDelete: Cascade)
+  screenId        String?
+  screen          StudioScreen? @relation(fields: [screenId], references: [id], onDelete: Cascade)
+  name            String
+  layerType       String        // "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY"
+  zIndex          Int           @default(0)
+  posX            Float         @default(0)
+  posY            Float         @default(0)
+  width           Float         @default(200)
+  height          Float         @default(200)
+  rotation        Float         @default(0)
+  scaleX          Float         @default(1)
+  scaleY          Float         @default(1)
+  isVisible       Boolean       @default(true)
+  isLocked        Boolean       @default(false)
+  properties      String?       // JSON String: font, color, text, assetUrl, alignment...
+  linkedFieldId   String?       // Gắn Layer với Field tùy chỉnh
+
+  @@map("studio_layers")
+}
+
+model StudioField {
+  id            String        @id @default(uuid())
+  artworkId     String
+  artwork       StudioArtwork @relation(fields: [artworkId], references: [id], onDelete: Cascade)
+  screenId      String?
+  screen        StudioScreen? @relation(fields: [screenId], references: [id], onDelete: Cascade)
+  label         String        // VD: "Select Hair Style", "Enter Name"
+  fieldType     String        // "TEXT" | "CALENDAR" | "RADIO" | "SELECT" | "IMAGE_UPLOAD" | "FIELD_ASSET"
+  sortOrder     Int           @default(0)
+  isRequired    Boolean       @default(false)
+  config        String?       // JSON String: options list, max length, font list, asset categories...
+
+  @@map("studio_fields")
+}
+
+model StudioConditionRule {
+  id             String        @id @default(uuid())
+  artworkId      String
+  artwork        StudioArtwork @relation(fields: [artworkId], references: [id], onDelete: Cascade)
+  sourceFieldId  String        // Field điều kiện (VD: Radio "Gender")
+  operator       String        @default("EQUALS") // "EQUALS" | "NOT_EQUALS"
+  targetValue    String        // VD: "Female"
+  action         String        // "SHOW_LAYER" | "HIDE_LAYER" | "SHOW_FIELD" | "HIDE_FIELD"
+  targetId       String        // Layer ID hoặc Field ID tác động
+
+  @@map("studio_condition_rules")
 }
 
 // ==========================================
@@ -174,4 +264,24 @@ model MediaFolder {
   updatedAt       DateTime @updatedAt
 
   @@map("media_folders")
+}
+
+// ==========================================
+// FONT MANAGEMENT MODELS
+// ==========================================
+
+model Font {
+  id              String   @id @default(uuid())
+  name            String   // VD: "Dancing Script", "Montserrat", "Custom Handwriting"
+  family          String   // CSS Font Family name: VD "Dancing Script"
+  fontType        String   @default("GOOGLE") // "GOOGLE" | "CUSTOM"
+  sourceUrl       String?  // Google font family / CSS URL OR uploaded font file URL (.ttf, .otf, .woff, .woff2)
+  fileKey         String?  // Storage key if uploaded custom font file
+  variants        String?  // JSON string e.g. ["400", "700"]
+  isDefault       Boolean  @default(false)
+  createdByName   String?  @default("Super Admin")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("fonts")
 }

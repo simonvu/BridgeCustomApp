@@ -62,8 +62,18 @@ async function main() {
   for (const perm of PERMISSIONS) {
     const p = await prisma.permission.upsert({
       where: { code: perm.code },
-      update: perm,
-      create: perm,
+      update: {
+        code: perm.code,
+        name: perm.name,
+        category: perm.module || "General",
+        description: perm.description,
+      },
+      create: {
+        code: perm.code,
+        name: perm.name,
+        category: perm.module || "General",
+        description: perm.description,
+      },
     });
     permissionMap.set(p.code, p.id);
   }
@@ -130,94 +140,27 @@ async function main() {
     console.log(`👤 Initialized default Super Admin: admin@bridgecustom.com`);
   }
 
-  // 4. Seed Initial Sample Artworks
-  const sampleArtworks = [
-    {
-      title: "Friend Quote Tumbler",
-      niche: "Tumblers",
-      category: "Best Friends",
-      dimensions: "400x400",
-      layerCount: 0,
-      optionCount: 1,
-      createdBy: "Admin",
-      imageUrl: "https://images.unsplash.com/photo-1544816155-12df9643f363?w=500&auto=format&fit=crop&q=60",
-    },
-    {
-      title: "Friend Quote Mug",
-      niche: "Mugs",
-      category: "Best Friends",
-      dimensions: "400x400",
-      layerCount: 0,
-      optionCount: 1,
-      createdBy: "Admin",
-      imageUrl: "https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?w=500&auto=format&fit=crop&q=60",
-    },
-    {
-      title: "3 Friends With Laptop",
-      niche: "T-Shirts",
-      category: "Sisters and Friends",
-      dimensions: "991x991",
-      layerCount: 0,
-      optionCount: 9,
-      createdBy: "Designer",
-      imageUrl: "https://images.unsplash.com/photo-1529156069898-49953e39b3ac?w=500&auto=format&fit=crop&q=60",
-    },
-    {
-      title: "Mom Daughter Quote",
-      niche: "Quotes",
-      category: "Family & Kids",
-      dimensions: "400x400",
-      layerCount: 0,
-      optionCount: 1,
-      createdBy: "Admin",
-      imageUrl: "https://images.unsplash.com/photo-1536640712-4d4c36ff0e4e?w=500&auto=format&fit=crop&q=60",
-    },
-    {
-      title: "Friends - Summer Beach",
-      niche: "Canvas",
-      category: "Best Friends",
-      dimensions: "900x1000",
-      layerCount: 0,
-      optionCount: 10,
-      createdBy: "Designer",
-      imageUrl: "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=500&auto=format&fit=crop&q=60",
-    },
-    {
-      title: "Friend Canvas Quote",
-      niche: "Canvas",
-      category: "Quotes",
-      dimensions: "500x400",
-      layerCount: 6,
-      optionCount: 1,
-      createdBy: "Admin",
-      imageUrl: "https://images.unsplash.com/photo-1499750310107-5fef28a66643?w=500&auto=format&fit=crop&q=60",
-    },
-    {
-      title: "Quote Girl Pet Omn AC",
-      niche: "Pets",
-      category: "Pet Lovers",
-      dimensions: "400x400",
-      layerCount: 10,
-      optionCount: 1,
-      createdBy: "Designer",
-      imageUrl: "https://images.unsplash.com/photo-1583511655857-d19b40a7a54e?w=500&auto=format&fit=crop&q=60",
-    },
-    {
-      title: "Quote Girl Pet Omn",
-      niche: "Pets",
-      category: "Pet Lovers",
-      dimensions: "400x400",
-      layerCount: 3,
-      optionCount: 1,
-      createdBy: "Admin",
-      imageUrl: "https://images.unsplash.com/photo-1543466835-00a7907e9de1?w=500&auto=format&fit=crop&q=60",
-    },
-  ];
+  // 4. Seed Initial Sample Artworks Library (Empty by default for fresh user testing)
+  const sampleArtworks: any[] = [];
+  console.log(`🖼️ Sample artworks library initialized (empty for custom testing)`);
 
   for (const art of sampleArtworks) {
     const existing = await prisma.artwork.findFirst({ where: { title: art.title } });
     if (!existing) {
-      await prisma.artwork.create({ data: art });
+      await prisma.artwork.create({
+        data: {
+          title: art.title,
+          niche: art.niche,
+          category: art.category,
+          thumbnailUrl: (art as any).imageUrl || null,
+          previewUrl: (art as any).imageUrl || null,
+          widthPx: 1000,
+          heightPx: 1000,
+          fieldCount: (art as any).layerCount || 0,
+          optionCount: art.optionCount || 1,
+          createdBy: art.createdBy || "Admin",
+        },
+      });
     }
   }
   console.log(`🖼️ Seeded sample artworks library`);
@@ -293,6 +236,28 @@ async function main() {
     }
   }
   console.log(`📁 Seeded sample media files library`);
+
+  // 5. Seed System Fonts (Google Fonts)
+  const defaultFonts = [
+    { name: "Roboto", family: "Roboto", fontType: "GOOGLE", isDefault: true },
+    { name: "Dancing Script", family: "Dancing Script", fontType: "GOOGLE" },
+    { name: "Playfair Display", family: "Playfair Display", fontType: "GOOGLE" },
+    { name: "Montserrat", family: "Montserrat", fontType: "GOOGLE" },
+    { name: "Pacifico", family: "Pacifico", fontType: "GOOGLE" },
+    { name: "Caveat", family: "Caveat", fontType: "GOOGLE" },
+    { name: "Lobster", family: "Lobster", fontType: "GOOGLE" },
+    { name: "Great Vibes", family: "Great Vibes", fontType: "GOOGLE" },
+    { name: "Cinzel", family: "Cinzel", fontType: "GOOGLE" },
+    { name: "Alex Brush", family: "Alex Brush", fontType: "GOOGLE" },
+  ];
+
+  for (const font of defaultFonts) {
+    const existing = await (prisma as any).font.findFirst({ where: { family: font.family } });
+    if (!existing) {
+      await (prisma as any).font.create({ data: font });
+    }
+  }
+  console.log(`🔤 Seeded default font library`);
 
   console.log("🎉 Seed completed successfully!");
 }

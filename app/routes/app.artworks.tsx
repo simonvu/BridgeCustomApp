@@ -1,5 +1,5 @@
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
-import { useLoaderData, useSubmit, useNavigation } from "@remix-run/react";
+import { useLoaderData, useSubmit, useNavigation, useNavigate } from "@remix-run/react";
 import {
   Page,
   Layout,
@@ -30,6 +30,7 @@ import {
   CheckCircle2,
   Combine,
   Upload,
+  Sparkles,
 } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import MediaSelectModal, { type MediaFileItem } from "../components/MediaSelectModal";
@@ -44,12 +45,58 @@ export async function loader({ request }: LoaderFunctionArgs) {
     include: { userRoles: { include: { role: true } } },
   });
 
+  const studioModel = (prisma as any).studioArtwork;
+  const studioArtworks = studioModel
+    ? await studioModel.findMany({
+        orderBy: { createdAt: "desc" },
+        include: {
+          studioScreens: true,
+          layers: true,
+          fields: true,
+        },
+      })
+    : [];
+
   const artworkModel = (prisma as any).artwork;
-  const artworks = artworkModel
+  const legacyArtworks = artworkModel
     ? await artworkModel.findMany({
         orderBy: { createdAt: "desc" },
       })
     : [];
+
+  const studioIds = new Set(studioArtworks.map((a: any) => a.id));
+
+  const formattedStudioArtworks = studioArtworks.map((art: any) => ({
+    id: art.id,
+    title: art.title,
+    niche: art.niche || "General",
+    category: art.category || "General",
+    dimensions: `${art.widthPx || 1000}x${art.heightPx || 1000}`,
+    widthPx: art.widthPx || 1000,
+    heightPx: art.heightPx || 1000,
+    imageUrl: art.thumbnailUrl || art.bgUrl || "https://images.unsplash.com/photo-1544816155-12df9643f363?w=500&auto=format&fit=crop&q=60",
+    thumbnailUrl: art.thumbnailUrl || art.bgUrl || null,
+    layerCount: art.layers?.length || 0,
+    fieldCount: art.fields?.length || 0,
+    optionCount: art.studioScreens?.length || 1,
+    status: "PUBLISHED",
+    createdBy: art.createdByName || "Admin",
+    createdByName: art.createdByName || "Super Admin",
+    createdByAvatar: art.createdByAvatar || null,
+    createdAt: art.createdAt,
+    updatedAt: art.updatedAt,
+    isStudio: true,
+  }));
+
+  const formattedLegacyArtworks = legacyArtworks
+    .filter((a: any) => !studioIds.has(a.id))
+    .map((a: any) => ({
+      ...a,
+      imageUrl: a.thumbnailUrl || a.previewUrl || (a as any).imageUrl || "https://images.unsplash.com/photo-1544816155-12df9643f363?w=500&auto=format&fit=crop&q=60",
+      layerCount: a.fieldCount || 0,
+    }));
+
+  const allArtworks = [...formattedStudioArtworks, ...formattedLegacyArtworks];
 
   return json({
     currentUser: {
@@ -58,7 +105,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       roleName: currentUser?.userRoles?.[0]?.role?.code?.toUpperCase() || "SUPER_ADMIN",
       avatarUrl: currentUser?.avatarUrl || null,
     },
-    artworks,
+    artworks: allArtworks,
   });
 }
 
@@ -75,6 +122,7 @@ export async function action({ request }: ActionFunctionArgs) {
   const intent = formData.get("intent");
 
   const artworkModel = (prisma as any).artwork;
+  const studioModel = (prisma as any).studioArtwork;
 
   if (intent === "CREATE_ARTWORK") {
     const title = formData.get("title") as string;
@@ -111,8 +159,13 @@ export async function action({ request }: ActionFunctionArgs) {
 
   if (intent === "DELETE_ARTWORK") {
     const artworkId = formData.get("artworkId") as string;
-    if (artworkId && artworkModel) {
-      await artworkModel.delete({ where: { id: artworkId } });
+    if (artworkId) {
+      if (studioModel) {
+        await studioModel.deleteMany({ where: { id: artworkId } });
+      }
+      if (artworkModel) {
+        await artworkModel.deleteMany({ where: { id: artworkId } });
+      }
     }
     return json({ success: true });
   }
@@ -148,6 +201,7 @@ export default function ArtworksRoute() {
   const { currentUser, artworks } = useLoaderData<typeof loader>();
   const submit = useSubmit();
   const navigation = useNavigation();
+  const navigate = useNavigate();
 
   // Filters state
   const [searchQuery, setSearchQuery] = useState("");
@@ -245,34 +299,44 @@ export default function ArtworksRoute() {
 
     const matchesNiche = selectedNiche === "ALL" || art.niche === selectedNiche;
     const matchesCategory = selectedCategory === "ALL" || art.category === selectedCategory;
-    const matchesCreatedBy = selectedCreatedBy === "ALL" || art.createdBy === selectedCreatedBy;
+    const matchesCreatedBy =
+      selectedCreatedBy === "ALL" ||
+      art.createdBy === selectedCreatedBy ||
+      art.createdByName === selectedCreatedBy;
 
     return matchesSearch && matchesNiche && matchesCategory && matchesCreatedBy;
   });
 
+  // Dynamically derive unique filter options from database artworks
+  const dynamicNiches = Array.from(
+    new Set(artworks.map((a: any) => a.niche).filter(Boolean))
+  ).sort() as string[];
+
+  const dynamicCategories = Array.from(
+    new Set(artworks.map((a: any) => a.category).filter(Boolean))
+  ).sort() as string[];
+
+  const dynamicCreatedBys = Array.from(
+    new Set(
+      artworks
+        .map((a: any) => a.createdByName || a.createdBy)
+        .filter(Boolean)
+    )
+  ).sort() as string[];
+
   const nicheOptions = [
     { label: "Niche (All)", value: "ALL" },
-    { label: "Tumblers", value: "Tumblers" },
-    { label: "Mugs", value: "Mugs" },
-    { label: "T-Shirts", value: "T-Shirts" },
-    { label: "Quotes", value: "Quotes" },
-    { label: "Canvas", value: "Canvas" },
-    { label: "Pets", value: "Pets" },
+    ...dynamicNiches.map((n) => ({ label: n, value: n })),
   ];
 
   const categoryOptions = [
     { label: "Category (All)", value: "ALL" },
-    { label: "Best Friends", value: "Best Friends" },
-    { label: "Sisters and Friends", value: "Sisters and Friends" },
-    { label: "Family & Kids", value: "Family & Kids" },
-    { label: "Pet Lovers", value: "Pet Lovers" },
-    { label: "Quotes", value: "Quotes" },
+    ...dynamicCategories.map((c) => ({ label: c, value: c })),
   ];
 
   const createdByOptions = [
     { label: "Created by (All)", value: "ALL" },
-    { label: "Admin", value: "Admin" },
-    { label: "Designer", value: "Designer" },
+    ...dynamicCreatedBys.map((cb) => ({ label: cb, value: cb })),
   ];
 
   return (
@@ -282,9 +346,15 @@ export default function ArtworksRoute() {
         title="Artworks"
         subtitle="Manage personalization design assets, vector layers, and quote templates"
         primaryAction={{
-          content: "Add New",
-          onAction: () => setCreateModalOpen(true),
+          content: "Open Visual Studio",
+          onAction: () => navigate("/app/artworks/studio"),
         }}
+        secondaryActions={[
+          {
+            content: "Quick Add",
+            onAction: () => setCreateModalOpen(true),
+          },
+        ]}
       >
         <div className="pt-5">
           <Layout>
@@ -454,34 +524,44 @@ export default function ArtworksRoute() {
                                   </span>
                                 </div>
                               </div>
-                            </div>
+                            </div>                            {/* Hover Actions Row */}
+                            <div className="flex items-center justify-between pt-2 border-t border-gray-100">
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/app/artworks/studio?id=${art.id}`)}
+                                title="Open in Visual Studio Editor"
+                                className="flex items-center gap-1 text-[11px] font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 border border-blue-200 px-2.5 py-1 rounded-md transition cursor-pointer"
+                              >
+                                <Sparkles className="w-3 h-3 text-blue-600" />
+                                <span>Studio</span>
+                              </button>
 
-                            {/* Hover Actions Row */}
-                            <div className="flex items-center justify-end gap-1.5 pt-2 border-t border-gray-100">
-                              <button
-                                type="button"
-                                onClick={() => handleDuplicate(art.id)}
-                                title="Duplicate artwork"
-                                className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-md transition"
-                              >
-                                <Copy className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => alert(`Edit artwork: ${art.title}`)}
-                                title="Edit artwork"
-                                className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-md transition"
-                              >
-                                <Pencil className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleDelete(art.id)}
-                                title="Delete artwork"
-                                className="p-1.5 text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-md transition"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDuplicate(art.id)}
+                                  title="Duplicate artwork"
+                                  className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-md transition cursor-pointer"
+                                >
+                                  <Copy className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => navigate(`/app/artworks/studio?id=${art.id}`)}
+                                  title="Edit in Visual Studio"
+                                  className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-md transition cursor-pointer"
+                                >
+                                  <Pencil className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDelete(art.id)}
+                                  title="Delete artwork"
+                                  className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-md transition cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
                             </div>
                           </div>
                         </div>
