@@ -20,6 +20,10 @@ pnpm-lock.yaml
 
 /extensions/*/dist
 
+# Uploads directory
+/public/uploads/*
+!public/uploads/.gitkeep
+
 # Ignore shopify files created during app dev
 .shopify/*
 .shopify.lock

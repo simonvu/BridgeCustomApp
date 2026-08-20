@@ -49,8 +49,8 @@ export default function LoginRoute() {
   const navigation = useNavigation();
   const submit = useSubmit();
 
-  const [email, setEmail] = useState("admin@bridgecustom.com");
-  const [password, setPassword] = useState("admin123");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
   const isSubmitting = navigation.state === "submitting";
 
@@ -94,7 +94,7 @@ export default function LoginRoute() {
                     value={email}
                     onChange={setEmail}
                     autoComplete="email"
-                    placeholder="admin@bridgecustom.com"
+                    placeholder="john@bridgecustom.com"
                   />
                   <TextField
                     label="Password"
@@ -113,18 +113,6 @@ export default function LoginRoute() {
                     Sign In
                   </Button>
                 </FormLayout>
-
-                <Box paddingBlockStart="200">
-                  <Banner tone="info">
-                    <Text variant="bodySm">
-                      💡 <strong>Default Admin Credentials:</strong>
-                      <br />
-                      Email: <code>admin@bridgecustom.com</code>
-                      <br />
-                      Password: <code>admin123</code>
-                    </Text>
-                  </Banner>
-                </Box>
               </BlockStack>
             </Card>
           </Box>

@@ -130,6 +130,170 @@ async function main() {
     console.log(`👤 Initialized default Super Admin: admin@bridgecustom.com`);
   }
 
+  // 4. Seed Initial Sample Artworks
+  const sampleArtworks = [
+    {
+      title: "Friend Quote Tumbler",
+      niche: "Tumblers",
+      category: "Best Friends",
+      dimensions: "400x400",
+      layerCount: 0,
+      optionCount: 1,
+      createdBy: "Admin",
+      imageUrl: "https://images.unsplash.com/photo-1544816155-12df9643f363?w=500&auto=format&fit=crop&q=60",
+    },
+    {
+      title: "Friend Quote Mug",
+      niche: "Mugs",
+      category: "Best Friends",
+      dimensions: "400x400",
+      layerCount: 0,
+      optionCount: 1,
+      createdBy: "Admin",
+      imageUrl: "https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?w=500&auto=format&fit=crop&q=60",
+    },
+    {
+      title: "3 Friends With Laptop",
+      niche: "T-Shirts",
+      category: "Sisters and Friends",
+      dimensions: "991x991",
+      layerCount: 0,
+      optionCount: 9,
+      createdBy: "Designer",
+      imageUrl: "https://images.unsplash.com/photo-1529156069898-49953e39b3ac?w=500&auto=format&fit=crop&q=60",
+    },
+    {
+      title: "Mom Daughter Quote",
+      niche: "Quotes",
+      category: "Family & Kids",
+      dimensions: "400x400",
+      layerCount: 0,
+      optionCount: 1,
+      createdBy: "Admin",
+      imageUrl: "https://images.unsplash.com/photo-1536640712-4d4c36ff0e4e?w=500&auto=format&fit=crop&q=60",
+    },
+    {
+      title: "Friends - Summer Beach",
+      niche: "Canvas",
+      category: "Best Friends",
+      dimensions: "900x1000",
+      layerCount: 0,
+      optionCount: 10,
+      createdBy: "Designer",
+      imageUrl: "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=500&auto=format&fit=crop&q=60",
+    },
+    {
+      title: "Friend Canvas Quote",
+      niche: "Canvas",
+      category: "Quotes",
+      dimensions: "500x400",
+      layerCount: 6,
+      optionCount: 1,
+      createdBy: "Admin",
+      imageUrl: "https://images.unsplash.com/photo-1499750310107-5fef28a66643?w=500&auto=format&fit=crop&q=60",
+    },
+    {
+      title: "Quote Girl Pet Omn AC",
+      niche: "Pets",
+      category: "Pet Lovers",
+      dimensions: "400x400",
+      layerCount: 10,
+      optionCount: 1,
+      createdBy: "Designer",
+      imageUrl: "https://images.unsplash.com/photo-1583511655857-d19b40a7a54e?w=500&auto=format&fit=crop&q=60",
+    },
+    {
+      title: "Quote Girl Pet Omn",
+      niche: "Pets",
+      category: "Pet Lovers",
+      dimensions: "400x400",
+      layerCount: 3,
+      optionCount: 1,
+      createdBy: "Admin",
+      imageUrl: "https://images.unsplash.com/photo-1543466835-00a7907e9de1?w=500&auto=format&fit=crop&q=60",
+    },
+  ];
+
+  for (const art of sampleArtworks) {
+    const existing = await prisma.artwork.findFirst({ where: { title: art.title } });
+    if (!existing) {
+      await prisma.artwork.create({ data: art });
+    }
+  }
+  console.log(`🖼️ Seeded sample artworks library`);
+
+  // 5. Seed Initial Sample Media Files
+  const sampleMediaFiles = [
+    {
+      fileName: "logo_bridge_custom_transparent.png",
+      fileSize: 342100,
+      fileType: "image/png",
+      category: "IMAGE",
+      url: "https://bridgecustom.com/cdn/shop/files/logo_32560765-de91-4766-9226-9630dcbf7d4a.png",
+      key: "media_logo_bridge_custom_transparent",
+      dimensions: "1200x400",
+      altText: "BridgeCustom Official Brand Logo",
+      folder: "general",
+      uploadedBy: "Admin",
+    },
+    {
+      fileName: "friend_quote_mug_vector.png",
+      fileSize: 512400,
+      fileType: "image/png",
+      category: "IMAGE",
+      url: "https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?w=500&auto=format&fit=crop&q=60",
+      key: "media_friend_quote_mug_vector",
+      dimensions: "800x800",
+      altText: "Friend quote mug vector mockup",
+      folder: "artworks",
+      uploadedBy: "Designer",
+    },
+    {
+      fileName: "roboto_bold_custom.ttf",
+      fileSize: 184500,
+      fileType: "font/ttf",
+      category: "FONT",
+      url: "https://fonts.gstatic.com/s/roboto/v30/KFOlCnqEu92Fr1MmWUlfBBc4.woff2",
+      key: "media_roboto_bold_custom",
+      dimensions: null,
+      altText: "Roboto Bold Font Asset",
+      folder: "fonts",
+      uploadedBy: "Admin",
+    },
+    {
+      fileName: "summer_beach_clipart_set.png",
+      fileSize: 1240500,
+      fileType: "image/png",
+      category: "IMAGE",
+      url: "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=500&auto=format&fit=crop&q=60",
+      key: "media_summer_beach_clipart_set",
+      dimensions: "1200x1200",
+      altText: "Summer beach clipart illustration",
+      folder: "cliparts",
+      uploadedBy: "Designer",
+    },
+    {
+      fileName: "print_specification_guide.pdf",
+      fileSize: 2450800,
+      fileType: "application/pdf",
+      category: "DOCUMENT",
+      url: "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+      key: "media_print_specification_guide",
+      dimensions: null,
+      altText: "Print production guide standard PDF",
+      folder: "general",
+      uploadedBy: "Admin",
+    },
+  ];
+
+  for (const media of sampleMediaFiles) {
+    const existing = await prisma.mediaFile.findUnique({ where: { key: media.key } });
+    if (!existing) {
+      await prisma.mediaFile.create({ data: media });
+    }
+  }
+  console.log(`📁 Seeded sample media files library`);
+
   console.log("🎉 Seed completed successfully!");
 }
 

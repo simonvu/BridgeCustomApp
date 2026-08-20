@@ -52,6 +52,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       email: currentUser?.email || "admin@bridgecustom.com",
       name: currentUser?.name || "Super Admin",
       roleName: currentUser?.userRoles?.[0]?.role?.code?.toUpperCase() || "SUPER_ADMIN",
+      avatarUrl: currentUser?.avatarUrl || null,
     },
     users,
     roles,
@@ -69,6 +70,7 @@ export async function action({ request }: ActionFunctionArgs) {
     const name = formData.get("name") as string;
     const password = formData.get("password") as string;
     const roleId = formData.get("roleId") as string;
+    const avatarUrl = formData.get("avatarUrl") as string;
 
     if (!email || !name) {
       return json({ error: "Email and Full Name are required" }, { status: 400 });
@@ -77,7 +79,7 @@ export async function action({ request }: ActionFunctionArgs) {
     let user;
     if (userId) {
       // Update User
-      const updateData: any = { email, name };
+      const updateData: any = { email, name, avatarUrl: avatarUrl || null };
       if (password && password.trim() !== "") {
         updateData.passwordHash = bcrypt.hashSync(password, 10);
       }
@@ -94,7 +96,7 @@ export async function action({ request }: ActionFunctionArgs) {
       await logActivity({
         action: "UPDATE_USER",
         resource: `user:${userId}`,
-        payload: { email, name, roleId },
+        payload: { email, name, roleId, avatarUrl },
       });
     } else {
       // Create User
@@ -104,6 +106,7 @@ export async function action({ request }: ActionFunctionArgs) {
           email,
           name,
           passwordHash,
+          avatarUrl: avatarUrl || null,
           isActive: true,
         },
       });
@@ -115,7 +118,7 @@ export async function action({ request }: ActionFunctionArgs) {
       await logActivity({
         action: "CREATE_USER",
         resource: `user:${user.id}`,
-        payload: { email, name, roleId },
+        payload: { email, name, roleId, avatarUrl },
       });
     }
 
@@ -154,6 +157,9 @@ export default function TeamUsersRoute() {
   const [email, setEmail] = useState("");
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
+  const [avatarUrl, setAvatarUrl] = useState("");
+  const [avatarPreview, setAvatarPreview] = useState("");
+  const [isUploading, setIsUploading] = useState(false);
   const [selectedRoleId, setSelectedRoleId] = useState(roles[0]?.id || "");
   const [queryValue, setQueryValue] = useState("");
   const [roleFilter, setRoleFilter] = useState("ALL");
@@ -165,6 +171,8 @@ export default function TeamUsersRoute() {
     setEmail("");
     setName("");
     setPassword("");
+    setAvatarUrl("");
+    setAvatarPreview("");
     setSelectedRoleId(roles[0]?.id || "");
     setModalOpen(true);
   }, [roles]);
@@ -174,8 +182,44 @@ export default function TeamUsersRoute() {
     setEmail(user.email);
     setName(user.name);
     setPassword("");
+    setAvatarUrl(user.avatarUrl || "");
+    setAvatarPreview(user.avatarUrl || "");
     setSelectedRoleId(user.userRoles[0]?.roleId || roles[0]?.id || "");
     setModalOpen(true);
+  };
+
+  const handleAvatarFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Hiển thị ngay lập tức hình ảnh preview phía client bằng Blob URL (0ms trễ)
+    const localBlobUrl = URL.createObjectURL(file);
+    setAvatarPreview(localBlobUrl);
+    setIsUploading(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("folder", "avatars");
+
+      const response = await fetch("/api/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await response.json();
+      if (data.success && data.url) {
+        setAvatarUrl(data.url);
+        setAvatarPreview(data.url);
+      } else {
+        alert(data.error || "Failed to upload image");
+      }
+    } catch (error) {
+      console.error("Upload avatar error:", error);
+      alert("Error uploading avatar");
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   const handleSaveUser = () => {
@@ -185,6 +229,7 @@ export default function TeamUsersRoute() {
     formData.append("email", email);
     formData.append("name", name);
     formData.append("password", password);
+    formData.append("avatarUrl", avatarUrl);
     formData.append("roleId", selectedRoleId);
 
     submit(formData, { method: "post" });
@@ -230,9 +275,17 @@ export default function TeamUsersRoute() {
       <IndexTable.Row id={user.id} key={user.id} position={index}>
         <IndexTable.Cell>
           <InlineStack gap="300" blockAlign="center">
-            <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shrink-0">
-              {user.name?.[0]?.toUpperCase() || "U"}
-            </div>
+            {user.avatarUrl ? (
+              <img
+                src={user.avatarUrl}
+                alt={user.name}
+                className="w-8 h-8 rounded-full object-cover shrink-0 border border-slate-200"
+              />
+            ) : (
+              <div className="w-8 h-8 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-xs shrink-0">
+                {user.name?.[0]?.toUpperCase() || "U"}
+              </div>
+            )}
             <BlockStack gap="050">
               <Text variant="bodyMd" fontWeight="bold" as="span">
                 {user.name}
@@ -361,7 +414,7 @@ export default function TeamUsersRoute() {
           primaryAction={{
             content: "Save Member",
             onAction: handleSaveUser,
-            loading: isSubmitting,
+            loading: isSubmitting || isUploading,
           }}
           secondaryActions={[
             {
@@ -372,6 +425,54 @@ export default function TeamUsersRoute() {
         >
           <Modal.Section>
             <FormLayout>
+              {/* Avatar Upload Preview */}
+              <div className="flex items-center gap-4 p-3 bg-slate-50 border border-slate-200 rounded-lg">
+                {avatarPreview || avatarUrl ? (
+                  <img
+                    src={avatarPreview || avatarUrl}
+                    alt="Avatar preview"
+                    onError={(e) => {
+                      console.warn("Avatar image preview failed to load, falling back to initials");
+                    }}
+                    className="w-14 h-14 rounded-full object-cover border-2 border-blue-500 shadow-xs shrink-0 bg-white"
+                  />
+                ) : (
+                  <div className="w-14 h-14 rounded-full bg-blue-600 text-white flex items-center justify-center font-bold text-lg shrink-0">
+                    {name?.[0]?.toUpperCase() || "U"}
+                  </div>
+                )}
+
+                <div className="space-y-1.5 flex-1">
+                  <label className="block text-xs font-semibold text-slate-700">
+                    User Avatar (Cloudflare R2 Upload)
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <label className="cursor-pointer bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-semibold px-3 py-1.5 rounded-md transition shadow-xs">
+                      {isUploading ? "Uploading to Cloudflare..." : "Choose Image..."}
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleAvatarFileChange}
+                        disabled={isUploading}
+                        className="hidden"
+                      />
+                    </label>
+                    {(avatarPreview || avatarUrl) && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAvatarUrl("");
+                          setAvatarPreview("");
+                        }}
+                        className="text-xs text-red-600 hover:text-red-800 font-medium underline"
+                      >
+                        Remove Avatar
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
               <TextField
                 label="Full Name"
                 value={name}

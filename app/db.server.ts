@@ -4,12 +4,15 @@ declare global {
   var prismaGlobal: PrismaClient;
 }
 
-if (process.env.NODE_ENV !== "production") {
-  if (!global.prismaGlobal) {
-    global.prismaGlobal = new PrismaClient();
-  }
+function createPrismaClient() {
+  return new PrismaClient();
 }
 
-const prisma = global.prismaGlobal ?? new PrismaClient();
+if (process.env.NODE_ENV !== "production") {
+  // Re-create Prisma Client in dev mode to pick up newly pushed schema fields (e.g. thumbnailUrl)
+  global.prismaGlobal = createPrismaClient();
+}
+
+const prisma = global.prismaGlobal || createPrismaClient();
 
 export default prisma;

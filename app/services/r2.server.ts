@@ -1,21 +1,38 @@
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-
-// Khởi tạo Cloudflare R2 Client (Tương thích API S3)
-const r2Client = new S3Client({
-  region: "auto",
-  endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
-  credentials: {
-    accessKeyId: process.env.R2_ACCESS_KEY_ID || "",
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || "",
-  },
-});
-
-const BUCKET_NAME = process.env.R2_BUCKET_NAME || "bridge-custom-assets";
-const PUBLIC_DOMAIN = process.env.R2_PUBLIC_DOMAIN || "";
+import fs from "fs";
+import path from "path";
 
 /**
- * Upload file lên Cloudflare R2
+ * Lấy Client kết nối R2 động theo chuẩn Cloudflare R2 S3 API (BẮT BUỘC forcePathStyle: true)
+ */
+function getR2Client() {
+  const accountId = process.env.R2_ACCOUNT_ID;
+  const accessKeyId = process.env.R2_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
+
+  if (
+    !accountId ||
+    !accessKeyId ||
+    !secretAccessKey ||
+    accessKeyId === "your_r2_access_key_id"
+  ) {
+    return null;
+  }
+
+  return new S3Client({
+    region: "auto",
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: {
+      accessKeyId,
+      secretAccessKey,
+    },
+    forcePathStyle: true,
+  });
+}
+
+/**
+ * Upload file lên Cloudflare R2 (hoặc lưu local fallback nếu lỗi hoặc chưa cấu hình R2)
  */
 export async function uploadToR2({
   key,
@@ -26,21 +43,99 @@ export async function uploadToR2({
   body: Buffer | Uint8Array | Blob | string;
   contentType: string;
 }): Promise<{ url: string; key: string }> {
-  const command = new PutObjectCommand({
-    Bucket: BUCKET_NAME,
-    Key: key,
-    Body: body as any,
-    ContentType: contentType,
-  });
+  const client = getR2Client();
+  const bucketName = process.env.R2_BUCKET_NAME || "assets";
+  const rawPublicDomain = (process.env.R2_PUBLIC_DOMAIN || "").trim().replace(/\/$/, "");
+  const isDefaultDevDomain = rawPublicDomain.includes(".r2.dev") || rawPublicDomain.includes("yourdomain.com");
 
-  await r2Client.send(command);
+  if (client) {
+    try {
+      let bufferData: Buffer;
+      if (Buffer.isBuffer(body)) {
+        bufferData = body;
+      } else if (typeof body === "string") {
+        bufferData = Buffer.from(body, "utf-8");
+      } else {
+        bufferData = Buffer.from(await (body as Blob).arrayBuffer());
+      }
 
-  const url = PUBLIC_DOMAIN ? `${PUBLIC_DOMAIN}/${key}` : key;
-  return { url, key };
+      const command = new PutObjectCommand({
+        Bucket: bucketName,
+        Key: key,
+        Body: bufferData,
+        ContentType: contentType,
+      });
+
+      console.log(`🚀 Sending file upload request directly to Cloudflare R2 bucket "${bucketName}" (Key: ${key})...`);
+      await client.send(command);
+
+      const url = rawPublicDomain && !isDefaultDevDomain
+        ? `${rawPublicDomain}/${key}`
+        : `/api/assets/${key}`;
+
+      console.log(`🎉 SUCCESS: Uploaded directly to Cloudflare R2 bucket "${bucketName}"! Public URL: ${url}`);
+      return { url, key };
+    } catch (error: any) {
+      console.error("❌ Cloudflare R2 upload error DETAILED:", error.name, error.message);
+    }
+  }
+
+  // Fallback: Lưu vào thư mục public/uploads/ cục bộ nếu chưa cấu hình R2
+  const uploadsDir = path.join(process.cwd(), "public", "uploads");
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+
+  const safeKeyName = `${Date.now()}-${Math.random().toString(36).substring(2, 7)}_${key.replace(/[^a-zA-Z0-9_.-]/g, "_")}`;
+  const filePath = path.join(uploadsDir, safeKeyName);
+
+  let bufferData: Buffer;
+  if (Buffer.isBuffer(body)) {
+    bufferData = body;
+  } else if (typeof body === "string") {
+    bufferData = Buffer.from(body, "utf-8");
+  } else {
+    bufferData = Buffer.from(await (body as Blob).arrayBuffer());
+  }
+
+  fs.writeFileSync(filePath, bufferData);
+
+  const localUrl = `/uploads/${safeKeyName}`;
+  console.log(`📁 Local fallback saved: ${localUrl}`);
+  return { url: localUrl, key: safeKeyName };
 }
 
 /**
- * Tạo URL tạm thời (Presigned URL) cho phép Storefront upload file trực tiếp lên R2 mà không qua App Server
+ * Đọc file trực tiếp từ Cloudflare R2 Bucket
+ */
+export async function getFromR2(key: string): Promise<{ body: Buffer; contentType?: string } | null> {
+  const client = getR2Client();
+  const bucketName = process.env.R2_BUCKET_NAME || "assets";
+
+  if (!client) return null;
+
+  try {
+    const command = new GetObjectCommand({
+      Bucket: bucketName,
+      Key: key,
+    });
+
+    const response = await client.send(command);
+    if (!response.Body) return null;
+
+    const byteArray = await response.Body.transformToByteArray();
+    return {
+      body: Buffer.from(byteArray),
+      contentType: response.ContentType,
+    };
+  } catch (error) {
+    console.error("❌ Error fetching file from Cloudflare R2:", error);
+    return null;
+  }
+}
+
+/**
+ * Tạo Presigned URL upload trực tiếp cho Storefront
  */
 export async function getPresignedUploadUrl({
   key,
@@ -50,29 +145,39 @@ export async function getPresignedUploadUrl({
   key: string;
   contentType: string;
   expiresIn?: number;
-}): Promise<string> {
+}): Promise<string | null> {
+  const client = getR2Client();
+  const bucketName = process.env.R2_BUCKET_NAME || "assets";
+
+  if (!client) return null;
+
   const command = new PutObjectCommand({
-    Bucket: BUCKET_NAME,
+    Bucket: bucketName,
     Key: key,
     ContentType: contentType,
   });
 
-  return await getSignedUrl(r2Client, command, { expiresIn });
+  return await getSignedUrl(client, command, { expiresIn });
 }
 
 /**
  * Xóa file khỏi Cloudflare R2
  */
 export async function deleteFromR2(key: string): Promise<boolean> {
+  const client = getR2Client();
+  const bucketName = process.env.R2_BUCKET_NAME || "assets";
+
+  if (!client) return false;
+
   try {
     const command = new DeleteObjectCommand({
-      Bucket: BUCKET_NAME,
+      Bucket: bucketName,
       Key: key,
     });
-    await r2Client.send(command);
+    await client.send(command);
     return true;
   } catch (error) {
-    console.error("❌ Lỗi khi xóa file khỏi Cloudflare R2:", error);
+    console.error("❌ Error deleting file from Cloudflare R2:", error);
     return false;
   }
 }

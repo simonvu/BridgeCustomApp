@@ -115,3 +115,63 @@ model AuditLog {
   @@map("audit_logs")
 }
 
+// ==========================================
+// PERSONALIZATION & ARTWORK MODELS
+// ==========================================
+
+model Artwork {
+  id              String   @id @default(uuid())
+  title           String
+  category        String   @default("Best Friends")
+  niche           String   @default("Quotes")
+  imageUrl        String
+  dimensions      String   @default("1000x1000")
+  layerCount      Int      @default(1)
+  optionCount     Int      @default(1)
+  createdBy       String   @default("Admin")
+  createdByName   String?  @default("Super Admin")
+  createdByAvatar String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("artworks")
+}
+
+// ==========================================
+// MEDIA & FILES MANAGEMENT MODELS
+// ==========================================
+
+model MediaFile {
+  id              String   @id @default(uuid())
+  fileName        String
+  fileSize        Int      // Bytes
+  fileType        String   // VD: "image/png", "font/ttf", "application/pdf"
+  category        String   @default("IMAGE") // "IMAGE", "FONT", "DOCUMENT", "VECTOR"
+  url             String   
+  thumbnailUrl    String?  // Link ảnh thu nhỏ tối ưu (WebP, width 400px)
+  key             String   @unique
+  thumbnailKey    String?  // Key R2 của ảnh thu nhỏ
+  dimensions      String?  // VD: "1200x800"
+  altText         String?
+  folder          String   @default("general")
+  uploadedBy      String   @default("Admin")
+  createdByName   String?  @default("Super Admin")
+  createdByAvatar String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("media_files")
+}
+
+model MediaFolder {
+  id              String   @id @default(uuid())
+  name            String   @unique // Slug của folder: VD "artworks", "cliparts"
+  label           String   // Tên hiển thị: VD "Artworks", "Cliparts"
+  createdBy       String?  @default("Admin")
+  createdByName   String?  @default("Super Admin")
+  createdByAvatar String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("media_folders")
+}
