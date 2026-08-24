@@ -32,6 +32,8 @@ export function createFabricMaskObject(
   options: any = {}
 ): fabric.Object {
   const rx = options.borderRadius || 16;
+  const originX = options.originX || "center";
+  const originY = options.originY || "center";
 
   if (shape === "CIRCLE") {
     return new fabric.Rect({
@@ -41,8 +43,8 @@ export function createFabricMaskObject(
       height,
       rx: width / 2,
       ry: height / 2,
-      originX: options.originX || "left",
-      originY: options.originY || "top",
+      originX,
+      originY,
       absolutePositioned: options.absolutePositioned || false,
       ...options,
     });
@@ -56,54 +58,39 @@ export function createFabricMaskObject(
       height,
       rx: Math.min(rx, width / 2, height / 2),
       ry: Math.min(rx, width / 2, height / 2),
-      originX: options.originX || "left",
-      originY: options.originY || "top",
+      originX,
+      originY,
       absolutePositioned: options.absolutePositioned || false,
       ...options,
     });
   }
 
+  let pathStr = "";
   if (shape === "HEART") {
-    const heartPathStr =
-      "M 12 21.35 l -1.45 -1.32 C 5.4 15.36 2 12.28 2 8.5 C 2 5.42 4.42 3 7.5 3 c 1.74 0 3.41 0.81 4.5 2.09 C 13.09 3.81 14.76 3 16.5 3 C 19.58 3 22 5.42 22 8.5 c 0 3.78 -3.4 6.86 -8.55 11.54 L 12 21.35 Z";
-    return new fabric.Path(heartPathStr, {
-      left,
-      top,
-      scaleX: width / 24,
-      scaleY: height / 24,
-      originX: options.originX || "left",
-      originY: options.originY || "top",
-      absolutePositioned: options.absolutePositioned || false,
-      ...options,
-    });
+    pathStr =
+      "M 50 90 C 20 65 0 45 0 25 C 0 10 12 0 27 0 C 38 0 46 6 50 14 C 54 6 62 0 73 0 C 88 0 100 10 100 25 C 100 45 80 65 50 90 Z";
+  } else if (shape === "STAR") {
+    pathStr =
+      "M 50 0 L 63 35 L 100 38 L 72 63 L 80 100 L 50 80 L 20 100 L 28 63 L 0 38 L 37 35 Z";
+  } else if (shape === "HEXAGON") {
+    pathStr =
+      "M 50 0 L 100 25 L 100 75 L 50 100 L 0 75 L 0 25 Z";
   }
 
-  if (shape === "STAR") {
-    const starPathStr =
-      "M 12 2 L 15.09 8.26 L 22 9.27 L 17 14.14 L 18.18 21.02 L 12 17.77 L 5.82 21.02 L 7 14.14 L 2 9.27 L 8.91 8.26 Z";
-    return new fabric.Path(starPathStr, {
-      left,
-      top,
-      scaleX: width / 24,
-      scaleY: height / 24,
-      originX: options.originX || "left",
-      originY: options.originY || "top",
-      absolutePositioned: options.absolutePositioned || false,
-      ...options,
-    });
-  }
+  if (pathStr) {
+    const rawPath = new fabric.Path(pathStr);
+    const pathW = rawPath.width || 100;
+    const pathH = rawPath.height || 100;
 
-  if (shape === "HEXAGON") {
-    const hexPathStr =
-      "M 12 2 L 21.5 7.5 L 21.5 18.5 L 12 24 L 2.5 18.5 L 2.5 7.5 Z";
-    return new fabric.Path(hexPathStr, {
+    return new fabric.Path(pathStr, {
       left,
       top,
-      scaleX: width / 24,
-      scaleY: height / 26,
-      originX: options.originX || "left",
-      originY: options.originY || "top",
+      scaleX: width / pathW,
+      scaleY: height / pathH,
+      originX,
+      originY,
       absolutePositioned: options.absolutePositioned || false,
+      strokeUniform: true,
       ...options,
     });
   }
@@ -115,8 +102,8 @@ export function createFabricMaskObject(
     height,
     rx: 0,
     ry: 0,
-    originX: options.originX || "left",
-    originY: options.originY || "top",
+    originX,
+    originY,
     absolutePositioned: options.absolutePositioned || false,
     ...options,
   });
@@ -229,6 +216,11 @@ export default function StudioCanvas({
   const fabricCanvasRef = useRef<fabric.Canvas | null>(null);
   const isUpdatingFromFabricRef = useRef(false);
   const pendingFrameUpdatesRef = useRef<{ [layerId: string]: { posX: number; posY: number; width: number; height: number } }>({});
+
+  const layersRef = useRef(layers);
+  useEffect(() => {
+    layersRef.current = layers;
+  }, [layers]);
 
   const [internalZoom, setInternalZoom] = useState(1);
   const [internalShowGrid, setInternalShowGrid] = useState(true);
@@ -387,153 +379,123 @@ export default function StudioCanvas({
       }
     };
 
-    // Handle Object Modifications (Move, Scale, Rotate)
-    const handleObjectModified = (e: any) => {
-      const target = e.target;
-      if (!target || !target.layerId) return;
+      // Handle Object Modifications (Move, Scale, Rotate)
+      const handleObjectModified = (e: any) => {
+        const target = e.target;
+        if (!target || !target.layerId) return;
 
-      isUpdatingFromFabricRef.current = true;
-      const layerId = target.layerId;
-      const scaleX = target.scaleX || 1;
-      const scaleY = target.scaleY || 1;
-
-      let newWidth = 0;
-      let newHeight = 0;
-
-      if (target instanceof fabric.Image) {
-        const nativeW = target.getElement()?.width || target.width || 100;
-        const nativeH = target.getElement()?.height || target.height || 100;
-        newWidth = Math.round(nativeW * scaleX);
-        newHeight = Math.round(nativeH * scaleY);
-      } else {
-        newWidth = Math.round((target.width || 100) * scaleX);
-        newHeight = Math.round((target.height || 100) * scaleY);
-      }
-
-      const newPosX = Math.round((target.left || 0) - newWidth / 2);
-      const newPosY = Math.round((target.top || 0) - newHeight / 2);
-      const newRotation = Math.round(target.angle || 0);
-
-      if (target instanceof fabric.Group) {
-        target.set({
-          scaleX: 1,
-          scaleY: 1,
-          width: newWidth,
-          height: newHeight,
-        });
-
-        const childObjs = target.getObjects();
-        const frameRect = childObjs[0] as fabric.Rect;
-        const textObj = childObjs[1] as fabric.Text;
-
-        if (frameRect) {
-          frameRect.set({
-            width: newWidth,
-            height: newHeight,
-            scaleX: 1,
-            scaleY: 1,
-          });
-        }
-
-        if (textObj) {
-          const layerItem = layers.find((l) => l.id === target.layerId);
-          const props = layerItem?.properties || {};
-          const isAutoFit = props.autoFit !== false;
-          const baseFontSize = Number(props.fontSize) || 36;
-          const fontFamily = props.fontFamily || "Roboto";
-          const textStr = textObj.text || layerItem?.name || "";
-          const hAlign = props.align || "center";
-          const vAlign = props.verticalAlign || "middle";
-
-          const fitFontSize = getFitFontSize(textStr, fontFamily, baseFontSize, newWidth, isAutoFit);
-
-          let textX = 0;
-          let textY = 0;
-
-          if (!textObj.path) {
-            if (hAlign === "left") textX = -newWidth / 2;
-            else if (hAlign === "right") textX = newWidth / 2;
-
-            if (vAlign === "top") textY = -newHeight / 2;
-            else if (vAlign === "bottom") textY = newHeight / 2;
-          }
-
-          textObj.set({
-            left: textX,
-            top: textY,
-            fontSize: fitFontSize,
-            scaleX: 1,
-            scaleY: 1,
-          });
-        }
-
-        target.setCoords();
-      }
-
-      onUpdateLayer(layerId, {
-        posX: newPosX,
-        posY: newPosY,
-        width: newWidth,
-        height: newHeight,
-        rotation: newRotation,
-      });
-
-      setTimeout(() => {
-        isUpdatingFromFabricRef.current = false;
-      }, 50);
-    };
-
-    // Handle Selection Events
-    const handleSelectionCreated = (e: any) => {
-      const selected = e.selected?.[0];
-      if (selected && selected.layerId) {
-        onSelectLayer(selected.layerId);
-      }
-    };
-
-    const handleSelectionCleared = () => {
-      onSelectLayer(null);
-    };
-
-    // Handle Live Drag/Scale Transformations (Realtime 60fps Fabric rendering & dynamic clipPath sync)
-    const handleLiveTransform = (e: any) => {
-      const target = e.target;
-      if (!target || !target.layerId) return;
-
-      const targetLayer = layers.find((l) => l.id === target.layerId);
-      if (targetLayer && targetLayer.layerType === "MASK") {
+        isUpdatingFromFabricRef.current = true;
+        const layerId = target.layerId;
         const scaleX = target.scaleX || 1;
         const scaleY = target.scaleY || 1;
 
-        const newW = Math.max(10, Math.round((target.width || 100) * scaleX));
-        const newH = Math.max(10, Math.round((target.height || 100) * scaleY));
-        const newX = Math.round((target.left || 0) - newW / 2);
-        const newY = Math.round((target.top || 0) - newH / 2);
+        let newWidth = 0;
+        let newHeight = 0;
 
-        // Find linked Photo Upload object on canvas
-        const photoObj = fabricCanvas.getObjects().find((o: any) => {
-          if (!o.layerId) return false;
-          const l = layers.find((item) => item.id === o.layerId);
-          return l && (l.maskLayerId === targetLayer.id || l.id === targetLayer.parentPhotoUploadId);
+        if (target instanceof fabric.Path) {
+          const pathW = target.width || 100;
+          const pathH = target.height || 100;
+          newWidth = Math.max(10, Math.round(pathW * scaleX));
+          newHeight = Math.max(10, Math.round(pathH * scaleY));
+        } else if (target instanceof fabric.Image) {
+          const nativeW = target.getElement()?.width || target.width || 100;
+          const nativeH = target.getElement()?.height || target.height || 100;
+          newWidth = Math.max(10, Math.round(nativeW * scaleX));
+          newHeight = Math.max(10, Math.round(nativeH * scaleY));
+        } else {
+          newWidth = Math.max(10, Math.round((target.width || 100) * scaleX));
+          newHeight = Math.max(10, Math.round((target.height || 100) * scaleY));
+        }
+
+        const newPosX = Math.round((target.left || 0) - newWidth / 2);
+        const newPosY = Math.round((target.top || 0) - newHeight / 2);
+        const newRotation = Math.round(target.angle || 0);
+
+        onUpdateLayer(layerId, {
+          posX: newPosX,
+          posY: newPosY,
+          width: newWidth,
+          height: newHeight,
+          rotation: newRotation,
         });
 
-        if (photoObj && photoObj.clipPath) {
-          photoObj.clipPath.set({
-            left: newX,
-            top: newY,
-            width: newW,
-            height: newH,
-            originX: "left",
-            originY: "top",
-          });
-          photoObj.clipPath.setCoords();
-          photoObj.dirty = true;
-          fabricCanvas.requestRenderAll();
-        }
-      }
+        setTimeout(() => {
+          isUpdatingFromFabricRef.current = false;
+        }, 50);
+      };
 
-      handleObjectScaling(e);
-    };
+      // Handle Selection Events
+      const handleSelectionCreated = (e: any) => {
+        const selected = e.selected?.[0];
+        if (selected && selected.layerId) {
+          onSelectLayer(selected.layerId);
+        }
+      };
+
+      const handleSelectionCleared = () => {
+        onSelectLayer(null);
+      };
+
+      // Handle Live Drag/Scale Transformations (Realtime 60fps Fabric rendering & dynamic clipPath sync)
+      const handleLiveTransform = (e: any) => {
+        const target = e.target;
+        if (!target || !target.layerId) return;
+
+        const targetLayer = layersRef.current.find((l) => l.id === target.layerId);
+        if (targetLayer && targetLayer.layerType === "MASK") {
+          const scaleX = target.scaleX || 1;
+          const scaleY = target.scaleY || 1;
+
+          let newW = 0;
+          let newH = 0;
+
+          if (target instanceof fabric.Path) {
+            const pathW = target.width || 100;
+            const pathH = target.height || 100;
+            newW = Math.max(10, Math.round(pathW * scaleX));
+            newH = Math.max(10, Math.round(pathH * scaleY));
+          } else {
+            newW = Math.max(10, Math.round((target.width || 100) * scaleX));
+            newH = Math.max(10, Math.round((target.height || 100) * scaleY));
+          }
+
+          const newCenterX = Math.round(target.left || 0);
+          const newCenterY = Math.round(target.top || 0);
+
+          // Find linked Photo Upload object on canvas
+          const photoObj = fabricCanvas.getObjects().find((o: any) => {
+            if (!o.layerId) return false;
+            const l = layersRef.current.find((item) => item.id === o.layerId);
+            return l && (l.maskLayerId === targetLayer.id || l.id === targetLayer.parentPhotoUploadId);
+          });
+
+          if (photoObj && photoObj.clipPath) {
+            const mProps = targetLayer.properties || {};
+            const mShape = mProps.maskShape || "RECTANGLE";
+
+            photoObj.clipPath = createFabricMaskObject(
+              mShape,
+              newW,
+              newH,
+              newCenterX,
+              newCenterY,
+              {
+                borderRadius: mProps.borderRadius || 16,
+                originX: "center",
+                originY: "center",
+                absolutePositioned: true,
+                strokeWidth: 0,
+                stroke: undefined,
+                fill: "#000000",
+              }
+            );
+            photoObj.dirty = true;
+            fabricCanvas.requestRenderAll();
+          }
+        }
+
+        handleObjectScaling(e);
+      };
 
     fabricCanvas.on("object:moving", handleLiveTransform);
     fabricCanvas.on("object:scaling", (e: any) => {
@@ -766,15 +728,31 @@ export default function StudioCanvas({
         }
 
         if (maskObj) {
-          maskObj.set({
-            left: centerX,
-            top: centerY,
-            width: layer.width,
-            height: layer.height,
-            angle: layer.rotation,
-            selectable: !layer.isLocked,
-            evented: !layer.isLocked,
-          });
+          if (maskObj instanceof fabric.Path) {
+            const pathW = maskObj.width || 100;
+            const pathH = maskObj.height || 100;
+            maskObj.set({
+              left: centerX,
+              top: centerY,
+              scaleX: layer.width / pathW,
+              scaleY: layer.height / pathH,
+              angle: layer.rotation,
+              selectable: !layer.isLocked,
+              evented: !layer.isLocked,
+            });
+          } else {
+            maskObj.set({
+              left: centerX,
+              top: centerY,
+              width: layer.width,
+              height: layer.height,
+              scaleX: 1,
+              scaleY: 1,
+              angle: layer.rotation,
+              selectable: !layer.isLocked,
+              evented: !layer.isLocked,
+            });
+          }
           maskObj.setCoords();
           obj = maskObj;
         } else {
@@ -782,8 +760,8 @@ export default function StudioCanvas({
             maskShape,
             layer.width,
             layer.height,
-            0,
-            0,
+            centerX,
+            centerY,
             {
               fill: "rgba(168, 85, 247, 0.12)",
               stroke: "#9333ea",
@@ -792,37 +770,17 @@ export default function StudioCanvas({
               originX: "center",
               originY: "center",
               borderRadius: props.borderRadius || 16,
+              selectable: !layer.isLocked,
+              lockUniScaling: false,
+              objectCaching: false,
+              dirty: true,
             }
           );
+          (shapeObj as any).layerId = layer.id;
+          (shapeObj as any).currentMaskShape = maskShape;
 
-          const placeholderText = new fabric.Text(`🎭 ${layer.name}\n(${layer.width}×${layer.height}px)`, {
-            originX: "center",
-            originY: "center",
-            fontSize: 12,
-            fill: "#7e22ce",
-            fontFamily: "sans-serif",
-            fontWeight: "bold",
-            textAlign: "center",
-          });
-
-          obj = new fabric.Group([shapeObj, placeholderText], {
-            left: centerX,
-            top: centerY,
-            originX: "center",
-            originY: "center",
-            angle: layer.rotation,
-            width: layer.width,
-            height: layer.height,
-            selectable: !layer.isLocked,
-            lockUniScaling: false,
-            subTargetCheck: false,
-            objectCaching: false,
-            dirty: true,
-          });
-          (obj as any).layerId = layer.id;
-          (obj as any).currentMaskShape = maskShape;
-
-          fc.add(obj);
+          fc.add(shapeObj);
+          obj = shapeObj;
         }
       } else if (
         layer.layerType === "ASSET" ||
@@ -842,15 +800,23 @@ export default function StudioCanvas({
           const mProps = linkedMaskLayer.properties || {};
           const mShape = mProps.maskShape || "RECTANGLE";
 
+          const maskCenterX = linkedMaskLayer.posX + linkedMaskLayer.width / 2;
+          const maskCenterY = linkedMaskLayer.posY + linkedMaskLayer.height / 2;
+
           clipMask = createFabricMaskObject(
             mShape,
             linkedMaskLayer.width,
             linkedMaskLayer.height,
-            linkedMaskLayer.posX,
-            linkedMaskLayer.posY,
+            maskCenterX,
+            maskCenterY,
             {
               borderRadius: mProps.borderRadius || 16,
+              originX: "center",
+              originY: "center",
               absolutePositioned: true,
+              strokeWidth: 0,
+              stroke: undefined,
+              fill: "#000000",
             }
           );
         }
@@ -879,6 +845,8 @@ export default function StudioCanvas({
               selectable: !layer.isLocked,
               evented: !layer.isLocked,
               clipPath: clipMask,
+              objectCaching: false,
+              dirty: true,
             });
             existingImgObj.setCoords();
             obj = existingImgObj;
@@ -933,7 +901,11 @@ export default function StudioCanvas({
           const rx = maskShape === "CIRCLE" ? layer.width / 2 : maskShape === "ROUNDED" ? 16 : 4;
           const ry = maskShape === "CIRCLE" ? layer.height / 2 : maskShape === "ROUNDED" ? 16 : 4;
 
+          if (obj) fc.remove(obj);
+
           const frameRect = new fabric.Rect({
+            left: centerX,
+            top: centerY,
             width: layer.width,
             height: layer.height,
             fill: isPhotoUpload ? "rgba(254, 243, 199, 0.25)" : "rgba(240, 253, 244, 0.5)",
@@ -942,34 +914,9 @@ export default function StudioCanvas({
             strokeDashArray: isPhotoUpload ? [8, 5] : [6, 6],
             originX: "center",
             originY: "center",
+            angle: layer.rotation,
             rx,
             ry,
-          });
-
-          const labelStr = isPhotoUpload
-            ? `📷 ${props.fieldLabel || "Photo Upload Area"}\n(${layer.width}×${layer.height}px)`
-            : "📷 Click to select Image Asset";
-
-          const placeholderText = new fabric.Text(labelStr, {
-            originX: "center",
-            originY: "center",
-            fontSize: isPhotoUpload ? 13 : 12,
-            fill: isPhotoUpload ? "#b45309" : "#059669",
-            fontFamily: "sans-serif",
-            fontWeight: "bold",
-            textAlign: "center",
-          });
-
-          if (obj) fc.remove(obj);
-
-          obj = new fabric.Group([frameRect, placeholderText], {
-            left: centerX,
-            top: centerY,
-            originX: "center",
-            originY: "center",
-            angle: layer.rotation,
-            width: layer.width,
-            height: layer.height,
             selectable: !layer.isLocked,
             lockUniScaling: false,
             clipPath: clipMask,
@@ -977,15 +924,10 @@ export default function StudioCanvas({
             objectCaching: false,
             dirty: true,
           });
-          (obj as any).layerId = layer.id;
+          (frameRect as any).layerId = layer.id;
 
-          // Hide middle side handles (ml, mt, mr, mb)
-          obj.setControlVisible("ml", false);
-          obj.setControlVisible("mt", false);
-          obj.setControlVisible("mr", false);
-          obj.setControlVisible("mb", false);
-
-          fc.add(obj);
+          fc.add(frameRect);
+          obj = frameRect;
         }
       }
 
@@ -1012,6 +954,8 @@ export default function StudioCanvas({
         let guideObj = fc.getObjects().find((o: any) => o.photoGuideForMaskId === selectedLayerItem.id);
         if (!guideObj) {
           const guideRect = new fabric.Rect({
+            left: photoCenterX,
+            top: photoCenterY,
             width: linkedPhotoLayer.width,
             height: linkedPhotoLayer.height,
             fill: "rgba(239, 68, 68, 0.03)",
@@ -1020,32 +964,14 @@ export default function StudioCanvas({
             strokeDashArray: [6, 4],
             originX: "center",
             originY: "center",
-          });
-
-          const guideText = new fabric.Text(
-            `📷 Full Photo Bounds (${linkedPhotoLayer.width}×${linkedPhotoLayer.height}px)`,
-            {
-              fontSize: 11,
-              fill: "#dc2626",
-              fontFamily: "sans-serif",
-              fontWeight: "bold",
-              originX: "center",
-              originY: "center",
-            }
-          );
-
-          guideObj = new fabric.Group([guideRect, guideText], {
-            left: photoCenterX,
-            top: photoCenterY,
-            originX: "center",
-            originY: "center",
             angle: linkedPhotoLayer.rotation,
             selectable: false,
             evented: false,
             objectCaching: false,
           });
-          (guideObj as any).photoGuideForMaskId = selectedLayerItem.id;
-          fc.add(guideObj);
+          (guideRect as any).photoGuideForMaskId = selectedLayerItem.id;
+          fc.add(guideRect);
+          guideObj = guideRect;
         } else {
           guideObj.set({
             left: photoCenterX,
