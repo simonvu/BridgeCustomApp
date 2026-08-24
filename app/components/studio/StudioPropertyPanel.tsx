@@ -15,6 +15,9 @@ import {
   Trash2,
   Palette,
   Eye,
+  Upload,
+  Edit3,
+  Scissors,
 } from "lucide-react";
 
 export interface BackgroundOptionItem {
@@ -30,9 +33,12 @@ export interface BackgroundOptionItem {
 interface StudioPropertyPanelProps {
   selectedLayer: CanvasLayerItem | null;
   fields: StudioFieldItem[];
-  fonts?: { id: string; name: string; family: string; fontType: string }[];
+  fonts?: { id: string; name: string; family: string; fontType: string }[] | any;
   onUpdateLayer: (layerId: string, updatedProps: Partial<CanvasLayerItem>) => void;
   onOpenMediaPickerForLayer?: (layerId: string, bgOptionIndex?: number) => void;
+  onOpenPhotoUploadModal?: (layerId: string) => void;
+  onAddMaskLayer?: (photoLayerId: string) => void;
+  onDeleteLayer?: (layerId: string) => void;
 }
 
 export default function StudioPropertyPanel({
@@ -41,6 +47,7 @@ export default function StudioPropertyPanel({
   fonts = [],
   onUpdateLayer,
   onOpenMediaPickerForLayer,
+  onOpenPhotoUploadModal,
 }: StudioPropertyPanelProps) {
   if (!selectedLayer) {
     return (
@@ -313,11 +320,22 @@ export default function StudioPropertyPanel({
           </div>
         )}
 
-        {/* Graphic Asset Selector (If LayerType is ASSET or OVERLAY) */}
+        {/* Graphic Asset Selector & Opacity (If LayerType is ASSET or OVERLAY) */}
         {(selectedLayer.layerType === "ASSET" || selectedLayer.layerType === "OVERLAY") && (
           <div className="space-y-3 pt-3 border-t border-slate-200">
+            {/* Non-customizable Static Design Element Notice */}
+            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-2.5 flex items-start gap-2 text-emerald-900">
+              <Sparkles className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold text-[11px] block">Static Design Element</span>
+                <span className="text-[10px] text-emerald-700 block leading-tight">
+                  This image layer is strictly for artwork design composition. End customers cannot customize or change this layer.
+                </span>
+              </div>
+            </div>
+
             <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
-              <ImageIcon className="w-4 h-4 text-emerald-600" /> Graphic Image Source
+              <ImageIcon className="w-4 h-4 text-emerald-600" /> Image Graphic Source
             </h4>
 
             {props.assetUrl ? (
@@ -328,7 +346,7 @@ export default function StudioPropertyPanel({
                 <button
                   type="button"
                   onClick={() => onOpenMediaPickerForLayer && onOpenMediaPickerForLayer(selectedLayer.id)}
-                  className="w-full py-1.5 text-xs font-semibold text-blue-600 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition"
+                  className="w-full py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-lg transition cursor-pointer"
                 >
                   Change Image Asset
                 </button>
@@ -342,6 +360,224 @@ export default function StudioPropertyPanel({
                 <Sparkles className="w-5 h-5 text-emerald-600" /> Choose Image from R2 Library
               </button>
             )}
+
+            {/* Opacity Control */}
+            <div className="pt-2 border-t border-slate-100 space-y-1">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-bold text-slate-700">Opacity / Transparency</span>
+                <span className="font-mono font-bold text-indigo-600">
+                  {Math.round((props.opacity !== undefined ? Number(props.opacity) : 1) * 100)}%
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={props.opacity !== undefined ? Number(props.opacity) : 1}
+                  onChange={(e) => handlePropChange("opacity", Number(e.target.value))}
+                  className="flex-1 accent-indigo-600 cursor-pointer h-1.5 bg-slate-200 rounded-lg"
+                />
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  value={Math.round((props.opacity !== undefined ? Number(props.opacity) : 1) * 100)}
+                  onChange={(e) => handlePropChange("opacity", Math.max(0, Math.min(100, Number(e.target.value))) / 100)}
+                  className="w-12 text-center font-mono text-[11px] font-bold border border-slate-300 rounded px-1 py-0.5"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Photo Upload Configuration (If LayerType is PHOTO_UPLOAD) */}
+        {selectedLayer.layerType === "PHOTO_UPLOAD" && (
+          <div className="space-y-3 pt-3 border-t border-slate-200">
+
+            {/* Field Label & Help Text */}
+            <div className="space-y-2">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  Customer Field Title / Label
+                </label>
+                <input
+                  type="text"
+                  value={props.fieldLabel !== undefined ? props.fieldLabel : "Upload Your Photo"}
+                  onChange={(e) => handlePropChange("fieldLabel", e.target.value)}
+                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-purple-500 focus:outline-none text-xs font-semibold text-slate-800 bg-white"
+                  placeholder="e.g. Upload Your Photo"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                  Instructional Help Text
+                </label>
+                <input
+                  type="text"
+                  value={props.helpText !== undefined ? props.helpText : "High resolution JPG or PNG recommended"}
+                  onChange={(e) => handlePropChange("helpText", e.target.value)}
+                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-purple-500 focus:outline-none text-xs text-slate-800 bg-white"
+                  placeholder="e.g. High resolution JPG or PNG recommended"
+                />
+              </div>
+
+              <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer pt-1">
+                <input
+                  type="checkbox"
+                  checked={props.isRequired !== false}
+                  onChange={(e) => handlePropChange("isRequired", e.target.checked)}
+                  className="rounded text-purple-600 focus:ring-purple-500"
+                />
+                <span>Required Field for Customer Order</span>
+              </label>
+            </div>
+
+            {/* Sample Photo Selector for Admin Design Composition */}
+            <div className="space-y-2 pt-2 border-t border-slate-100">
+              <label className="block text-[11px] font-bold text-slate-800">
+                Sample Default Photo (Design Preview)
+              </label>
+              {props.assetUrl ? (
+                <div className="bg-amber-50/50 p-2.5 rounded-xl border border-amber-200 space-y-2">
+                  <div className="flex items-center gap-3">
+                    <img
+                      src={props.assetUrl}
+                      alt="Uploaded Photo"
+                      className="w-14 h-14 rounded-lg object-cover border border-amber-300 shadow-2xs shrink-0"
+                    />
+
+                    {/* Replace & Delete Buttons */}
+                    <div className="flex items-center gap-2 flex-1">
+                      {/* Replace Button */}
+                      <button
+                        type="button"
+                        onClick={() => onOpenMediaPickerForLayer && onOpenMediaPickerForLayer(selectedLayer.id)}
+                        className="flex-1 py-1.5 px-2 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg font-semibold text-slate-700 flex items-center justify-center gap-1 transition cursor-pointer text-xs"
+                        title="Replace with New Photo"
+                      >
+                        <Upload className="w-3.5 h-3.5 text-amber-600" />
+                        <span>Replace</span>
+                      </button>
+
+                      {/* Delete Button */}
+                      <button
+                        type="button"
+                        onClick={() => handlePropChange("assetUrl", "")}
+                        className="flex-1 py-1.5 px-2 bg-white hover:bg-rose-50 border border-rose-200 rounded-lg font-semibold text-rose-700 flex items-center justify-center gap-1 transition cursor-pointer text-xs"
+                        title="Remove Photo"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                        <span>Delete</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onOpenMediaPickerForLayer && onOpenMediaPickerForLayer(selectedLayer.id)}
+                  className="w-full py-2.5 text-[11px] font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-300 rounded-xl border-dashed flex items-center justify-center gap-1.5 transition cursor-pointer"
+                >
+                  <Upload className="w-4 h-4 text-amber-600" /> Choose Sample Photo
+                </button>
+              )}
+            </div>
+
+            {/* Add / Edit Linked Mask Layer Button */}
+            <div className="pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => onAddMaskLayer && onAddMaskLayer(selectedLayer.id)}
+                className="w-full py-2 px-3 bg-purple-50 hover:bg-purple-100 border border-purple-300 rounded-xl text-purple-900 font-bold text-xs flex items-center justify-center gap-2 transition cursor-pointer"
+              >
+                <Scissors className="w-4 h-4 text-purple-600" />
+                <span>{selectedLayer.maskLayerId ? "🎭 Edit Linked Mask Layer" : "+ Add Mask Layer for Photo Upload"}</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* MASK LAYER PROPERTIES */}
+        {selectedLayer.layerType === "MASK" && (
+          <div className="space-y-3 pt-3 border-t border-purple-200">
+            <div className="bg-purple-50 p-3 rounded-xl border border-purple-200 space-y-3">
+              <label className="block text-[11px] font-bold text-purple-900 flex items-center gap-1.5">
+                <Scissors className="w-4 h-4 text-purple-600 shrink-0" />
+                <span>🎭 LỚP MẶT NẠ CẮT (MASK LAYER)</span>
+              </label>
+              <p className="text-[10px] text-purple-700 leading-tight">
+                Lớp này dùng để làm khung cắt (mask) cho Photo Upload. Hãy chỉnh vị trí X, Y, W, H và hình dạng cắt bên dưới.
+              </p>
+
+              {/* Cutout Shape Selector */}
+              <div>
+                <label className="block text-[10px] font-bold text-purple-800 mb-1">Khung hình dạng Cắt (Mask Cutout Shape)</label>
+                <div className="grid grid-cols-3 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handlePropChange("maskShape", "RECTANGLE")}
+                    className={`py-1.5 text-center text-xs font-semibold rounded-lg border transition cursor-pointer ${
+                      (props.maskShape || "RECTANGLE") === "RECTANGLE"
+                        ? "bg-purple-600 text-white border-purple-600"
+                        : "bg-white text-purple-800 border-purple-200 hover:bg-purple-100/50"
+                    }`}
+                  >
+                    Rect / Square
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePropChange("maskShape", "ROUNDED")}
+                    className={`py-1.5 text-center text-xs font-semibold rounded-lg border transition cursor-pointer ${
+                      props.maskShape === "ROUNDED"
+                        ? "bg-purple-600 text-white border-purple-600"
+                        : "bg-white text-purple-800 border-purple-200 hover:bg-purple-100/50"
+                    }`}
+                  >
+                    Rounded
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePropChange("maskShape", "CIRCLE")}
+                    className={`py-1.5 text-center text-xs font-semibold rounded-lg border transition cursor-pointer ${
+                      props.maskShape === "CIRCLE"
+                        ? "bg-purple-600 text-white border-purple-600"
+                        : "bg-white text-purple-800 border-purple-200 hover:bg-purple-100/50"
+                    }`}
+                  >
+                    Circle
+                  </button>
+                </div>
+              </div>
+
+              {/* Custom Vector / Image Mask Asset */}
+              <div>
+                <label className="block text-[10px] font-bold text-purple-800 mb-1">Custom Vector / PNG Mask File</label>
+                {props.maskAssetUrl ? (
+                  <div className="flex items-center gap-2 bg-white p-2 rounded-lg border border-purple-200">
+                    <img src={props.maskAssetUrl} alt="Mask" className="w-8 h-8 rounded border border-purple-300 object-contain bg-slate-100" />
+                    <span className="text-[10px] truncate font-mono text-purple-900 flex-1">Custom Mask Asset</span>
+                    <button
+                      type="button"
+                      onClick={() => handlePropChange("maskAssetUrl", "")}
+                      className="text-xs text-rose-600 hover:underline font-bold"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onOpenMediaPickerForLayer && onOpenMediaPickerForLayer(selectedLayer.id)}
+                    className="w-full py-2 text-xs font-semibold text-purple-700 bg-white border border-purple-300 border-dashed rounded-lg hover:bg-purple-100/50 flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Upload className="w-3.5 h-3.5" /> Choose Custom Mask PNG/SVG
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
         )}
 
@@ -375,7 +611,17 @@ export default function StudioPropertyPanel({
               <input
                 type="number"
                 value={selectedLayer.width}
-                onChange={(e) => onUpdateLayer(selectedLayer.id, { width: Number(e.target.value) })}
+                onChange={(e) => {
+                  const newW = Number(e.target.value);
+                  const isImageLayer = ["ASSET", "IMAGE", "OVERLAY"].includes(selectedLayer.layerType);
+                  if (isImageLayer) {
+                    const ratio = props.aspectRatio || (selectedLayer.width / selectedLayer.height) || 1;
+                    const newH = Math.max(1, Math.round(newW / ratio));
+                    onUpdateLayer(selectedLayer.id, { width: newW, height: newH });
+                  } else {
+                    onUpdateLayer(selectedLayer.id, { width: newW });
+                  }
+                }}
                 className="w-full border border-slate-300 rounded px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none font-mono"
               />
             </div>
@@ -384,7 +630,17 @@ export default function StudioPropertyPanel({
               <input
                 type="number"
                 value={selectedLayer.height}
-                onChange={(e) => onUpdateLayer(selectedLayer.id, { height: Number(e.target.value) })}
+                onChange={(e) => {
+                  const newH = Number(e.target.value);
+                  const isImageLayer = ["ASSET", "IMAGE", "OVERLAY"].includes(selectedLayer.layerType);
+                  if (isImageLayer) {
+                    const ratio = props.aspectRatio || (selectedLayer.width / selectedLayer.height) || 1;
+                    const newW = Math.max(1, Math.round(newH * ratio));
+                    onUpdateLayer(selectedLayer.id, { width: newW, height: newH });
+                  } else {
+                    onUpdateLayer(selectedLayer.id, { height: newH });
+                  }
+                }}
                 className="w-full border border-slate-300 rounded px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none font-mono"
               />
             </div>

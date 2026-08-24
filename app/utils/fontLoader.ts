@@ -8,73 +8,94 @@ export interface FontItem {
   isDefault?: boolean;
 }
 
+const loadedFontsSet = new Set<string>();
+
 /**
- * Dynamically injects Google Fonts <link> tags and Custom Font @font-face rules into document <head>
+ * Loads a single font asynchronously into the browser document.fonts system
  */
-export function injectFontStylesheets(fonts: FontItem[]) {
-  if (typeof document === "undefined" || !Array.isArray(fonts)) return;
+export async function loadSingleFontOnDemand(
+  fontOrFamily: FontItem | string,
+  availableFonts: FontItem[] = []
+): Promise<boolean> {
+  if (typeof document === "undefined" || !fontOrFamily) return true;
 
-  const googleFamilies: string[] = [];
+  let fontFamily = "";
+  let fontItem: FontItem | undefined;
 
-  fonts.forEach((font) => {
-    if (font.fontType === "GOOGLE" && font.family) {
-      // Format Google Font family name for Google Fonts API
-      const formatted = font.family.trim().replace(/\s+/g, "+");
-      if (!googleFamilies.includes(formatted)) {
-        googleFamilies.push(formatted);
-      }
-    } else if (font.fontType === "CUSTOM" && font.sourceUrl) {
-      // Inject @font-face CSS for Custom Font (supporting both normal and bold)
-      const styleId = `custom-font-style-${font.id}`;
-      if (!document.getElementById(styleId)) {
-        const styleEl = document.createElement("style");
-        styleEl.id = styleId;
-        styleEl.textContent = `
-          @font-face {
-            font-family: '${font.family}';
-            src: url('${font.sourceUrl}');
-            font-weight: 400;
-            font-style: normal;
-            font-display: swap;
-          }
-          @font-face {
-            font-family: '${font.family}';
-            src: url('${font.sourceUrl}');
-            font-weight: 700;
-            font-style: normal;
-            font-display: swap;
-          }
-        `;
-        document.head.appendChild(styleEl);
-      }
+  if (typeof fontOrFamily === "string") {
+    fontFamily = fontOrFamily.trim();
+    fontItem = availableFonts.find(
+      (f) => f.family.toLowerCase() === fontFamily.toLowerCase()
+    );
+  } else {
+    fontItem = fontOrFamily;
+    fontFamily = fontItem.family.trim();
+  }
 
-      // Explicitly load FontFace object into document.fonts for HTML5 Canvas compatibility
-      if (typeof FontFace !== "undefined") {
-        try {
-          const fontFace = new FontFace(font.family, `url("${font.sourceUrl}")`);
-          fontFace.load().then((loadedFace) => {
-            document.fonts.add(loadedFace);
-          }).catch((err) => {
-            console.warn(`Font load warning for ${font.family}:`, err);
-          });
-        } catch (e) {}
-      }
+  if (!fontFamily) return true;
+
+  // 1. Inject font stylesheet or @font-face rule
+  if (fontItem && fontItem.fontType === "CUSTOM" && fontItem.sourceUrl) {
+    const styleId = `custom-font-${fontItem.id || fontFamily.replace(/\s+/g, "-")}`;
+    if (!document.getElementById(styleId)) {
+      const styleEl = document.createElement("style");
+      styleEl.id = styleId;
+      styleEl.textContent = `
+        @font-face {
+          font-family: '${fontFamily}';
+          src: url('${fontItem.sourceUrl}');
+          font-weight: 100 900;
+          font-style: normal;
+          font-display: swap;
+        }
+      `;
+      document.head.appendChild(styleEl);
     }
-  });
-
-  if (googleFamilies.length > 0) {
-    const googleFontUrl = `https://fonts.googleapis.com/css2?${googleFamilies
-      .map((f) => `family=${f}:ital,wght@0,400;0,700;1,400;1,700`)
-      .join("&")}&display=swap`;
-
-    const linkId = "google-fonts-dynamic-stylesheet";
-    let linkEl = document.getElementById(linkId) as HTMLLinkElement | null;
-    if (!linkEl) {
-      linkEl = document.createElement("link");
+  } else {
+    // Default / Google Font
+    const formatted = fontFamily.replace(/\s+/g, "+");
+    const linkId = `google-font-${formatted}`;
+    if (!document.getElementById(linkId)) {
+      const linkEl = document.createElement("link");
       linkEl.id = linkId;
       linkEl.rel = "stylesheet";
+      linkEl.href = `https://fonts.googleapis.com/css2?family=${formatted}&display=swap`;
       document.head.appendChild(linkEl);
     }
-    linkEl.href = googleFontUrl;
   }
+
+  // 2. Wait for document.fonts to resolve font face
+  if (document.fonts) {
+    try {
+      await document.fonts.load(`16px "${fontFamily}"`);
+      await document.fonts.ready;
+    } catch (e) {
+      console.warn(`Font load load() warning for ${fontFamily}:`, e);
+    }
+  }
+
+  loadedFontsSet.add(fontFamily);
+
+  // 3. Dispatch global ready notification
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent("studio:font-loaded", { detail: { fontFamily } })
+    );
+  }
+
+  return true;
+}
+
+export function injectFontStylesheets(fonts: FontItem[]) {
+  if (typeof document === "undefined" || !Array.isArray(fonts)) return;
+  fonts.forEach((font) => {
+    loadSingleFontOnDemand(font, fonts).catch(() => {});
+  });
+}
+
+export async function ensureFontLoaded(
+  fontFamily: string,
+  availableFonts: FontItem[] = []
+): Promise<boolean> {
+  return loadSingleFontOnDemand(fontFamily, availableFonts);
 }

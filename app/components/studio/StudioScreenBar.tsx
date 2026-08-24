@@ -11,6 +11,8 @@ import {
   SlidersHorizontal,
   Image as ImageIcon,
   GripVertical,
+  Undo2,
+  Redo2,
 } from "lucide-react";
 import { StudioFieldItem } from "./StudioFieldPanel";
 
@@ -34,6 +36,10 @@ interface StudioScreenBarProps {
   activeScreenId: string;
   screenFieldConfig: StudioScreenFieldConfig;
   fields: StudioFieldItem[];
+  canUndo?: boolean;
+  canRedo?: boolean;
+  onUndo?: () => void;
+  onRedo?: () => void;
   onSelectScreen: (screenId: string) => void;
   onAddScreen: () => void;
   onUpdateScreen: (screenId: string, updatedProps: Partial<StudioScreenItem>) => void;
@@ -50,6 +56,10 @@ export default function StudioScreenBar({
   activeScreenId,
   screenFieldConfig,
   fields,
+  canUndo = false,
+  canRedo = false,
+  onUndo,
+  onRedo,
   onSelectScreen,
   onAddScreen,
   onUpdateScreen,
@@ -62,6 +72,7 @@ export default function StudioScreenBar({
 }: StudioScreenBarProps) {
   const [showGlobalConfigModal, setShowGlobalConfigModal] = useState(false);
   const [showScreenModal, setShowScreenModal] = useState(false);
+  const [openContextMenuScreenId, setOpenContextMenuScreenId] = useState<string | null>(null);
   const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
 
   const isMultiScreenEnabled = screenFieldConfig.enableScreenField === true;
@@ -92,19 +103,19 @@ export default function StudioScreenBar({
   };
 
   return (
-    <div className="bg-white text-slate-800 px-4 py-2 flex items-center justify-between border-b border-slate-200 shadow-2xs z-20 shrink-0 select-none">
+    <div className="bg-transparent text-slate-800 px-1 py-0 flex items-center justify-between z-50 relative shrink-0 select-none border-none shadow-none overflow-visible">
       {/* Left: Screen Header & Config Icon & Screen Tabs */}
-      <div className="flex items-center gap-2 overflow-x-auto max-w-[80%] py-0.5">
-        {/* Title */}
-        <div className="flex items-center gap-1.5 text-xs font-bold text-slate-700 uppercase tracking-wider shrink-0">
-          <Monitor className="w-4 h-4 text-blue-600" /> Screens ({displayedScreens.length}):
+      <div className="flex items-center gap-1.5 py-0.5 overflow-visible">
+        {/* Monitor Icon */}
+        <div className="flex items-center gap-1 shrink-0 mr-0.5" title={`Screens (${displayedScreens.length})`}>
+          <Monitor className="w-4 h-4 text-blue-600" />
         </div>
 
         {/* COMPACT ICON BUTTON (Placed right next to SCREENS title) */}
         <button
           type="button"
           onClick={() => setShowGlobalConfigModal(true)}
-          className={`p-1.5 rounded-lg border transition cursor-pointer flex items-center gap-1.5 text-xs font-bold shrink-0 ${
+          className={`px-1.5 py-0.5 rounded-md border transition cursor-pointer flex items-center gap-1 text-[11px] font-bold shrink-0 ${
             isMultiScreenEnabled
               ? "bg-blue-600 text-white border-blue-600 hover:bg-blue-700 shadow-2xs"
               : "bg-slate-100 text-slate-600 hover:bg-slate-200 border-slate-300"
@@ -115,13 +126,13 @@ export default function StudioScreenBar({
               : "Multi-Screen Field is DISABLED (Click to enable)"
           }
         >
-          <SlidersHorizontal className="w-3.5 h-3.5" />
-          <span className="text-[10px] font-extrabold px-1 rounded bg-white/20">
+          <SlidersHorizontal className="w-3 h-3" />
+          <span className="text-[9px] font-extrabold px-1 rounded bg-white/20">
             {isMultiScreenEnabled ? "ON" : "OFF"}
           </span>
         </button>
 
-        <div className="w-[1px] h-4 bg-slate-200 mx-1 shrink-0" />
+        <div className="w-[1px] h-3.5 bg-slate-200 mx-0.5 shrink-0" />
 
         {/* Screen Tabs Bar (Supports Drag & Drop Re-ordering when Multi-Screen is ON) */}
         {displayedScreens.map((scr, idx) => {
@@ -136,7 +147,7 @@ export default function StudioScreenBar({
               onDragOver={(e) => handleDragOver(e, idx)}
               onDragEnd={handleDragEnd}
               onClick={() => onSelectScreen(scr.id)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition shrink-0 border ${
+              className={`flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-bold transition shrink-0 border ${
                 isDraggingThis ? "opacity-40 border-dashed border-blue-400 bg-blue-50" : ""
               } ${
                 isActive
@@ -151,21 +162,84 @@ export default function StudioScreenBar({
               <span>{scr.name || `Screen ${idx + 1}`}</span>
 
               {scr.bgUrl && (
-                <span className="w-2 h-2 rounded-full bg-emerald-500" title="Has Background Image" />
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" title="Has Background Image" />
               )}
 
               {isActive && (
-                <button
-                  type="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setShowScreenModal(true);
-                  }}
-                  className="p-0.5 hover:bg-blue-200/60 rounded transition text-blue-600 cursor-pointer"
-                  title="Screen Settings (Background & Icon)"
-                >
-                  <Settings className="w-3.5 h-3.5" />
-                </button>
+                <div className="relative shrink-0">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setOpenContextMenuScreenId((prev) => (prev === scr.id ? null : scr.id));
+                    }}
+                    className={`p-0.5 rounded transition cursor-pointer ${
+                      openContextMenuScreenId === scr.id
+                        ? "bg-blue-200 text-blue-800"
+                        : "hover:bg-blue-200/60 text-blue-600"
+                    }`}
+                    title="Screen Options (Settings, Duplicate, Delete)"
+                  >
+                    <Settings className="w-3 h-3" />
+                  </button>
+
+                  {/* SCREEN CONTEXT MENU DROPDOWN */}
+                  {openContextMenuScreenId === scr.id && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-[90]"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setOpenContextMenuScreenId(null);
+                        }}
+                      />
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        className="absolute top-full left-0 mt-1 z-[100] bg-white border border-slate-200 rounded-xl shadow-2xl py-1 min-w-[150px] text-[11px] font-semibold text-slate-700 animate-in fade-in zoom-in-95 duration-100"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOpenContextMenuScreenId(null);
+                            setShowScreenModal(true);
+                          }}
+                          className="w-full px-2.5 py-1.5 flex items-center gap-2 hover:bg-slate-50 text-slate-700 text-left transition cursor-pointer"
+                        >
+                          <Settings className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                          <span>Screen Settings</span>
+                        </button>
+
+                        {isMultiScreenEnabled && onDuplicateScreen && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenContextMenuScreenId(null);
+                              onDuplicateScreen(scr.id);
+                            }}
+                            className="w-full px-2.5 py-1.5 flex items-center gap-2 hover:bg-blue-50 text-blue-700 text-left transition cursor-pointer border-t border-slate-100"
+                          >
+                            <Copy className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                            <span>Duplicate Screen</span>
+                          </button>
+                        )}
+
+                        {isMultiScreenEnabled && screens.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenContextMenuScreenId(null);
+                              onDeleteScreen(scr.id);
+                            }}
+                            className="w-full px-2.5 py-1.5 flex items-center gap-2 hover:bg-red-50 text-red-600 text-left transition cursor-pointer border-t border-slate-100"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-red-500 shrink-0" />
+                            <span>Delete Screen</span>
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
               )}
             </div>
           );
@@ -176,35 +250,9 @@ export default function StudioScreenBar({
           <button
             type="button"
             onClick={onAddScreen}
-            className="flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-700 bg-white hover:bg-blue-50 border border-blue-200 px-3 py-1.5 rounded-lg transition shrink-0 cursor-pointer shadow-2xs"
+            className="flex items-center gap-1 text-[11px] font-bold text-blue-600 hover:text-blue-700 bg-white hover:bg-blue-50 border border-blue-200 px-2 py-0.5 rounded-md transition shrink-0 cursor-pointer shadow-2xs"
           >
-            <Plus className="w-3.5 h-3.5" /> Add Screen
-          </button>
-        )}
-      </div>
-
-      {/* Right: Screen Action Buttons (Duplicate / Delete) */}
-      <div className="flex items-center gap-2 shrink-0">
-        {isMultiScreenEnabled && onDuplicateScreen && activeScreen && (
-          <button
-            type="button"
-            onClick={() => onDuplicateScreen(activeScreen.id)}
-            className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200 transition cursor-pointer shadow-2xs"
-            title="Duplicate Screen (Copy Layers & Fields)"
-          >
-            <Copy className="w-3.5 h-3.5 text-blue-600" />
-            <span>Duplicate</span>
-          </button>
-        )}
-
-        {isMultiScreenEnabled && screens.length > 1 && activeScreen && (
-          <button
-            type="button"
-            onClick={() => onDeleteScreen(activeScreen.id)}
-            className="text-slate-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-red-50 transition cursor-pointer"
-            title="Delete Active Screen"
-          >
-            <Trash2 className="w-4 h-4" />
+            <Plus className="w-3 h-3" /> Add Screen
           </button>
         )}
       </div>

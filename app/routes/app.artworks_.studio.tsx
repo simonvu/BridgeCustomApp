@@ -1,23 +1,27 @@
 import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useNavigate, useSearchParams } from "@remix-run/react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   ArrowLeft,
   Save,
   Eye,
+  EyeOff,
   Sliders,
   GitBranch,
   Check,
   ZoomIn,
   ZoomOut,
   RotateCcw,
+  Undo2,
+  Redo2,
   Grid,
   Settings,
 } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import prisma from "../db.server";
 import { requireTeamUserId } from "../services/auth.server";
-import StudioCanvas, { CanvasLayerItem, generateScreenThumbnailDataUrl } from "../components/studio/StudioCanvas";
+import StudioCanvas, { CanvasLayerItem, generateScreenThumbnailDataUrl, getActiveFabricCanvas } from "../components/studio/StudioCanvas";
+import StudioPhotoUploadModal, { PhotoCustomizationData } from "../components/studio/StudioPhotoUploadModal";
 import StudioLayerPanel from "../components/studio/StudioLayerPanel";
 import StudioFieldPanel, { StudioFieldItem } from "../components/studio/StudioFieldPanel";
 import StudioPropertyPanel from "../components/studio/StudioPropertyPanel";
@@ -222,7 +226,16 @@ export default function ArtworkStudioRoute() {
     ];
   });
 
-  const [activeScreenId, setActiveScreenId] = useState<string>("screen_1");
+  const [activeScreenId, setActiveScreenId] = useState<string>(() => screens[0]?.id || "screen_1");
+
+  // Ensure activeScreenId ALWAYS defaults to the FIRST screen in the list on initial load / reload
+  useEffect(() => {
+    if (screens && screens.length > 0) {
+      if (!activeScreenId || !screens.some((s) => s.id === activeScreenId)) {
+        setActiveScreenId(screens[0].id);
+      }
+    }
+  }, [artworkData]);
 
   // Get Active Screen's Data
   const activeScreen = screens.find((s) => s.id === activeScreenId) || screens[0];
@@ -241,6 +254,29 @@ export default function ArtworkStudioRoute() {
   const [niche, setNiche] = useState<string>(artworkData?.niche || "General");
   const [category, setCategory] = useState<string>(artworkData?.category || "General");
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+
+  // Photo Upload Customer Customization Modal State
+  const [photoUploadModalOpen, setPhotoUploadModalOpen] = useState(false);
+  const [photoUploadTargetLayerId, setPhotoUploadTargetLayerId] = useState<string | null>(null);
+
+  const handleOpenPhotoUploadModal = (layerId: string) => {
+    setPhotoUploadTargetLayerId(layerId);
+    setPhotoUploadModalOpen(true);
+  };
+
+  const handleApplyPhotoCustomization = (data: PhotoCustomizationData) => {
+    if (!photoUploadTargetLayerId) return;
+    const targetLayer = layers.find((l) => l.id === photoUploadTargetLayerId);
+    if (!targetLayer) return;
+
+    handleUpdateLayer(photoUploadTargetLayerId, {
+      properties: {
+        ...(targetLayer.properties || {}),
+        assetUrl: data.imageUrl,
+        photoCustomization: data,
+      },
+    });
+  };
 
   // Dynamic Niche & Category Option Lists (Strictly loaded from Database)
   const [nicheList, setNicheList] = useState<string[]>(() => {
@@ -282,25 +318,146 @@ export default function ArtworkStudioRoute() {
     setIsAddingCategory(false);
   };
 
+  // HISTORY UNDO / REDO SYSTEM
+  const [history, setHistory] = useState<StudioScreenItem[][]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number>(-1);
+  const isUndoRedoActionRef = useRef(false);
+
+  const historyRef = useRef<StudioScreenItem[][]>(history);
+  const historyIndexRef = useRef<number>(historyIndex);
+
+  useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
+
+  useEffect(() => {
+    historyIndexRef.current = historyIndex;
+  }, [historyIndex]);
+
+  // Initialize history snapshot with initial screens
+  useEffect(() => {
+    if (historyRef.current.length === 0 && screens.length > 0) {
+      const initialSnapshot = [JSON.parse(JSON.stringify(screens))];
+      setHistory(initialSnapshot);
+      setHistoryIndex(0);
+    }
+  }, [screens]);
+
+  // Push snapshot into history stack
+  const pushHistorySnapshot = (newScreens: StudioScreenItem[]) => {
+    if (isUndoRedoActionRef.current) return;
+    const cloned = JSON.parse(JSON.stringify(newScreens));
+    const currentIdx = historyIndexRef.current;
+    const currentHistory = historyRef.current;
+
+    const sliced = currentHistory.slice(0, currentIdx + 1);
+    const updated = [...sliced, cloned];
+    if (updated.length > 50) updated.shift();
+
+    setHistory(updated);
+    setHistoryIndex(updated.length - 1);
+  };
+
+  const handleUndo = () => {
+    const currentIdx = historyIndexRef.current;
+    const currentHistory = historyRef.current;
+    if (currentIdx <= 0 || currentHistory.length === 0) return;
+
+    isUndoRedoActionRef.current = true;
+    const targetIdx = currentIdx - 1;
+    const previousSnapshot = JSON.parse(JSON.stringify(currentHistory[targetIdx])) as StudioScreenItem[];
+    setScreens(previousSnapshot);
+    setHistoryIndex(targetIdx);
+
+    // Ensure activeScreenId is valid in the restored screens snapshot
+    if (previousSnapshot.length > 0) {
+      const exists = previousSnapshot.some((s) => s.id === activeScreenId);
+      if (!exists) {
+        setActiveScreenId(previousSnapshot[0].id);
+      }
+    }
+
+    setTimeout(() => {
+      isUndoRedoActionRef.current = false;
+    }, 150);
+  };
+
+  const handleRedo = () => {
+    const currentIdx = historyIndexRef.current;
+    const currentHistory = historyRef.current;
+    if (currentIdx >= currentHistory.length - 1) return;
+
+    isUndoRedoActionRef.current = true;
+    const targetIdx = currentIdx + 1;
+    const nextSnapshot = JSON.parse(JSON.stringify(currentHistory[targetIdx])) as StudioScreenItem[];
+    setScreens(nextSnapshot);
+    setHistoryIndex(targetIdx);
+
+    // Ensure activeScreenId is valid in the restored screens snapshot
+    if (nextSnapshot.length > 0) {
+      const exists = nextSnapshot.some((s) => s.id === activeScreenId);
+      if (!exists) {
+        setActiveScreenId(nextSnapshot[0].id);
+      }
+    }
+
+    setTimeout(() => {
+      isUndoRedoActionRef.current = false;
+    }, 150);
+  };
+
+  // Keyboard shortcut listener for Undo & Redo (Cmd/Ctrl + Z, Cmd/Ctrl + Shift + Z, Cmd/Ctrl + Y)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const targetTag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+      if (["input", "textarea", "select"].includes(targetTag)) return;
+
+      const isMac = navigator.platform.toUpperCase().indexOf("MAC") >= 0;
+      const isCmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
+
+      if (isCmdOrCtrl) {
+        if (e.key.toLowerCase() === "z") {
+          if (e.shiftKey) {
+            e.preventDefault();
+            handleRedo();
+          } else {
+            e.preventDefault();
+            handleUndo();
+          }
+        } else if (e.key.toLowerCase() === "y") {
+          e.preventDefault();
+          handleRedo();
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   // Helper Mutators for Active Screen's Layers & Fields
   const setLayers = (updateFn: (prevLayers: CanvasLayerItem[]) => CanvasLayerItem[]) => {
-    setScreens((prevScreens) =>
-      prevScreens.map((scr) =>
+    setScreens((prevScreens) => {
+      const nextScreens = prevScreens.map((scr) =>
         scr.id === activeScreenId
           ? { ...scr, layers: updateFn(scr.layers || []) }
           : scr
-      )
-    );
+      );
+      pushHistorySnapshot(nextScreens);
+      return nextScreens;
+    });
   };
 
   const setFields = (updateFn: (prevFields: StudioFieldItem[]) => StudioFieldItem[]) => {
-    setScreens((prevScreens) =>
-      prevScreens.map((scr) =>
+    setScreens((prevScreens) => {
+      const nextScreens = prevScreens.map((scr) =>
         scr.id === activeScreenId
           ? { ...scr, fields: updateFn(scr.fields || []) }
           : scr
-      )
-    );
+      );
+      pushHistorySnapshot(nextScreens);
+      return nextScreens;
+    });
   };
 
   // Screen Management Handlers
@@ -315,7 +472,9 @@ export default function ArtworkStudioRoute() {
       layers: [],
       fields: [],
     };
-    setScreens((prev) => [...prev, newScreen]);
+    const nextScreens = [...screens, newScreen];
+    setScreens(nextScreens);
+    pushHistorySnapshot(nextScreens);
     setActiveScreenId(newScreenId);
   };
 
@@ -339,21 +498,25 @@ export default function ArtworkStudioRoute() {
       })),
     };
 
-    setScreens((prev) => [...prev, duplicatedScreen]);
+    const nextScreens = [...screens, duplicatedScreen];
+    setScreens(nextScreens);
+    pushHistorySnapshot(nextScreens);
     setActiveScreenId(duplicatedScreenId);
   };
 
   const handleUpdateScreen = (screenId: string, updatedProps: Partial<StudioScreenItem>) => {
-    setScreens((prev) =>
-      prev.map((s) => (s.id === screenId ? { ...s, ...updatedProps } : s))
-    );
+    const nextScreens = screens.map((s) => (s.id === screenId ? { ...s, ...updatedProps } : s));
+    setScreens(nextScreens);
+    pushHistorySnapshot(nextScreens);
   };
 
   const handleDeleteScreen = (screenId: string) => {
     if (screens.length <= 1) return;
-    setScreens((prev) => prev.filter((s) => s.id !== screenId));
+    const remaining = screens.filter((s) => s.id !== screenId);
+    setScreens(remaining);
+    pushHistorySnapshot(remaining);
+
     if (activeScreenId === screenId) {
-      const remaining = screens.filter((s) => s.id !== screenId);
       setActiveScreenId(remaining[0]?.id || "screen_1");
     }
   };
@@ -391,6 +554,7 @@ export default function ArtworkStudioRoute() {
 
   const handleReorderScreens = (reorderedScreens: StudioScreenItem[]) => {
     setScreens(reorderedScreens);
+    pushHistorySnapshot(reorderedScreens);
   };
 
   // Save Artwork Handler
@@ -404,11 +568,13 @@ export default function ArtworkStudioRoute() {
 
       if (defaultScreen) {
         try {
+          const activeFc = getActiveFabricCanvas();
           compositeThumbnail = await generateScreenThumbnailDataUrl(
             widthPx,
             heightPx,
             defaultScreen.layers || [],
-            screenBgUrl
+            screenBgUrl,
+            activeFc
           );
         } catch (e) {
           console.warn("Failed to generate composite thumbnail:", e);
@@ -463,20 +629,59 @@ export default function ArtworkStudioRoute() {
     const newZ = layers.length > 0 ? Math.max(...layers.map((l) => l.zIndex)) + 1 : 0;
     const newLayer: CanvasLayerItem = {
       id: `layer_${Date.now()}`,
-      name: `New ${type.toLowerCase()} layer`,
+      name: type === "ASSET" ? "Image Layer" : type === "PHOTO_UPLOAD" ? "Photo Upload Area" : `New ${type.toLowerCase()} layer`,
       layerType: type,
       zIndex: newZ,
-      posX: widthPx / 4,
-      posY: heightPx / 4,
+      posX: Math.round(widthPx / 4),
+      posY: Math.round(heightPx / 4),
       width: 300,
       height: 300,
       rotation: 0,
       isVisible: true,
       isLocked: false,
-      properties: type === "TEXT" ? { text: "Sample Text", fontSize: 36, color: "#1e293b", align: "center" } : {},
+      properties: type === "TEXT"
+        ? { text: "Sample Text", fontSize: 36, color: "#1e293b", align: "center" }
+        : type === "ASSET"
+        ? { opacity: 1 }
+        : type === "PHOTO_UPLOAD"
+        ? {
+            fieldLabel: "Upload Your Photo",
+            helpText: "High resolution JPG or PNG recommended",
+            isRequired: true,
+            maskShape: "RECTANGLE",
+            enableZoom: true,
+            enableRotate: true,
+            enableFlip: true,
+            enableFilters: true,
+          }
+        : {},
     };
     setLayers((prev) => [...prev, newLayer]);
     setSelectedLayerId(newLayer.id);
+
+    // If adding an Image layer (ASSET), immediately open the Media Library modal!
+    if (type === "ASSET") {
+      handleOpenMediaPickerForLayer(newLayer.id);
+    }
+  };
+
+  const handleDuplicateLayer = (layerId: string) => {
+    const targetLayer = layers.find((l) => l.id === layerId);
+    if (!targetLayer) return;
+
+    const maxZ = layers.length > 0 ? Math.max(...layers.map((l) => l.zIndex)) : 0;
+    const duplicatedLayer: CanvasLayerItem = {
+      ...targetLayer,
+      id: `layer_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      name: `${targetLayer.name} (Copy)`,
+      posX: targetLayer.posX + 20,
+      posY: targetLayer.posY + 20,
+      zIndex: maxZ + 1,
+      properties: JSON.parse(JSON.stringify(targetLayer.properties || {})),
+    };
+
+    setLayers((prev) => [...prev, duplicatedLayer]);
+    setSelectedLayerId(duplicatedLayer.id);
   };
 
   const handleUpdateLayer = (layerId: string, updatedProps: Partial<CanvasLayerItem>) => {
@@ -485,10 +690,113 @@ export default function ArtworkStudioRoute() {
     );
   };
 
+  const handleAddMaskLayer = (photoLayerId: string) => {
+    const photoLayer = layers.find((l) => l.id === photoLayerId);
+    if (!photoLayer) return;
+
+    if (photoLayer.maskLayerId) {
+      setSelectedLayerId(photoLayer.maskLayerId);
+      return;
+    }
+
+    const newMaskId = `mask_${Date.now()}`;
+    const maxZ = layers.length > 0 ? Math.max(...layers.map((l) => l.zIndex)) : 0;
+
+    const newMaskLayer: CanvasLayerItem = {
+      id: newMaskId,
+      name: `Mask for ${photoLayer.name}`,
+      layerType: "MASK",
+      zIndex: maxZ + 1,
+      posX: photoLayer.posX,
+      posY: photoLayer.posY,
+      width: photoLayer.width,
+      height: photoLayer.height,
+      rotation: photoLayer.rotation,
+      isVisible: true,
+      isLocked: false,
+      parentPhotoUploadId: photoLayerId,
+      properties: {
+        maskShape: "RECTANGLE",
+        rx: 4,
+        ry: 4,
+      },
+    };
+
+    setLayers((prev) =>
+      prev.map((l) => (l.id === photoLayerId ? { ...l, maskLayerId: newMaskId } : l)).concat(newMaskLayer)
+    );
+    setSelectedLayerId(newMaskId);
+  };
+
   const handleDeleteLayer = (layerId: string) => {
-    setLayers((prev) => prev.filter((l) => l.id !== layerId));
+    setLayers((prev) => {
+      const targetLayer = prev.find((l) => l.id === layerId);
+      let updated = prev.filter((l) => l.id !== layerId);
+
+      if (targetLayer?.maskLayerId) {
+        updated = updated.filter((l) => l.id !== targetLayer.maskLayerId);
+      }
+      if (targetLayer?.parentPhotoUploadId) {
+        updated = updated.map((l) =>
+          l.id === targetLayer.parentPhotoUploadId ? { ...l, maskLayerId: undefined } : l
+        );
+      }
+      return updated;
+    });
     if (selectedLayerId === layerId) setSelectedLayerId(null);
   };
+
+  // Keyboard Shortcuts & Nudge Handler (Arrow Keys: 1px/10px nudge, Delete/Backspace: delete layer)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignore keyboard shortcuts if focus is inside form input elements
+      const target = e.target as HTMLElement;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      if (!selectedLayerId) return;
+
+      const isArrowKey = [
+        "ArrowUp",
+        "ArrowDown",
+        "ArrowLeft",
+        "ArrowRight",
+      ].includes(e.key);
+
+      if (isArrowKey) {
+        e.preventDefault();
+        const step = e.shiftKey ? 10 : 1;
+
+        setLayers((prevLayers) =>
+          prevLayers.map((layer) => {
+            if (layer.id !== selectedLayerId || layer.isLocked) return layer;
+            let { posX, posY } = layer;
+            if (e.key === "ArrowUp") posY -= step;
+            if (e.key === "ArrowDown") posY += step;
+            if (e.key === "ArrowLeft") posX -= step;
+            if (e.key === "ArrowRight") posX += step;
+            return { ...layer, posX, posY };
+          })
+        );
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        const targetLayer = layers.find((l) => l.id === selectedLayerId);
+        if (targetLayer && !targetLayer.isLocked) {
+          e.preventDefault();
+          handleDeleteLayer(selectedLayerId);
+        }
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedLayerId, layers]);
 
   // Field Handlers
   const handleAddField = (fieldType: StudioFieldItem["fieldType"]) => {
@@ -531,8 +839,8 @@ export default function ArtworkStudioRoute() {
       zIndex: newZ,
       posX: widthPx / 4,
       posY: heightPx / 4,
-      width: 350,
-      height: 250,
+      width: layerType === "TEXT" ? 250 : 350,
+      height: layerType === "TEXT" ? 50 : 250,
       rotation: 0,
       isVisible: true,
       isLocked: false,
@@ -679,9 +987,52 @@ export default function ArtworkStudioRoute() {
           });
         }
       } else {
-        handleUpdateLayer(pickerTarget.layerId, {
-          properties: { ...currentProps, assetUrl: fileUrl },
-        });
+        // Preload image to calculate natural aspect ratio and 50% artwork max size limit
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.src = fileUrl;
+        img.onload = () => {
+          const naturalW = img.naturalWidth || 300;
+          const naturalH = img.naturalHeight || 300;
+          const aspectRatio = naturalW / naturalH;
+
+          // Max allowed dimensions: 50% of artwork dimensions
+          const maxW = widthPx * 0.5;
+          const maxH = heightPx * 0.5;
+
+          let calcW = Math.min(naturalW, maxW);
+          let calcH = calcW / aspectRatio;
+
+          if (calcH > maxH) {
+            calcH = maxH;
+            calcW = calcH * aspectRatio;
+          }
+
+          calcW = Math.round(calcW);
+          calcH = Math.round(calcH);
+
+          const posX = Math.round((widthPx - calcW) / 2);
+          const posY = Math.round((heightPx - calcH) / 2);
+
+          handleUpdateLayer(pickerTarget.layerId!, {
+            width: calcW,
+            height: calcH,
+            posX,
+            posY,
+            properties: {
+              ...currentProps,
+              assetUrl: fileUrl,
+              aspectRatio,
+              naturalWidth: naturalW,
+              naturalHeight: naturalH,
+            },
+          });
+        };
+        img.onerror = () => {
+          handleUpdateLayer(pickerTarget.layerId!, {
+            properties: { ...currentProps, assetUrl: fileUrl },
+          });
+        };
       }
     } else if (pickerTarget.type === "OPTION" && pickerTarget.fieldId && pickerTarget.optionIndex !== undefined) {
       const field = fields.find((f) => f.id === pickerTarget.fieldId);
@@ -710,134 +1061,19 @@ export default function ArtworkStudioRoute() {
   return (
     <DashboardLayout currentUser={currentUser}>
       <div className="flex flex-col h-[calc(100vh-64px)] min-h-[650px] overflow-hidden bg-slate-100">
-        {/* Top Navigation Bar */}
-        <div className="bg-white border-b border-slate-200 px-4 py-2.5 flex items-center justify-between shrink-0 shadow-xs z-30">
-          <div className="flex items-center gap-3 min-w-0">
-            <button
-              onClick={() => navigate("/app/artworks")}
-              className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-600 transition cursor-pointer"
-              title="Back to Artworks"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-2 min-w-0">
-              <input
-                type="text"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="font-bold text-slate-900 text-sm bg-transparent hover:bg-slate-50 border border-transparent hover:border-slate-300 focus:border-blue-500 rounded px-2 py-1 focus:outline-none truncate"
-                placeholder="Artwork Title"
-              />
-              <span className="text-xs text-slate-400 font-mono hidden sm:inline">
-                ({widthPx}×{heightPx}px)
-              </span>
-
-              <button
-                type="button"
-                onClick={() => setSettingsModalOpen(true)}
-                className="flex items-center gap-1 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 hover:text-slate-900 border border-slate-200 px-2 py-1 rounded-lg transition cursor-pointer shrink-0"
-                title="Configure Artwork Settings, Niche, Category & Canvas Dimensions"
-              >
-                <Settings className="w-3.5 h-3.5 text-slate-500" />
-                <span>Settings</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Top Actions */}
-          <div className="flex items-center gap-2">
-            {/* Top Header Zoom & Grid Controls Bar */}
-            <div className="flex items-center gap-1 bg-slate-100/90 border border-slate-200 shadow-2xs rounded-lg p-1 text-xs text-slate-700 font-medium mr-2">
-              <button
-                type="button"
-                onClick={() => setShowGrid((g) => !g)}
-                className={`p-1 flex items-center gap-1 rounded transition cursor-pointer text-xs font-semibold px-2 py-0.5 ${
-                  showGrid
-                    ? "bg-blue-600 text-white shadow-2xs"
-                    : "hover:bg-slate-200 text-slate-600"
-                }`}
-                title={showGrid ? "Hide Alignment Grid" : "Show Alignment Grid"}
-              >
-                <Grid className="w-3.5 h-3.5" />
-                <span>Grid {showGrid ? "ON" : "OFF"}</span>
-              </button>
-
-              <div className="w-[1px] h-4 bg-slate-300 mx-0.5" />
-
-              <button
-                type="button"
-                onClick={() => setZoom((z) => Math.max(0.1, Math.round((z - 0.1) * 100) / 100))}
-                className="p-1 hover:bg-slate-200 rounded text-slate-600 transition cursor-pointer"
-                title="Zoom Out"
-              >
-                <ZoomOut className="w-3.5 h-3.5" />
-              </button>
-              <span className="min-w-[38px] text-center font-mono text-[11px] font-bold text-slate-800">
-                {Math.round(zoom * 100)}%
-              </span>
-              <button
-                type="button"
-                onClick={() => setZoom((z) => Math.min(3, Math.round((z + 0.1) * 100) / 100))}
-                className="p-1 hover:bg-slate-200 rounded text-slate-600 transition cursor-pointer"
-                title="Zoom In"
-              >
-                <ZoomIn className="w-3.5 h-3.5" />
-              </button>
-
-              <div className="w-[1px] h-4 bg-slate-300 mx-0.5" />
-
-              <button
-                type="button"
-                onClick={() => setZoom(1)}
-                className="p-1 hover:bg-slate-200 rounded text-slate-600 transition cursor-pointer"
-                title="Reset Zoom (100%)"
-              >
-                <RotateCcw className="w-3.5 h-3.5" />
-              </button>
-            </div>
-
-            <button
-              onClick={() => setIsPreviewMode(!isPreviewMode)}
-              className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border transition cursor-pointer ${
-                isPreviewMode
-                  ? "bg-amber-100 text-amber-900 border-amber-300"
-                  : "bg-slate-100 text-slate-700 hover:bg-slate-200 border-slate-200"
-              }`}
-            >
-              <Eye className="w-4 h-4" />
-              {isPreviewMode ? "Editing Mode" : "Preview Mode"}
-            </button>
-
-            <button
-              onClick={handleSaveArtwork}
-              disabled={isSaving}
-              className="flex items-center gap-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-4 py-1.5 rounded-lg shadow-sm transition cursor-pointer"
-            >
-              {isSaving ? (
-                "Saving..."
-              ) : saveToast ? (
-                <>
-                  <Check className="w-4 h-4 text-emerald-300" /> Saved!
-                </>
-              ) : (
-                <>
-                  <Save className="w-4 h-4" /> Save Artwork
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* Studio Workspace Main Grid */}
-        <div className="flex-1 flex overflow-hidden">
-          {/* CENTER: 2D VISUAL CANVAS WORKSPACE WITH SCREEN MANAGEMENT BAR */}
-          <div className="flex-1 h-full flex flex-col overflow-hidden bg-slate-200/60 relative">
+        {/* Ultra-slim Top Navigation & Screens Header Bar (height 44px) */}
+        <div className="bg-white border-b border-slate-200 px-3 py-1.5 flex items-center justify-between shrink-0 z-50 relative gap-2 overflow-visible">
+          {/* SCREENS MANAGEMENT BAR (Sits at the far left!) */}
+          <div className="flex-1 flex justify-start min-w-0 overflow-visible">
             <StudioScreenBar
               screens={screens}
               activeScreenId={activeScreenId}
               screenFieldConfig={screenFieldConfig}
               fields={fields}
+              canUndo={historyIndex > 0}
+              canRedo={historyIndex < history.length - 1}
+              onUndo={handleUndo}
+              onRedo={handleRedo}
               onSelectScreen={setActiveScreenId}
               onAddScreen={handleAddScreen}
               onDuplicateScreen={handleDuplicateScreen}
@@ -848,12 +1084,132 @@ export default function ArtworkStudioRoute() {
               onOpenMediaPickerForScreenBg={handleOpenMediaPickerForScreenBg}
               onOpenMediaPickerForScreenIcon={handleOpenMediaPickerForScreenIcon}
             />
+          </div>
+
+          {/* Top Actions */}
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Compact Undo/Redo + Grid & Zoom Control Box (Fixed 32px Height) */}
+            <div className="h-8 flex items-center gap-1 bg-slate-100 border border-slate-300 rounded-lg p-0.5 text-xs font-semibold shrink-0">
+              {/* Undo & Redo Buttons */}
+              <button
+                type="button"
+                disabled={historyIndex <= 0 || history.length === 0}
+                onClick={handleUndo}
+                className={`p-1 h-6 w-6 rounded flex items-center justify-center transition cursor-pointer ${
+                  historyIndex > 0
+                    ? "bg-white text-slate-700 hover:text-blue-600 shadow-2xs"
+                    : "text-slate-300 cursor-not-allowed"
+                }`}
+                title="Undo last action (Cmd/Ctrl + Z)"
+              >
+                <Undo2 className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                type="button"
+                disabled={historyIndex >= history.length - 1}
+                onClick={handleRedo}
+                className={`p-1 h-6 w-6 rounded flex items-center justify-center transition cursor-pointer ${
+                  historyIndex < history.length - 1
+                    ? "bg-white text-slate-700 hover:text-blue-600 shadow-2xs"
+                    : "text-slate-300 cursor-not-allowed"
+                }`}
+                title="Redo action (Cmd/Ctrl + Shift + Z or Cmd/Ctrl + Y)"
+              >
+                <Redo2 className="w-3.5 h-3.5" />
+              </button>
+
+              {/* Preview Toggle Icon Button */}
+              <button
+                type="button"
+                onClick={() => setIsPreviewMode(!isPreviewMode)}
+                className={`p-1 h-6 w-6 rounded flex items-center justify-center transition cursor-pointer ${
+                  isPreviewMode
+                    ? "bg-amber-500 text-white shadow-2xs"
+                    : "text-slate-600 hover:bg-slate-200"
+                }`}
+                title={isPreviewMode ? "Exit Storefront Preview (Edit Mode)" : "Storefront Preview Mode"}
+              >
+                {isPreviewMode ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              </button>
+
+              <div className="w-[1px] h-3.5 bg-slate-300 mx-0.5" />
+              <button
+                type="button"
+                onClick={() => setShowGrid((g) => !g)}
+                className={`px-2 h-6 rounded flex items-center gap-1 transition cursor-pointer text-[11px] font-bold ${
+                  showGrid
+                    ? "bg-indigo-600 text-white shadow-2xs"
+                    : "text-slate-600 hover:bg-slate-200"
+                }`}
+                title={showGrid ? "Hide Alignment Grid" : "Show Alignment Grid"}
+              >
+                <Grid className="w-3.5 h-3.5" />
+                <span>{showGrid ? "ON" : "OFF"}</span>
+              </button>
+
+              <div className="w-[1px] h-3.5 bg-slate-300 mx-0.5" />
+
+              <button
+                type="button"
+                onClick={() => setZoom((z) => Math.max(0.1, Math.round((z - 0.1) * 100) / 100))}
+                className="p-1 h-6 w-6 flex items-center justify-center hover:bg-slate-200 rounded text-slate-600 transition cursor-pointer"
+                title="Zoom Out"
+              >
+                <ZoomOut className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setZoom(1)}
+                className="min-w-[36px] h-6 flex items-center justify-center font-mono text-[11px] font-bold text-slate-800 hover:bg-slate-200 rounded px-1 transition cursor-pointer"
+                title="Click to Reset Zoom to 100%"
+              >
+                {Math.round(zoom * 100)}%
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setZoom((z) => Math.min(3, Math.round((z + 0.1) * 100) / 100))}
+                className="p-1 h-6 w-6 flex items-center justify-center hover:bg-slate-200 rounded text-slate-600 transition cursor-pointer"
+                title="Zoom In"
+              >
+                <ZoomIn className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* Save Artwork Button (Fixed 32px Height) */}
+            <button
+              onClick={handleSaveArtwork}
+              disabled={isSaving}
+              className="h-8 flex items-center gap-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3.5 rounded-lg shadow-2xs transition cursor-pointer"
+            >
+              {isSaving ? (
+                "Saving..."
+              ) : saveToast ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-emerald-300" /> Saved!
+                </>
+              ) : (
+                <>
+                  <Save className="w-3.5 h-3.5" /> Save Artwork
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* Studio Workspace Main Grid */}
+        <div className="flex-1 flex overflow-hidden">
+          {/* CENTER: 2D VISUAL CANVAS WORKSPACE */}
+          <div className="flex-1 h-full flex flex-col overflow-hidden bg-slate-200/60 relative">
             <StudioTopToolbar
               selectedLayer={selectedLayer}
               fonts={fonts}
               onUpdateLayer={handleUpdateLayer}
+              onOpenMediaPickerForLayer={handleOpenMediaPickerForLayer}
             />
-            <div className="flex-1 relative overflow-hidden">
+            <div className="flex-1 relative overflow-auto">
               <StudioCanvas
                 widthPx={widthPx}
                 heightPx={heightPx}
@@ -864,31 +1220,65 @@ export default function ArtworkStudioRoute() {
                 bgUrl={activeScreen?.bgUrl}
                 zoom={zoom}
                 showGrid={showGrid}
+                isPreviewMode={isPreviewMode}
+                fonts={fonts}
               />
             </div>
           </div>
 
-          {/* RIGHT SIDEBAR: Layer Stack & Property Inspector */}
+          {/* RIGHT SIDEBAR: Artwork Info Header + Layer Stack & Property Inspector */}
           <div className="flex flex-col border-l border-slate-200 bg-white shrink-0 w-80">
-            <div className="h-1/2 border-b border-slate-200 overflow-hidden">
-              <StudioLayerPanel
-                layers={layers}
-                selectedLayerId={selectedLayerId}
-                onSelectLayer={setSelectedLayerId}
-                onUpdateLayer={handleUpdateLayer}
-                onAddLayer={handleAddLayer}
-                onDeleteLayer={handleDeleteLayer}
-                onReorderLayers={(newLayers) => setLayers(() => newLayers)}
-              />
+            {/* ARTWORK TITLE & SETTINGS HEADER (Relocated to Right Sidebar) */}
+            <div className="px-3 py-2 border-b border-slate-200 bg-slate-50/80 flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  className="font-bold text-slate-900 text-xs bg-white hover:bg-slate-100 border border-slate-200 focus:border-blue-500 rounded px-2 py-1 focus:outline-none truncate w-full"
+                  placeholder="Artwork Title"
+                />
+                <span className="text-[11px] text-slate-400 font-mono shrink-0">
+                  ({widthPx}×{heightPx})
+                </span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setSettingsModalOpen(true)}
+                className="p-1 text-slate-600 hover:text-slate-900 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg transition cursor-pointer shrink-0"
+                title="Configure Canvas Settings & Dimensions"
+              >
+                <Settings className="w-3.5 h-3.5" />
+              </button>
             </div>
-            <div className="h-1/2 overflow-hidden">
-              <StudioPropertyPanel
-                selectedLayer={selectedLayer}
-                fields={fields}
-                fonts={fonts}
-                onUpdateLayer={handleUpdateLayer}
-                onOpenMediaPickerForLayer={handleOpenMediaPickerForLayer}
-              />
+
+            <div className="flex-1 flex flex-col overflow-hidden">
+              <div className="h-1/2 border-b border-slate-200 overflow-hidden">
+                <StudioLayerPanel
+                  layers={layers}
+                  selectedLayerId={selectedLayerId}
+                  onSelectLayer={setSelectedLayerId}
+                  onUpdateLayer={handleUpdateLayer}
+                  onAddLayer={handleAddLayer}
+                  onAddMaskLayer={handleAddMaskLayer}
+                  onDuplicateLayer={handleDuplicateLayer}
+                  onDeleteLayer={handleDeleteLayer}
+                  onReorderLayers={(newLayers) => setLayers(() => newLayers)}
+                />
+              </div>
+              <div className="h-1/2 overflow-hidden">
+                <StudioPropertyPanel
+                  selectedLayer={selectedLayer}
+                  fields={fields}
+                  fonts={fonts}
+                  onUpdateLayer={handleUpdateLayer}
+                  onOpenMediaPickerForLayer={handleOpenMediaPickerForLayer}
+                  onOpenPhotoUploadModal={handleOpenPhotoUploadModal}
+                  onAddMaskLayer={handleAddMaskLayer}
+                  onDeleteLayer={handleDeleteLayer}
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -1204,6 +1594,34 @@ export default function ArtworkStudioRoute() {
           setMediaPickerOpen(false);
         }}
       />
+
+      {/* Amazon-Style Customer Photo Upload & Customization Modal */}
+      {photoUploadModalOpen && photoUploadTargetLayerId && (() => {
+        const targetLayer = layers.find((l) => l.id === photoUploadTargetLayerId);
+        const targetProps = targetLayer?.properties || {};
+        return (
+          <StudioPhotoUploadModal
+            isOpen={photoUploadModalOpen}
+            title={targetProps.fieldLabel || "Upload & Customise Your Photo"}
+            helpText={targetProps.helpText || "Upload a high-resolution JPG or PNG for best print quality."}
+            maskShape={targetProps.maskShape || "RECTANGLE"}
+            aspectRatio={targetLayer ? targetLayer.width / targetLayer.height : 1}
+            currentData={targetProps.photoCustomization}
+            allowedTools={{
+              zoom: targetProps.enableZoom !== false,
+              rotate: targetProps.enableRotate !== false,
+              flip: targetProps.enableFlip !== false,
+              filters: targetProps.enableFilters !== false,
+            }}
+            onClose={() => setPhotoUploadModalOpen(false)}
+            onApply={handleApplyPhotoCustomization}
+            onOpenMediaPicker={() => {
+              setMediaPickerOpen(true);
+              setMediaPickerTarget({ type: "LAYER", layerId: photoUploadTargetLayerId });
+            }}
+          />
+        );
+      })()}
     </DashboardLayout>
   );
 }
