@@ -519,38 +519,100 @@ export default function StudioPropertyPanel({
                   <button
                     type="button"
                     onClick={() => handlePropChange("maskShape", "RECTANGLE")}
-                    className={`py-1.5 text-center text-xs font-semibold rounded-lg border transition cursor-pointer ${
+                    className={`py-1.5 px-1 text-center text-[11px] font-bold rounded-lg border transition cursor-pointer flex items-center justify-center gap-1 ${
                       (props.maskShape || "RECTANGLE") === "RECTANGLE"
-                        ? "bg-purple-600 text-white border-purple-600"
-                        : "bg-white text-purple-800 border-purple-200 hover:bg-purple-100/50"
+                        ? "bg-purple-600 text-white border-purple-600 shadow-xs"
+                        : "bg-white text-purple-900 border-purple-200 hover:bg-purple-100/50"
                     }`}
                   >
-                    Rect / Square
+                    <span>⏹️</span>
+                    <span>Rectangle</span>
                   </button>
+
                   <button
                     type="button"
                     onClick={() => handlePropChange("maskShape", "ROUNDED")}
-                    className={`py-1.5 text-center text-xs font-semibold rounded-lg border transition cursor-pointer ${
+                    className={`py-1.5 px-1 text-center text-[11px] font-bold rounded-lg border transition cursor-pointer flex items-center justify-center gap-1 ${
                       props.maskShape === "ROUNDED"
-                        ? "bg-purple-600 text-white border-purple-600"
-                        : "bg-white text-purple-800 border-purple-200 hover:bg-purple-100/50"
+                        ? "bg-purple-600 text-white border-purple-600 shadow-xs"
+                        : "bg-white text-purple-900 border-purple-200 hover:bg-purple-100/50"
                     }`}
                   >
-                    Rounded
+                    <span>🔲</span>
+                    <span>Rounded</span>
                   </button>
+
                   <button
                     type="button"
                     onClick={() => handlePropChange("maskShape", "CIRCLE")}
-                    className={`py-1.5 text-center text-xs font-semibold rounded-lg border transition cursor-pointer ${
+                    className={`py-1.5 px-1 text-center text-[11px] font-bold rounded-lg border transition cursor-pointer flex items-center justify-center gap-1 ${
                       props.maskShape === "CIRCLE"
-                        ? "bg-purple-600 text-white border-purple-600"
-                        : "bg-white text-purple-800 border-purple-200 hover:bg-purple-100/50"
+                        ? "bg-purple-600 text-white border-purple-600 shadow-xs"
+                        : "bg-white text-purple-900 border-purple-200 hover:bg-purple-100/50"
                     }`}
                   >
-                    Circle
+                    <span>⚪</span>
+                    <span>Circle</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handlePropChange("maskShape", "HEART")}
+                    className={`py-1.5 px-1 text-center text-[11px] font-bold rounded-lg border transition cursor-pointer flex items-center justify-center gap-1 ${
+                      props.maskShape === "HEART"
+                        ? "bg-purple-600 text-white border-purple-600 shadow-xs"
+                        : "bg-white text-purple-900 border-purple-200 hover:bg-purple-100/50"
+                    }`}
+                  >
+                    <span>❤️</span>
+                    <span>Heart</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handlePropChange("maskShape", "STAR")}
+                    className={`py-1.5 px-1 text-center text-[11px] font-bold rounded-lg border transition cursor-pointer flex items-center justify-center gap-1 ${
+                      props.maskShape === "STAR"
+                        ? "bg-purple-600 text-white border-purple-600 shadow-xs"
+                        : "bg-white text-purple-900 border-purple-200 hover:bg-purple-100/50"
+                    }`}
+                  >
+                    <span>⭐</span>
+                    <span>Star</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handlePropChange("maskShape", "HEXAGON")}
+                    className={`py-1.5 px-1 text-center text-[11px] font-bold rounded-lg border transition cursor-pointer flex items-center justify-center gap-1 ${
+                      props.maskShape === "HEXAGON"
+                        ? "bg-purple-600 text-white border-purple-600 shadow-xs"
+                        : "bg-white text-purple-900 border-purple-200 hover:bg-purple-100/50"
+                    }`}
+                  >
+                    <span>⬡</span>
+                    <span>Hexagon</span>
                   </button>
                 </div>
               </div>
+
+              {/* Radius Slider if ROUNDED */}
+              {props.maskShape === "ROUNDED" && (
+                <div className="bg-white p-2.5 rounded-lg border border-purple-200 space-y-1.5">
+                  <div className="flex items-center justify-between text-[10px] font-bold text-purple-900">
+                    <span>Corner Radius (Bo góc)</span>
+                    <span className="font-mono text-purple-700">{props.borderRadius || 16}px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={2}
+                    max={100}
+                    value={props.borderRadius || 16}
+                    onChange={(e) => handlePropChange("borderRadius", Number(e.target.value))}
+                    className="w-full accent-purple-600 cursor-pointer"
+                  />
+                </div>
+              )}
 
               {/* Custom Vector / Image Mask Asset */}
               <div>

@@ -6,7 +6,7 @@ import { ensureFontLoaded, FontItem } from "../../utils/fontLoader";
 export interface CanvasLayerItem {
   id: string;
   name: string;
-  layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY";
+  layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY" | "MASK";
   zIndex: number;
   posX: number;
   posY: number;
@@ -17,8 +17,109 @@ export interface CanvasLayerItem {
   scaleY?: number;
   isVisible: boolean;
   isLocked: boolean;
-  properties?: any; // { text, font, color, assetUrl, alignment... }
+  properties?: any; // { text, font, color, assetUrl, alignment, maskShape, borderRadius... }
   linkedFieldId?: string;
+  maskLayerId?: string;
+  parentPhotoUploadId?: string;
+}
+
+export function createFabricMaskObject(
+  shape: string,
+  width: number,
+  height: number,
+  left: number,
+  top: number,
+  options: any = {}
+): fabric.Object {
+  const rx = options.borderRadius || 16;
+
+  if (shape === "CIRCLE") {
+    return new fabric.Rect({
+      left,
+      top,
+      width,
+      height,
+      rx: width / 2,
+      ry: height / 2,
+      originX: options.originX || "left",
+      originY: options.originY || "top",
+      absolutePositioned: options.absolutePositioned || false,
+      ...options,
+    });
+  }
+
+  if (shape === "ROUNDED") {
+    return new fabric.Rect({
+      left,
+      top,
+      width,
+      height,
+      rx: Math.min(rx, width / 2, height / 2),
+      ry: Math.min(rx, width / 2, height / 2),
+      originX: options.originX || "left",
+      originY: options.originY || "top",
+      absolutePositioned: options.absolutePositioned || false,
+      ...options,
+    });
+  }
+
+  if (shape === "HEART") {
+    const heartPathStr =
+      "M 12 21.35 l -1.45 -1.32 C 5.4 15.36 2 12.28 2 8.5 C 2 5.42 4.42 3 7.5 3 c 1.74 0 3.41 0.81 4.5 2.09 C 13.09 3.81 14.76 3 16.5 3 C 19.58 3 22 5.42 22 8.5 c 0 3.78 -3.4 6.86 -8.55 11.54 L 12 21.35 Z";
+    return new fabric.Path(heartPathStr, {
+      left,
+      top,
+      scaleX: width / 24,
+      scaleY: height / 24,
+      originX: options.originX || "left",
+      originY: options.originY || "top",
+      absolutePositioned: options.absolutePositioned || false,
+      ...options,
+    });
+  }
+
+  if (shape === "STAR") {
+    const starPathStr =
+      "M 12 2 L 15.09 8.26 L 22 9.27 L 17 14.14 L 18.18 21.02 L 12 17.77 L 5.82 21.02 L 7 14.14 L 2 9.27 L 8.91 8.26 Z";
+    return new fabric.Path(starPathStr, {
+      left,
+      top,
+      scaleX: width / 24,
+      scaleY: height / 24,
+      originX: options.originX || "left",
+      originY: options.originY || "top",
+      absolutePositioned: options.absolutePositioned || false,
+      ...options,
+    });
+  }
+
+  if (shape === "HEXAGON") {
+    const hexPathStr =
+      "M 12 2 L 21.5 7.5 L 21.5 18.5 L 12 24 L 2.5 18.5 L 2.5 7.5 Z";
+    return new fabric.Path(hexPathStr, {
+      left,
+      top,
+      scaleX: width / 24,
+      scaleY: height / 26,
+      originX: options.originX || "left",
+      originY: options.originY || "top",
+      absolutePositioned: options.absolutePositioned || false,
+      ...options,
+    });
+  }
+
+  return new fabric.Rect({
+    left,
+    top,
+    width,
+    height,
+    rx: 0,
+    ry: 0,
+    originX: options.originX || "left",
+    originY: options.originY || "top",
+    absolutePositioned: options.absolutePositioned || false,
+    ...options,
+  });
 }
 
 interface StudioCanvasProps {
