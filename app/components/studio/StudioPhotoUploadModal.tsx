@@ -29,7 +29,8 @@ interface StudioPhotoUploadModalProps {
   isOpen: boolean;
   title?: string;
   helpText?: string;
-  maskShape?: "RECTANGLE" | "ROUNDED" | "CIRCLE";
+  maskShape?: string;
+  maskAssetUrl?: string;
   aspectRatio?: number; // width / height
   currentData?: Partial<PhotoCustomizationData>;
   allowedTools?: {
@@ -48,6 +49,7 @@ export default function StudioPhotoUploadModal({
   title = "Upload & Customise Your Photo",
   helpText = "Upload a high-resolution JPG or PNG for the best print quality.",
   maskShape = "RECTANGLE",
+  maskAssetUrl,
   aspectRatio = 1,
   currentData,
   allowedTools = { zoom: true, rotate: true, flip: true, filters: true },

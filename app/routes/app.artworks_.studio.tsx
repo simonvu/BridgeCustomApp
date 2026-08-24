@@ -170,7 +170,20 @@ export default function ArtworkStudioRoute() {
     if (artworkData?.screens) {
       try {
         const parsed = typeof artworkData.screens === "string" ? JSON.parse(artworkData.screens) : artworkData.screens;
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((s: any) => ({
+            ...s,
+            layers: (s.layers || []).map((l: any) => {
+              const props = typeof l.properties === "string" ? JSON.parse(l.properties) : (l.properties || {});
+              return {
+                ...l,
+                properties: props,
+                maskLayerId: l.maskLayerId || props.maskLayerId,
+                parentPhotoUploadId: l.parentPhotoUploadId || props.parentPhotoUploadId,
+              };
+            }),
+          }));
+        }
       } catch (e) {
         console.error("Failed to parse saved artwork screens JSON:", e);
       }
@@ -178,10 +191,15 @@ export default function ArtworkStudioRoute() {
 
     // Default layers and fields if no saved screens JSON exist
     const initialLayers: CanvasLayerItem[] = artworkData?.layers && artworkData.layers.length > 0
-      ? artworkData.layers.map((l: any) => ({
-          ...l,
-          properties: typeof l.properties === "string" ? JSON.parse(l.properties) : l.properties || {},
-        }))
+      ? artworkData.layers.map((l: any) => {
+          const props = typeof l.properties === "string" ? JSON.parse(l.properties) : l.properties || {};
+          return {
+            ...l,
+            properties: props,
+            maskLayerId: l.maskLayerId || props.maskLayerId,
+            parentPhotoUploadId: l.parentPhotoUploadId || props.parentPhotoUploadId,
+          };
+        })
       : defaultLayers;
 
     const initialFields: StudioFieldItem[] = artworkData?.fields && artworkData.fields.length > 0
@@ -561,8 +579,30 @@ export default function ArtworkStudioRoute() {
   const handleSaveArtwork = async () => {
     setIsSaving(true);
     try {
+      const sanitizeLayerList = (list: CanvasLayerItem[]) => {
+        return list.map((l) => ({
+          ...l,
+          maskLayerId: l.maskLayerId || l.properties?.maskLayerId,
+          parentPhotoUploadId: l.parentPhotoUploadId || l.properties?.parentPhotoUploadId,
+          properties: {
+            ...(l.properties || {}),
+            maskLayerId: l.maskLayerId || l.properties?.maskLayerId,
+            parentPhotoUploadId: l.parentPhotoUploadId || l.properties?.parentPhotoUploadId,
+          },
+        }));
+      };
+
+      const sanitizedActiveLayers = sanitizeLayerList(layers);
+      const updatedScreens = screens.map((s) => {
+        const screenLayers = s.id === activeScreenId ? sanitizedActiveLayers : s.layers || [];
+        return {
+          ...s,
+          layers: sanitizeLayerList(screenLayers),
+        };
+      });
+
       // Generate Full Composite PNG Snapshot Thumbnail from Default Screen (Screen 1)
-      const defaultScreen = screens[0] || null;
+      const defaultScreen = updatedScreens[0] || null;
       const screenBgUrl = defaultScreen?.bgUrl || null;
       let compositeThumbnail = "";
 
@@ -599,9 +639,9 @@ export default function ArtworkStudioRoute() {
           heightPx,
           bgUrl: screenBgUrl,
           thumbnailUrl: finalThumbnail,
-          screens,
+          screens: updatedScreens,
           screenFieldConfig,
-          layers,
+          layers: sanitizedActiveLayers,
           fields,
           rules,
         }),
@@ -986,6 +1026,14 @@ export default function ArtworkStudioRoute() {
             properties: { ...currentProps, bgOptions, assetUrl: fileUrl },
           });
         }
+      } else if (targetLayer && targetLayer.layerType === "MASK") {
+        handleUpdateLayer(pickerTarget.layerId, {
+          properties: {
+            ...currentProps,
+            maskShape: "CUSTOM",
+            maskAssetUrl: fileUrl,
+          },
+        });
       } else {
         // Preload image to calculate natural aspect ratio and 50% artwork max size limit
         const img = new Image();
@@ -1599,12 +1647,19 @@ export default function ArtworkStudioRoute() {
       {photoUploadModalOpen && photoUploadTargetLayerId && (() => {
         const targetLayer = layers.find((l) => l.id === photoUploadTargetLayerId);
         const targetProps = targetLayer?.properties || {};
+
+        const linkedMaskLayer = layers.find(
+          (l) => l.id === targetLayer?.maskLayerId || (l.layerType === "MASK" && l.parentPhotoUploadId === targetLayer?.id)
+        );
+        const mProps = linkedMaskLayer?.properties || {};
+
         return (
           <StudioPhotoUploadModal
             isOpen={photoUploadModalOpen}
             title={targetProps.fieldLabel || "Upload & Customise Your Photo"}
             helpText={targetProps.helpText || "Upload a high-resolution JPG or PNG for best print quality."}
-            maskShape={targetProps.maskShape || "RECTANGLE"}
+            maskShape={mProps.maskShape || targetProps.maskShape || "RECTANGLE"}
+            maskAssetUrl={mProps.maskAssetUrl || targetProps.maskAssetUrl}
             aspectRatio={targetLayer ? targetLayer.width / targetLayer.height : 1}
             currentData={targetProps.photoCustomization}
             allowedTools={{

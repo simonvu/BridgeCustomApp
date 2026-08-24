@@ -23,6 +23,194 @@ export interface CanvasLayerItem {
   parentPhotoUploadId?: string;
 }
 
+// Helper to process any custom uploaded mask image into a pure transparent alpha mask (using BFS flood-fill for line-art/outlines)
+export function processCustomMaskImage(img: HTMLImageElement): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  const w = img.naturalWidth || img.width || 100;
+  const h = img.naturalHeight || img.height || 100;
+  canvas.width = w;
+  canvas.height = h;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return canvas;
+
+  ctx.drawImage(img, 0, 0, w, h);
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const data = imgData.data;
+
+  // Check if image has existing alpha channel transparency
+  let hasAlphaTransparency = false;
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 250) {
+      hasAlphaTransparency = true;
+      break;
+    }
+  }
+
+  if (hasAlphaTransparency) {
+    // Transparent PNG: make all visible pixels solid black mask
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] > 20) {
+        data[i] = 0;
+        data[i + 1] = 0;
+        data[i + 2] = 0;
+        data[i + 3] = 255;
+      } else {
+        data[i + 3] = 0;
+      }
+    }
+  } else {
+    // Opaque image (black shape or outline on white background):
+    // Use BFS Flood-Fill from outer edges to separate exterior background from interior shape
+    const isExterior = new Uint8Array(w * h);
+    const queue: number[] = [];
+
+    // Add all 4 outer border pixels to the queue
+    for (let x = 0; x < w; x++) {
+      queue.push(x); // top row
+      queue.push((h - 1) * w + x); // bottom row
+    }
+    for (let y = 0; y < h; y++) {
+      queue.push(y * w); // left column
+      queue.push(y * w + (w - 1)); // right column
+    }
+
+    let head = 0;
+    while (head < queue.length) {
+      const idx = queue[head++];
+      if (isExterior[idx]) continue;
+
+      const pxOffset = idx * 4;
+      const r = data[pxOffset];
+      const g = data[pxOffset + 1];
+      const b = data[pxOffset + 2];
+      const brightness = (r + g + b) / 3;
+
+      // If this pixel is light/white (background pixel), mark as exterior and flood to neighbors
+      if (brightness >= 180) {
+        isExterior[idx] = 1;
+        const x = idx % w;
+        const y = Math.floor(idx / w);
+
+        if (x > 0 && !isExterior[idx - 1]) queue.push(idx - 1);
+        if (x < w - 1 && !isExterior[idx + 1]) queue.push(idx + 1);
+        if (y > 0 && !isExterior[idx - w]) queue.push(idx - w);
+        if (y < h - 1 && !isExterior[idx + w]) queue.push(idx + w);
+      }
+    }
+
+    // Convert pixels: exterior pixels -> transparent (a=0), non-exterior (stroke + interior) -> opaque black (a=255)
+    for (let idx = 0; idx < w * h; idx++) {
+      const pxOffset = idx * 4;
+      if (isExterior[idx]) {
+        data[pxOffset + 3] = 0; // Transparent background
+      } else {
+        data[pxOffset] = 0;       // R
+        data[pxOffset + 1] = 0;   // G
+        data[pxOffset + 2] = 0;   // B
+        data[pxOffset + 3] = 255; // Solid opaque mask interior & stroke
+      }
+    }
+  }
+
+  ctx.putImageData(imgData, 0, 0);
+  return canvas;
+}
+
+// Helper to strictly enforce Fabric canvas z-index stacking order (lowest zIndex at index 0, highest zIndex at top)
+export function enforceZIndexOrder(fc: fabric.Canvas, visibleLayers: CanvasLayerItem[]) {
+  if (!fc) return;
+  const sortedVisibleLayers = [...visibleLayers].sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0));
+  sortedVisibleLayers.forEach((l, targetIdx) => {
+    const fabObj = fc.getObjects().find((o: any) => o.layerId === l.id);
+    if (fabObj) {
+      if (typeof (fc as any).moveObjectTo === "function") {
+        (fc as any).moveObjectTo(fabObj, targetIdx);
+      } else if (typeof (fabObj as any).moveTo === "function") {
+        (fabObj as any).moveTo(targetIdx);
+      }
+    }
+  });
+  fc.requestRenderAll();
+}
+
+// Helper to composite a photo image inside a custom mask canvas at relative position and bounds
+export function renderClippedPhotoCanvas(
+  photoImg: HTMLImageElement | HTMLCanvasElement,
+  maskCanvas: HTMLCanvasElement,
+  photoW: number,
+  photoH: number,
+  maskRelX: number,
+  maskRelY: number,
+  maskW: number,
+  maskH: number
+): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  const canvasW = Math.max(10, Math.round(photoW || 300));
+  const canvasH = Math.max(10, Math.round(photoH || 300));
+  canvas.width = canvasW;
+  canvas.height = canvasH;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return canvas;
+
+  if (!maskCanvas) {
+    try {
+      ctx.drawImage(photoImg, 0, 0, canvasW, canvasH);
+    } catch (e) {
+      // ignore
+    }
+    return canvas;
+  }
+
+  try {
+    // 1. Draw full photo image inside photo layer bounds (0, 0, photoW, photoH)
+    ctx.drawImage(photoImg, 0, 0, canvasW, canvasH);
+
+    // 2. Prepare offscreen mask canvas scaled and positioned at relative mask bounds
+    const maskLayerCanvas = document.createElement("canvas");
+    maskLayerCanvas.width = canvasW;
+    maskLayerCanvas.height = canvasH;
+    const maskCtx = maskLayerCanvas.getContext("2d");
+    if (maskCtx) {
+      maskCtx.drawImage(
+        maskCanvas,
+        Math.round(maskRelX),
+        Math.round(maskRelY),
+        Math.max(1, Math.round(maskW)),
+        Math.max(1, Math.round(maskH))
+      );
+    }
+
+    // 3. Composite mask onto photo using destination-in (keeps photo pixels ONLY where mask is visible)
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.drawImage(maskLayerCanvas, 0, 0);
+  } catch (err) {
+    console.warn("renderClippedPhotoCanvas error:", err);
+  }
+
+  return canvas;
+}
+
+// Cache memory for custom mask PNG/SVG processed canvases
+const customMaskCache = new Map<string, HTMLCanvasElement>();
+
+export function preloadCustomMaskImage(url: string, onLoaded?: () => void) {
+  if (!url) return;
+  if (customMaskCache.has(url)) {
+    if (onLoaded) onLoaded();
+    return;
+  }
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.onload = () => {
+    const processed = processCustomMaskImage(img);
+    customMaskCache.set(url, processed);
+    if (onLoaded) onLoaded();
+  };
+  img.src = url;
+}
+
 export function createFabricMaskObject(
   shape: string,
   width: number,
@@ -34,6 +222,84 @@ export function createFabricMaskObject(
   const rx = options.borderRadius || 16;
   const originX = options.originX || "center";
   const originY = options.originY || "center";
+  const maskAssetUrl = options.maskAssetUrl || options.assetUrl;
+
+  if (shape === "CUSTOM" && maskAssetUrl) {
+    if (!customMaskCache.has(maskAssetUrl)) {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => {
+        const processedCanvas = processCustomMaskImage(img);
+        customMaskCache.set(maskAssetUrl, processedCanvas);
+
+        const fc = globalActiveFabricCanvas;
+        if (fc) {
+          fc.getObjects().forEach((o: any) => {
+            if (o instanceof fabric.Image && (o as any)._rawImageElement) {
+              const rawImgEl = (o as any)._rawImageElement;
+              const photoLayerId = o.layerId;
+              const currentLayers = layersRef.current || [];
+              const photoLayer = currentLayers.find((l) => l.id === photoLayerId);
+              const linkedMask = currentLayers.find(
+                (l) => l.id === photoLayer?.maskLayerId || (l.layerType === "MASK" && l.parentPhotoUploadId === photoLayerId)
+              );
+
+              const activeMask =
+                linkedMask ||
+                currentLayers.find(
+                  (l) => l.layerType === "MASK" && l.properties?.maskShape === "CUSTOM" && l.properties?.maskAssetUrl === maskAssetUrl
+                );
+
+              if (activeMask && activeMask.properties?.maskAssetUrl === maskAssetUrl) {
+                const photoW = photoLayer ? photoLayer.width : o.width * (o.scaleX || 1);
+                const photoH = photoLayer ? photoLayer.height : o.height * (o.scaleY || 1);
+                const maskW = activeMask.width;
+                const maskH = activeMask.height;
+                const maskRelX = photoLayer ? activeMask.posX - photoLayer.posX : 0;
+                const maskRelY = photoLayer ? activeMask.posY - photoLayer.posY : 0;
+
+                const clippedCanvas = renderClippedPhotoCanvas(
+                  rawImgEl,
+                  processedCanvas,
+                  photoW,
+                  photoH,
+                  maskRelX,
+                  maskRelY,
+                  maskW,
+                  maskH
+                );
+                o.setElement(clippedCanvas);
+                o.set({
+                  scaleX: photoW / clippedCanvas.width,
+                  scaleY: photoH / clippedCanvas.height,
+                  clipPath: undefined,
+                });
+                (o as any)._isClippedCanvas = true;
+                o.setCoords();
+              }
+            }
+          });
+          fc.requestRenderAll();
+        }
+      };
+      img.src = maskAssetUrl;
+    }
+
+    // Always return a clean purple dashed guide rect for stage display
+    return new fabric.Rect({
+      left,
+      top,
+      width,
+      height,
+      rx: 8,
+      ry: 8,
+      originX,
+      originY,
+      absolutePositioned: options.absolutePositioned || false,
+      strokeUniform: true,
+      ...options,
+    });
+  }
 
   if (shape === "CIRCLE") {
     return new fabric.Rect({
@@ -46,6 +312,7 @@ export function createFabricMaskObject(
       originX,
       originY,
       absolutePositioned: options.absolutePositioned || false,
+      strokeUniform: true,
       ...options,
     });
   }
@@ -61,6 +328,7 @@ export function createFabricMaskObject(
       originX,
       originY,
       absolutePositioned: options.absolutePositioned || false,
+      strokeUniform: true,
       ...options,
     });
   }
@@ -95,16 +363,18 @@ export function createFabricMaskObject(
     });
   }
 
+  // RECTANGLE or CUSTOM fallback guide rect
   return new fabric.Rect({
     left,
     top,
     width,
     height,
-    rx: 0,
-    ry: 0,
+    rx: 8,
+    ry: 8,
     originX,
     originY,
     absolutePositioned: options.absolutePositioned || false,
+    strokeUniform: true,
     ...options,
   });
 }
@@ -224,6 +494,7 @@ export default function StudioCanvas({
 
   const [internalZoom, setInternalZoom] = useState(1);
   const [internalShowGrid, setInternalShowGrid] = useState(true);
+  const [maskCacheVersion, setMaskCacheVersion] = useState(0);
 
   const zoom = propZoom !== undefined ? propZoom : internalZoom;
   const showGrid = propShowGrid !== undefined ? propShowGrid : internalShowGrid;
@@ -442,7 +713,9 @@ export default function StudioCanvas({
         if (!target || !target.layerId) return;
 
         const targetLayer = layersRef.current.find((l) => l.id === target.layerId);
-        if (targetLayer && targetLayer.layerType === "MASK") {
+        if (!targetLayer) return;
+
+        if (targetLayer.layerType === "MASK") {
           const scaleX = target.scaleX || 1;
           const scaleY = target.scaleY || 1;
 
@@ -454,6 +727,11 @@ export default function StudioCanvas({
             const pathH = target.height || 100;
             newW = Math.max(10, Math.round(pathW * scaleX));
             newH = Math.max(10, Math.round(pathH * scaleY));
+          } else if (target instanceof fabric.Image) {
+            const nativeW = (target as any).getElement?.()?.width || target.width || 100;
+            const nativeH = (target as any).getElement?.()?.height || target.height || 100;
+            newW = Math.max(10, Math.round(nativeW * scaleX));
+            newH = Math.max(10, Math.round(nativeH * scaleY));
           } else {
             newW = Math.max(10, Math.round((target.width || 100) * scaleX));
             newH = Math.max(10, Math.round((target.height || 100) * scaleY));
@@ -469,28 +747,130 @@ export default function StudioCanvas({
             return l && (l.maskLayerId === targetLayer.id || l.id === targetLayer.parentPhotoUploadId);
           });
 
-          if (photoObj && photoObj.clipPath) {
+          if (photoObj) {
             const mProps = targetLayer.properties || {};
             const mShape = mProps.maskShape || "RECTANGLE";
 
-            photoObj.clipPath = createFabricMaskObject(
-              mShape,
-              newW,
-              newH,
-              newCenterX,
-              newCenterY,
-              {
-                borderRadius: mProps.borderRadius || 16,
-                originX: "center",
-                originY: "center",
-                absolutePositioned: true,
-                strokeWidth: 0,
-                stroke: undefined,
-                fill: "#000000",
+            if (mShape === "CUSTOM" && mProps.maskAssetUrl && customMaskCache.has(mProps.maskAssetUrl)) {
+              const maskCanvas = customMaskCache.get(mProps.maskAssetUrl)!;
+              const rawImgEl = (photoObj as any)._rawImageElement || (photoObj as any)._element;
+
+              if (rawImgEl) {
+                const photoW = photoObj.width * photoObj.scaleX;
+                const photoH = photoObj.height * photoObj.scaleY;
+                const photoLeft = photoObj.left || 0;
+                const photoTop = photoObj.top || 0;
+
+                const photoPosX = photoLeft - photoW / 2;
+                const photoPosY = photoTop - photoH / 2;
+
+                const maskPosX = newCenterX - newW / 2;
+                const maskPosY = newCenterY - newH / 2;
+
+                const maskRelX = maskPosX - photoPosX;
+                const maskRelY = maskPosY - photoPosY;
+
+                const clippedCanvas = renderClippedPhotoCanvas(rawImgEl, maskCanvas, photoW, photoH, maskRelX, maskRelY, newW, newH);
+                photoObj.setElement(clippedCanvas);
+                photoObj.set({
+                  scaleX: photoW / clippedCanvas.width,
+                  scaleY: photoH / clippedCanvas.height,
+                  clipPath: undefined,
+                });
+                (photoObj as any)._isClippedCanvas = true;
+                photoObj.setCoords();
+                fabricCanvas.requestRenderAll();
               }
-            );
-            photoObj.dirty = true;
-            fabricCanvas.requestRenderAll();
+            } else {
+              photoObj.clipPath = createFabricMaskObject(
+                mShape,
+                newW,
+                newH,
+                newCenterX,
+                newCenterY,
+                {
+                  borderRadius: mProps.borderRadius || 16,
+                  maskAssetUrl: mProps.maskAssetUrl,
+                  originX: "center",
+                  originY: "center",
+                  absolutePositioned: true,
+                  strokeWidth: 0,
+                  stroke: undefined,
+                  fill: "#000000",
+                }
+              );
+              photoObj.dirty = true;
+              fabricCanvas.requestRenderAll();
+            }
+          }
+        } else if (targetLayer.layerType === "PHOTO_UPLOAD") {
+          // USER IS DRAGGING / SCALING PHOTO UPLOAD LAYER: Keep Mask shape window stationary on stage!
+          const photoW = target.width * (target.scaleX || 1);
+          const photoH = target.height * (target.scaleY || 1);
+          const photoLeft = target.left || 0;
+          const photoTop = target.top || 0;
+
+          const photoPosX = photoLeft - photoW / 2;
+          const photoPosY = photoTop - photoH / 2;
+
+          const linkedMaskLayer = layersRef.current.find(
+            (l) => l.id === targetLayer.maskLayerId || (l.layerType === "MASK" && l.parentPhotoUploadId === targetLayer.id)
+          );
+
+          if (linkedMaskLayer && linkedMaskLayer.isVisible) {
+            const mProps = linkedMaskLayer.properties || {};
+            const mShape = mProps.maskShape || "RECTANGLE";
+
+            const maskObj = fabricCanvas.getObjects().find((o: any) => o.layerId === linkedMaskLayer.id);
+
+            const maskCenterX = maskObj ? maskObj.left || 0 : linkedMaskLayer.posX + linkedMaskLayer.width / 2;
+            const maskCenterY = maskObj ? maskObj.top || 0 : linkedMaskLayer.posY + linkedMaskLayer.height / 2;
+            const maskW = maskObj ? (maskObj.width || linkedMaskLayer.width) * (maskObj.scaleX || 1) : linkedMaskLayer.width;
+            const maskH = maskObj ? (maskObj.height || linkedMaskLayer.height) * (maskObj.scaleY || 1) : linkedMaskLayer.height;
+
+            const maskPosX = maskCenterX - maskW / 2;
+            const maskPosY = maskCenterY - maskH / 2;
+
+            const maskRelX = maskPosX - photoPosX;
+            const maskRelY = maskPosY - photoPosY;
+
+            if (mShape === "CUSTOM" && mProps.maskAssetUrl && customMaskCache.has(mProps.maskAssetUrl)) {
+              const maskCanvas = customMaskCache.get(mProps.maskAssetUrl)!;
+              const rawImgEl = (target as any)._rawImageElement || (target as any)._element;
+
+              if (rawImgEl) {
+                const clippedCanvas = renderClippedPhotoCanvas(rawImgEl, maskCanvas, photoW, photoH, maskRelX, maskRelY, maskW, maskH);
+                target.setElement(clippedCanvas);
+                target.set({
+                  scaleX: photoW / clippedCanvas.width,
+                  scaleY: photoH / clippedCanvas.height,
+                  clipPath: undefined,
+                });
+                (target as any)._isClippedCanvas = true;
+                target.setCoords();
+                fabricCanvas.requestRenderAll();
+              }
+            } else {
+              target.clipPath = createFabricMaskObject(
+                mShape,
+                maskW,
+                maskH,
+                maskCenterX,
+                maskCenterY,
+                {
+                  borderRadius: mProps.borderRadius || 16,
+                  maskAssetUrl: mProps.maskAssetUrl,
+                  originX: "center",
+                  originY: "center",
+                  absolutePositioned: true,
+                  strokeWidth: 0,
+                  stroke: undefined,
+                  fill: "#000000",
+                }
+              );
+              target.dirty = true;
+              fabricCanvas.requestRenderAll();
+            }
           }
         }
 
@@ -546,6 +926,18 @@ export default function StudioCanvas({
   useEffect(() => {
     const fc = fabricCanvasRef.current;
     if (!fc || isUpdatingFromFabricRef.current) return;
+
+    // Preload any custom mask images that are not yet in cache
+    layers.forEach((l) => {
+      if (l.isVisible && l.properties?.maskShape === "CUSTOM" && l.properties?.maskAssetUrl) {
+        const url = l.properties.maskAssetUrl;
+        if (!customMaskCache.has(url)) {
+          preloadCustomMaskImage(url, () => {
+            setMaskCacheVersion((v) => v + 1);
+          });
+        }
+      }
+    });
 
     fc.setDimensions({ width: widthPx, height: heightPx });
 
@@ -722,7 +1114,11 @@ export default function StudioCanvas({
         const maskShape = props.maskShape || "RECTANGLE";
         let maskObj = fc.getObjects().find((o: any) => o.layerId === layer.id);
 
-        if (maskObj && (maskObj as any).currentMaskShape !== maskShape) {
+        if (
+          maskObj &&
+          ((maskObj as any).currentMaskShape !== maskShape ||
+            (maskObj as any).currentMaskAssetUrl !== props.maskAssetUrl)
+        ) {
           fc.remove(maskObj);
           maskObj = undefined;
         }
@@ -736,6 +1132,18 @@ export default function StudioCanvas({
               top: centerY,
               scaleX: layer.width / pathW,
               scaleY: layer.height / pathH,
+              angle: layer.rotation,
+              selectable: !layer.isLocked,
+              evented: !layer.isLocked,
+            });
+          } else if (maskObj instanceof fabric.Image) {
+            const nativeW = (maskObj as any).getElement?.()?.width || maskObj.width || 100;
+            const nativeH = (maskObj as any).getElement?.()?.height || maskObj.height || 100;
+            maskObj.set({
+              left: centerX,
+              top: centerY,
+              scaleX: layer.width / nativeW,
+              scaleY: layer.height / nativeH,
               angle: layer.rotation,
               selectable: !layer.isLocked,
               evented: !layer.isLocked,
@@ -770,6 +1178,7 @@ export default function StudioCanvas({
               originX: "center",
               originY: "center",
               borderRadius: props.borderRadius || 16,
+              maskAssetUrl: props.maskAssetUrl,
               selectable: !layer.isLocked,
               lockUniScaling: false,
               objectCaching: false,
@@ -778,6 +1187,7 @@ export default function StudioCanvas({
           );
           (shapeObj as any).layerId = layer.id;
           (shapeObj as any).currentMaskShape = maskShape;
+          (shapeObj as any).currentMaskAssetUrl = props.maskAssetUrl;
 
           fc.add(shapeObj);
           obj = shapeObj;
@@ -811,6 +1221,7 @@ export default function StudioCanvas({
             maskCenterY,
             {
               borderRadius: mProps.borderRadius || 16,
+              maskAssetUrl: mProps.maskAssetUrl,
               originX: "center",
               originY: "center",
               absolutePositioned: true,
@@ -822,16 +1233,41 @@ export default function StudioCanvas({
         }
 
         if (assetUrl) {
+          const mProps = linkedMaskLayer?.properties || {};
+          const isCustomMask = linkedMaskLayer && linkedMaskLayer.isVisible && mProps?.maskShape === "CUSTOM" && mProps?.maskAssetUrl;
+          const maskCanvas = isCustomMask && mProps.maskAssetUrl && customMaskCache.has(mProps.maskAssetUrl) ? customMaskCache.get(mProps.maskAssetUrl) : null;
+
+          const photoW = layer.width;
+          const photoH = layer.height;
+          const maskW = linkedMaskLayer ? linkedMaskLayer.width : photoW;
+          const maskH = linkedMaskLayer ? linkedMaskLayer.height : photoH;
+          const maskRelX = linkedMaskLayer ? linkedMaskLayer.posX - layer.posX : 0;
+          const maskRelY = linkedMaskLayer ? linkedMaskLayer.posY - layer.posY : 0;
+
           const existingImgObj = fc.getObjects().find(
             (o: any) => o.layerId === layer.id && o instanceof fabric.Image && (o as any).assetUrl === assetUrl
           ) as fabric.Image | undefined;
 
           if (existingImgObj) {
-            const nativeW = (existingImgObj as any).nativeWidth || 100;
-            const nativeH = (existingImgObj as any).nativeHeight || 100;
+            const rawImgEl = (existingImgObj as any)._rawImageElement || (existingImgObj as any)._element;
+            let activeClipMask: fabric.Object | undefined = clipMask;
+            let currentW = (existingImgObj as any).nativeWidth || 100;
+            let currentH = (existingImgObj as any).nativeHeight || 100;
 
-            const baseScaleX = layer.width / nativeW;
-            const baseScaleY = layer.height / nativeH;
+            if (isCustomMask && maskCanvas && rawImgEl) {
+              const clippedCanvas = renderClippedPhotoCanvas(rawImgEl, maskCanvas, photoW, photoH, maskRelX, maskRelY, maskW, maskH);
+              existingImgObj.setElement(clippedCanvas);
+              (existingImgObj as any)._isClippedCanvas = true;
+              activeClipMask = undefined;
+              currentW = clippedCanvas.width || currentW;
+              currentH = clippedCanvas.height || currentH;
+            } else if (rawImgEl && (existingImgObj as any)._isClippedCanvas) {
+              existingImgObj.setElement(rawImgEl);
+              (existingImgObj as any)._isClippedCanvas = false;
+            }
+
+            const baseScaleX = layer.width / currentW;
+            const baseScaleY = layer.height / currentH;
 
             existingImgObj.set({
               left: centerX,
@@ -844,7 +1280,7 @@ export default function StudioCanvas({
               opacity: opacity,
               selectable: !layer.isLocked,
               evented: !layer.isLocked,
-              clipPath: clipMask,
+              clipPath: activeClipMask,
               objectCaching: false,
               dirty: true,
             });
@@ -862,10 +1298,53 @@ export default function StudioCanvas({
               const oldObj = fc.getObjects().find((o: any) => o.layerId === layer.id);
               if (oldObj) fc.remove(oldObj);
 
-              const baseScaleX = layer.width / nativeW;
-              const baseScaleY = layer.height / nativeH;
+              // Fresh lookup at the exact MOMENT imgEl.onload executes (resolving async timing window)
+              const currentLayers = layersRef.current || visibleLayers;
+              const freshLinkedMaskLayer = currentLayers.find(
+                (l) => l.id === layer.maskLayerId || (l.layerType === "MASK" && l.parentPhotoUploadId === layer.id)
+              );
+              const freshMProps = freshLinkedMaskLayer?.properties || {};
+              const freshIsCustomMask =
+                freshLinkedMaskLayer &&
+                freshLinkedMaskLayer.isVisible &&
+                freshMProps?.maskShape === "CUSTOM" &&
+                freshMProps?.maskAssetUrl;
+              const freshMaskCanvas =
+                freshIsCustomMask && freshMProps.maskAssetUrl ? customMaskCache.get(freshMProps.maskAssetUrl) : null;
 
-              const fabricImg = new fabric.Image(imgEl, {
+              const freshPhotoW = layer.width;
+              const freshPhotoH = layer.height;
+              const freshMaskW = freshLinkedMaskLayer ? freshLinkedMaskLayer.width : freshPhotoW;
+              const freshMaskH = freshLinkedMaskLayer ? freshLinkedMaskLayer.height : freshPhotoH;
+              const freshMaskRelX = freshLinkedMaskLayer ? freshLinkedMaskLayer.posX - layer.posX : 0;
+              const freshMaskRelY = freshLinkedMaskLayer ? freshLinkedMaskLayer.posY - layer.posY : 0;
+
+              let finalImageSource: HTMLImageElement | HTMLCanvasElement = imgEl;
+              let activeClipMask: fabric.Object | undefined = clipMask;
+              let currentW = nativeW;
+              let currentH = nativeH;
+
+              if (freshIsCustomMask && freshMaskCanvas) {
+                const clippedCanvas = renderClippedPhotoCanvas(
+                  imgEl,
+                  freshMaskCanvas,
+                  freshPhotoW,
+                  freshPhotoH,
+                  freshMaskRelX,
+                  freshMaskRelY,
+                  freshMaskW,
+                  freshMaskH
+                );
+                finalImageSource = clippedCanvas;
+                activeClipMask = undefined;
+                currentW = clippedCanvas.width || nativeW;
+                currentH = clippedCanvas.height || nativeH;
+              }
+
+              const baseScaleX = layer.width / currentW;
+              const baseScaleY = layer.height / currentH;
+
+              const fabricImg = new fabric.Image(finalImageSource, {
                 left: centerX,
                 top: centerY,
                 originX: "center",
@@ -877,20 +1356,21 @@ export default function StudioCanvas({
                 selectable: !layer.isLocked,
                 evented: !layer.isLocked,
                 lockUniScaling: false,
-                clipPath: clipMask,
+                clipPath: activeClipMask,
                 objectCaching: false,
                 dirty: true,
               });
 
               (fabricImg as any).layerId = layer.id;
               (fabricImg as any).assetUrl = assetUrl;
+              (fabricImg as any)._rawImageElement = imgEl;
+              (fabricImg as any)._isClippedCanvas = Boolean(freshIsCustomMask && freshMaskCanvas);
               (fabricImg as any).nativeWidth = nativeW;
               (fabricImg as any).nativeHeight = nativeH;
 
               fc.add(fabricImg);
               if (selectedLayerId === layer.id) fc.setActiveObject(fabricImg);
-
-              fc.requestRenderAll();
+              enforceZIndexOrder(fc, currentLayers);
             };
           }
         } else {
@@ -1036,7 +1516,7 @@ export default function StudioCanvas({
     }
 
     fc.renderAll();
-  }, [layers, selectedLayerId, widthPx, heightPx, onSelectLayer, isPreviewMode]);
+  }, [layers, selectedLayerId, widthPx, heightPx, onSelectLayer, isPreviewMode, maskCacheVersion]);
 
   return (
     <div className="w-full h-full min-h-full bg-slate-200/70 overflow-auto p-8 relative select-none flex flex-col">

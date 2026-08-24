@@ -49,6 +49,8 @@ export default function StudioPropertyPanel({
   onOpenMediaPickerForLayer,
   onOpenPhotoUploadModal,
 }: StudioPropertyPanelProps) {
+  const [isUploadingMask, setIsUploadingMask] = React.useState(false);
+
   if (!selectedLayer) {
     return (
       <div className="flex flex-col h-full bg-white border-l border-slate-200 w-80 shrink-0 select-none items-center justify-center p-6 text-center text-slate-400">
@@ -506,15 +508,15 @@ export default function StudioPropertyPanel({
             <div className="bg-purple-50 p-3 rounded-xl border border-purple-200 space-y-3">
               <label className="block text-[11px] font-bold text-purple-900 flex items-center gap-1.5">
                 <Scissors className="w-4 h-4 text-purple-600 shrink-0" />
-                <span>🎭 LỚP MẶT NẠ CẮT (MASK LAYER)</span>
+                <span>MASK CUTOUT LAYER</span>
               </label>
               <p className="text-[10px] text-purple-700 leading-tight">
-                Lớp này dùng để làm khung cắt (mask) cho Photo Upload. Hãy chỉnh vị trí X, Y, W, H và hình dạng cắt bên dưới.
+                This layer defines the cutout mask for Photo Upload. Adjust position X, Y, W, H and select the cutout shape below.
               </p>
 
               {/* Cutout Shape Selector */}
               <div>
-                <label className="block text-[10px] font-bold text-purple-800 mb-1">Khung hình dạng Cắt (Mask Cutout Shape)</label>
+                <label className="block text-[10px] font-bold text-purple-800 mb-1">Mask Cutout Shape</label>
                 <div className="grid grid-cols-3 gap-1.5">
                   <button
                     type="button"
@@ -593,6 +595,24 @@ export default function StudioPropertyPanel({
                     <span>⬡</span>
                     <span>Hexagon</span>
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handlePropChange("maskShape", "CUSTOM");
+                      if (!props.maskAssetUrl && onOpenMediaPickerForLayer) {
+                        onOpenMediaPickerForLayer(selectedLayer.id);
+                      }
+                    }}
+                    className={`py-1.5 px-1 text-center text-[11px] font-bold rounded-lg border transition cursor-pointer flex items-center justify-center gap-1 col-span-3 ${
+                      props.maskShape === "CUSTOM"
+                        ? "bg-purple-600 text-white border-purple-600 shadow-xs"
+                        : "bg-white text-purple-900 border-purple-200 hover:bg-purple-100/50"
+                    }`}
+                  >
+                    <span>🎨</span>
+                    <span>Custom PNG / SVG Mask</span>
+                  </button>
                 </div>
               </div>
 
@@ -600,7 +620,7 @@ export default function StudioPropertyPanel({
               {props.maskShape === "ROUNDED" && (
                 <div className="bg-white p-2.5 rounded-lg border border-purple-200 space-y-1.5">
                   <div className="flex items-center justify-between text-[10px] font-bold text-purple-900">
-                    <span>Corner Radius (Bo góc)</span>
+                    <span>Corner Radius</span>
                     <span className="font-mono text-purple-700">{props.borderRadius || 16}px</span>
                   </div>
                   <input
@@ -615,28 +635,89 @@ export default function StudioPropertyPanel({
               )}
 
               {/* Custom Vector / Image Mask Asset */}
-              <div>
-                <label className="block text-[10px] font-bold text-purple-800 mb-1">Custom Vector / PNG Mask File</label>
+              <div className="bg-white p-2.5 rounded-lg border border-purple-200 space-y-2">
+                <label className="block text-[10px] font-bold text-purple-900">Upload Custom PNG/SVG Mask File</label>
                 {props.maskAssetUrl ? (
-                  <div className="flex items-center gap-2 bg-white p-2 rounded-lg border border-purple-200">
-                    <img src={props.maskAssetUrl} alt="Mask" className="w-8 h-8 rounded border border-purple-300 object-contain bg-slate-100" />
-                    <span className="text-[10px] truncate font-mono text-purple-900 flex-1">Custom Mask Asset</span>
+                  <div className="flex items-center gap-2 bg-purple-50/50 p-2 rounded-lg border border-purple-200">
+                    <img src={props.maskAssetUrl} alt="Custom Mask" className="w-9 h-9 rounded border border-purple-300 object-contain bg-white shrink-0 p-0.5" />
+                    <div className="flex-1 min-w-0">
+                      <span className="block text-[10px] font-bold text-purple-900 truncate">Custom Mask Loaded</span>
+                      <span className="block text-[9px] text-purple-600 font-mono truncate">{props.maskAssetUrl.split("/").pop()}</span>
+                    </div>
                     <button
                       type="button"
-                      onClick={() => handlePropChange("maskAssetUrl", "")}
-                      className="text-xs text-rose-600 hover:underline font-bold"
+                      onClick={() => {
+                        onUpdateLayer(selectedLayer.id, {
+                          properties: {
+                            ...(selectedLayer.properties || {}),
+                            maskAssetUrl: "",
+                            maskShape: "RECTANGLE",
+                          },
+                        });
+                      }}
+                      className="text-[10px] text-rose-600 hover:underline font-bold px-1.5 py-1 bg-white rounded border border-rose-200 cursor-pointer"
                     >
                       Remove
                     </button>
                   </div>
                 ) : (
-                  <button
-                    type="button"
-                    onClick={() => onOpenMediaPickerForLayer && onOpenMediaPickerForLayer(selectedLayer.id)}
-                    className="w-full py-2 text-xs font-semibold text-purple-700 bg-white border border-purple-300 border-dashed rounded-lg hover:bg-purple-100/50 flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <Upload className="w-3.5 h-3.5" /> Choose Custom Mask PNG/SVG
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <label className="flex-1 cursor-pointer">
+                      <input
+                        type="file"
+                        accept="image/png,image/svg+xml,image/*"
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          if (!file || !selectedLayer) return;
+
+                          setIsUploadingMask(true);
+                          try {
+                            const formData = new FormData();
+                            formData.append("file", file);
+
+                            const res = await fetch("/api/upload", {
+                              method: "POST",
+                              body: formData,
+                            });
+
+                            if (res.ok) {
+                              const data = await res.json();
+                              if (data.url) {
+                                onUpdateLayer(selectedLayer.id, {
+                                  properties: {
+                                    ...(selectedLayer.properties || {}),
+                                    maskShape: "CUSTOM",
+                                    maskAssetUrl: data.url,
+                                  },
+                                });
+                              }
+                            }
+                          } catch (err) {
+                            console.error("Mask upload failed:", err);
+                          } finally {
+                            setIsUploadingMask(false);
+                          }
+                        }}
+                        disabled={isUploadingMask}
+                        className="hidden"
+                      />
+                      <span className="w-full py-2 text-xs font-semibold text-purple-700 bg-white border border-purple-300 border-dashed rounded-lg hover:bg-purple-100/50 flex items-center justify-center gap-1.5">
+                        <Upload className="w-3.5 h-3.5" />
+                        {isUploadingMask ? "Uploading..." : "Upload PNG/SVG File"}
+                      </span>
+                    </label>
+
+                    {onOpenMediaPickerForLayer && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenMediaPickerForLayer(selectedLayer.id)}
+                        className="py-2 px-2.5 text-xs font-semibold text-purple-700 bg-white border border-purple-300 rounded-lg hover:bg-purple-100/50 flex items-center justify-center shrink-0 cursor-pointer"
+                        title="Choose from Media Library"
+                      >
+                        Library
+                      </button>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
