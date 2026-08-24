@@ -758,10 +758,13 @@ export default function StudioCanvas({
         fc.add(obj);
       } else if (layer.layerType === "MASK") {
         const maskShape = props.maskShape || "RECTANGLE";
-        const rx = maskShape === "CIRCLE" ? layer.width / 2 : maskShape === "ROUNDED" ? 16 : 4;
-        const ry = maskShape === "CIRCLE" ? layer.height / 2 : maskShape === "ROUNDED" ? 16 : 4;
-
         let maskObj = fc.getObjects().find((o: any) => o.layerId === layer.id);
+
+        if (maskObj && (maskObj as any).currentMaskShape !== maskShape) {
+          fc.remove(maskObj);
+          maskObj = undefined;
+        }
+
         if (maskObj) {
           maskObj.set({
             left: centerX,
@@ -775,18 +778,22 @@ export default function StudioCanvas({
           maskObj.setCoords();
           obj = maskObj;
         } else {
-          const frameRect = new fabric.Rect({
-            width: layer.width,
-            height: layer.height,
-            fill: "rgba(168, 85, 247, 0.12)",
-            stroke: "#9333ea",
-            strokeWidth: 2,
-            strokeDashArray: [6, 4],
-            originX: "center",
-            originY: "center",
-            rx,
-            ry,
-          });
+          const shapeObj = createFabricMaskObject(
+            maskShape,
+            layer.width,
+            layer.height,
+            0,
+            0,
+            {
+              fill: "rgba(168, 85, 247, 0.12)",
+              stroke: "#9333ea",
+              strokeWidth: 2,
+              strokeDashArray: [6, 4],
+              originX: "center",
+              originY: "center",
+              borderRadius: props.borderRadius || 16,
+            }
+          );
 
           const placeholderText = new fabric.Text(`🎭 ${layer.name}\n(${layer.width}×${layer.height}px)`, {
             originX: "center",
@@ -798,7 +805,7 @@ export default function StudioCanvas({
             textAlign: "center",
           });
 
-          obj = new fabric.Group([frameRect, placeholderText], {
+          obj = new fabric.Group([shapeObj, placeholderText], {
             left: centerX,
             top: centerY,
             originX: "center",
@@ -813,6 +820,8 @@ export default function StudioCanvas({
             dirty: true,
           });
           (obj as any).layerId = layer.id;
+          (obj as any).currentMaskShape = maskShape;
+
           fc.add(obj);
         }
       } else if (
@@ -832,20 +841,18 @@ export default function StudioCanvas({
         if (linkedMaskLayer && linkedMaskLayer.isVisible) {
           const mProps = linkedMaskLayer.properties || {};
           const mShape = mProps.maskShape || "RECTANGLE";
-          const mRx = mShape === "CIRCLE" ? linkedMaskLayer.width / 2 : mShape === "ROUNDED" ? 16 : 4;
-          const mRy = mShape === "CIRCLE" ? linkedMaskLayer.height / 2 : mShape === "ROUNDED" ? 16 : 4;
 
-          clipMask = new fabric.Rect({
-            left: linkedMaskLayer.posX,
-            top: linkedMaskLayer.posY,
-            width: linkedMaskLayer.width,
-            height: linkedMaskLayer.height,
-            originX: "left",
-            originY: "top",
-            rx: mRx,
-            ry: mRy,
-            absolutePositioned: true,
-          });
+          clipMask = createFabricMaskObject(
+            mShape,
+            linkedMaskLayer.width,
+            linkedMaskLayer.height,
+            linkedMaskLayer.posX,
+            linkedMaskLayer.posY,
+            {
+              borderRadius: mProps.borderRadius || 16,
+              absolutePositioned: true,
+            }
+          );
         }
 
         if (assetUrl) {
