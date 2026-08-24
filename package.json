@@ -39,7 +39,7 @@
     "@shopify/shopify-app-remix": "^4.1.0",
     "@shopify/shopify-app-session-storage-prisma": "^8.0.0",
     "@tailwindcss/vite": "^4.3.3",
-    "@types/bcryptjs": "^2.4.6",
+    "@types/bcryptjs": "^3.0.0",
     "bcryptjs": "^3.0.3",
     "fabric": "^7.4.0",
     "isbot": "^5.1.0",
