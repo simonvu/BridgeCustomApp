@@ -28,6 +28,7 @@ import StudioPropertyPanel from "../components/studio/StudioPropertyPanel";
 import StudioConditionPanel, { StudioConditionRuleItem } from "../components/studio/StudioConditionPanel";
 import StudioScreenBar, { StudioScreenItem } from "../components/studio/StudioScreenBar";
 import StudioTopToolbar from "../components/studio/StudioTopToolbar";
+import StudioStorefrontPreviewModal from "../components/studio/StudioStorefrontPreviewModal";
 import MediaSelectModal from "../components/MediaSelectModal";
 
 import { injectFontStylesheets, type FontItem } from "../utils/fontLoader";
@@ -267,6 +268,7 @@ export default function ArtworkStudioRoute() {
   const [isSaving, setIsSaving] = useState(false);
   const [saveToast, setSaveToast] = useState(false);
   const [isPreviewMode, setIsPreviewMode] = useState(false);
+  const [storefrontPreviewOpen, setStorefrontPreviewOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [showGrid, setShowGrid] = useState(true);
   const [niche, setNiche] = useState<string>(artworkData?.niche || "General");
@@ -1226,6 +1228,17 @@ export default function ArtworkStudioRoute() {
               </button>
             </div>
 
+            {/* Storefront Live Preview & Form Button */}
+            <button
+              type="button"
+              onClick={() => setStorefrontPreviewOpen(true)}
+              className="h-8 flex items-center gap-1.5 text-xs font-bold text-slate-800 bg-white hover:bg-slate-100 border border-slate-300 px-3 rounded-lg shadow-2xs transition cursor-pointer"
+              title="Open Storefront Customer Live Preview & Form"
+            >
+              <Eye className="w-3.5 h-3.5 text-indigo-600" />
+              <span>Live Preview & Form</span>
+            </button>
+
             {/* Save Artwork Button (Fixed 32px Height) */}
             <button
               onClick={handleSaveArtwork}
@@ -1677,6 +1690,20 @@ export default function ArtworkStudioRoute() {
           />
         );
       })()}
+
+      {/* Storefront Customer Live Preview & Form Modal */}
+      <StudioStorefrontPreviewModal
+        isOpen={storefrontPreviewOpen}
+        onClose={() => setStorefrontPreviewOpen(false)}
+        artworkTitle={title}
+        screens={screens}
+        screenFieldConfig={screenFieldConfig}
+        fields={fields}
+        rules={rules}
+        widthPx={widthPx}
+        heightPx={heightPx}
+        fonts={fonts}
+      />
     </DashboardLayout>
   );
 }
