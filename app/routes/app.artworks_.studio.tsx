@@ -16,6 +16,8 @@ import {
   Redo2,
   Grid,
   Settings,
+  LogOut,
+  Trash2,
 } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import prisma from "../db.server";
@@ -288,6 +290,8 @@ export default function ArtworkStudioRoute() {
   const [activeTab, setActiveTab] = useState<"FIELDS" | "LAYERS" | "CONDITIONS">("FIELDS");
   const [isSaving, setIsSaving] = useState(false);
   const [saveToast, setSaveToast] = useState(false);
+  const [isDirty, setIsDirty] = useState(false);
+  const [showCloseConfirmModal, setShowCloseConfirmModal] = useState(false);
   const [isPreviewMode, setIsPreviewMode] = useState(false);
   const [storefrontPreviewOpen, setStorefrontPreviewOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
@@ -296,6 +300,19 @@ export default function ArtworkStudioRoute() {
   const [category, setCategory] = useState<string>(artworkData?.category || "General");
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
+
+  // Browser Tab Close & Page Reload Unsaved Changes Confirmation Guard
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isDirty) {
+        e.preventDefault();
+        e.returnValue = "";
+        return "";
+      }
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [isDirty]);
 
   // Right Sidebar Draggable Panel Height Resizer State (15% to 85%, default 50%)
   const [layerPanelHeightPercent, setLayerPanelHeightPercent] = useState<number>(50);
@@ -435,6 +452,7 @@ export default function ArtworkStudioRoute() {
       const initialSnapshot = [JSON.parse(JSON.stringify(screens))];
       setHistory(initialSnapshot);
       setHistoryIndex(0);
+      setIsDirty(false);
     }
   }, [screens]);
 
@@ -451,6 +469,7 @@ export default function ArtworkStudioRoute() {
 
     setHistory(updated);
     setHistoryIndex(updated.length - 1);
+    setIsDirty(true);
   };
 
   const handleUndo = () => {
@@ -730,15 +749,42 @@ export default function ArtworkStudioRoute() {
         // Synchronize browser URL query string so page reload fetches THIS saved record!
         window.history.replaceState(null, "", `/app/artworks/studio?id=${resData.artwork.id}`);
         setSaveToast(true);
+        setIsDirty(false); // Reset unsaved changes state!
         setTimeout(() => setSaveToast(false), 3000);
+        return true;
       } else {
         alert("Save failed: " + (resData.error || "Unknown error"));
+        return false;
       }
     } catch (e: any) {
       alert("Save error: " + e.message);
+      return false;
     } finally {
       setIsSaving(false);
     }
+  };
+
+  // Studio Exit & Unsaved Changes Confirmation Handlers
+  const handleCloseStudio = () => {
+    if (!isDirty) {
+      navigate("/app/artworks");
+    } else {
+      setShowCloseConfirmModal(true);
+    }
+  };
+
+  const handleSaveAndClose = async () => {
+    const success = await handleSaveArtwork();
+    if (success) {
+      setShowCloseConfirmModal(false);
+      navigate("/app/artworks");
+    }
+  };
+
+  const handleDiscardAndClose = () => {
+    setIsDirty(false);
+    setShowCloseConfirmModal(false);
+    navigate("/app/artworks");
   };
 
   // Layer Handlers
@@ -757,7 +803,7 @@ export default function ArtworkStudioRoute() {
       isVisible: true,
       isLocked: false,
       properties: type === "TEXT"
-        ? { text: "Sample Text", fontSize: 36, color: "#1e293b", align: "center" }
+        ? { text: "Sample Text", fontSize: 36, color: "#1e293b", align: "center", minCharacters: 3, maxCharacters: 50, disallowSpecialChars: false }
         : type === "ASSET"
         ? { opacity: 1 }
         : type === "PHOTO_UPLOAD"
@@ -1007,6 +1053,8 @@ export default function ArtworkStudioRoute() {
                 { label: "Option 2", value: "option_2" },
               ],
             }
+          : fieldType === "TEXT"
+          ? { minCharacters: 3, maxCharacters: 50, disallowSpecialChars: false }
           : {},
     };
 
@@ -1037,7 +1085,7 @@ export default function ArtworkStudioRoute() {
       linkedFieldId: newFieldId,
       properties:
         layerType === "TEXT"
-          ? { text: `[${newFieldLabel}]`, fontSize: 32, color: "#1e293b", align: "center" }
+          ? { text: `[${newFieldLabel}]`, fontSize: 32, color: "#1e293b", align: "center", minCharacters: 3, maxCharacters: 50, disallowSpecialChars: false }
           : {},
     };
 
@@ -1372,11 +1420,28 @@ export default function ArtworkStudioRoute() {
               </button>
             </div>
 
-            {/* Save Artwork Button (Fixed 32px Height) */}
+            {/* Close Button */}
             <button
-              onClick={handleSaveArtwork}
-              disabled={isSaving}
-              className="h-8 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-3 rounded-lg shadow-sm transition flex items-center gap-1.5 shrink-0 cursor-pointer disabled:opacity-50"
+              type="button"
+              onClick={handleCloseStudio}
+              className="h-8 px-3 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs flex items-center gap-1.5 transition cursor-pointer shrink-0 shadow-2xs"
+              title="Close Studio and return to Artwork List"
+            >
+              <LogOut className="w-3.5 h-3.5 text-slate-500" />
+              <span>Close</span>
+            </button>
+
+            {/* Save Button (Disabled when no unsaved changes exist) */}
+            <button
+              type="button"
+              onClick={() => handleSaveArtwork()}
+              disabled={isSaving || !isDirty}
+              className={`h-8 font-bold text-xs px-3.5 rounded-lg transition flex items-center gap-1.5 shrink-0 ${
+                isSaving || !isDirty
+                  ? "bg-slate-200 text-slate-400 border border-slate-300 cursor-not-allowed opacity-60"
+                  : "bg-blue-600 hover:bg-blue-700 text-white cursor-pointer shadow-md"
+              }`}
+              title={!isDirty ? "No unsaved changes" : "Save Artwork"}
             >
               {isSaving ? (
                 <>
@@ -1388,7 +1453,7 @@ export default function ArtworkStudioRoute() {
                 </>
               ) : (
                 <>
-                  <Save className="w-3.5 h-3.5" /> Save Artwork
+                  <Save className="w-3.5 h-3.5" /> Save
                 </>
               )}
             </button>
@@ -1876,6 +1941,62 @@ export default function ArtworkStudioRoute() {
         heightPx={heightPx}
         fonts={fonts}
       />
+
+      {/* Unsaved Changes Confirmation Modal */}
+      {showCloseConfirmModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-150">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 space-y-4 animate-in zoom-in-95 duration-150">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-amber-100 border border-amber-200 flex items-center justify-center text-amber-600 shrink-0 font-bold text-lg">
+                ⚠️
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-900 text-base">Save Unsaved Changes?</h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  You have made changes in this artwork studio. Would you like to save them before leaving?
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={handleSaveAndClose}
+                disabled={isSaving}
+                className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl shadow-xs flex items-center justify-center gap-2 transition cursor-pointer"
+              >
+                {isSaving ? (
+                  <>
+                    <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Saving...
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4" />
+                    <span>Save & Close</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleDiscardAndClose}
+                className="w-full py-2.5 px-4 bg-slate-100 hover:bg-rose-50 border border-slate-300 hover:border-rose-300 text-slate-700 hover:text-rose-700 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Discard Changes & Exit</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowCloseConfirmModal(false)}
+                className="w-full py-2 px-4 bg-transparent hover:bg-slate-100 text-slate-500 font-semibold text-xs rounded-xl transition cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </DashboardLayout>
   );
 }

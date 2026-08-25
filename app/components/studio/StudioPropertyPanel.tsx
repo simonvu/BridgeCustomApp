@@ -51,6 +51,8 @@ export default function StudioPropertyPanel({
   onUpdateLayer,
   onOpenMediaPickerForLayer,
   onOpenPhotoUploadModal,
+  onAddMaskLayer,
+  onDeleteLayer,
 }: StudioPropertyPanelProps) {
   const [isUploadingMask, setIsUploadingMask] = React.useState(false);
 
@@ -320,24 +322,135 @@ export default function StudioPropertyPanel({
 
         {/* TEXT FIELD SAMPLE DATA (RIGHT PANEL) */}
         {selectedLayer.layerType === "TEXT" && (
-          <div className="space-y-3 pt-3 border-t border-slate-200">
-            <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5 uppercase tracking-wider">
-              <Type className="w-4 h-4 text-indigo-600" /> Text Sample Data
-            </h4>
-
-            {/* Sample Preview Text */}
+          <div className="space-y-2.5">
             <div>
               <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                Sample Data / Default Text
+                Default Text
               </label>
               <input
                 type="text"
                 value={props.text !== undefined ? props.text : selectedLayer.name}
                 onChange={(e) => handlePropChange("text", e.target.value)}
                 className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-blue-500 focus:outline-none text-xs font-semibold text-slate-800 bg-white"
-                placeholder="e.g. Hello Simon"
+                placeholder="e.g. Happy Family"
               />
-              <p className="text-[10px] text-slate-400 mt-1">Sample content rendered on canvas for artwork preview</p>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                Instructional Help Text
+              </label>
+              <input
+                type="text"
+                value={props.helpText !== undefined ? props.helpText : ""}
+                onChange={(e) => handlePropChange("helpText", e.target.value)}
+                className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-blue-500 focus:outline-none text-xs text-slate-800 bg-white"
+                placeholder="e.g. Enter your custom name or message"
+              />
+            </div>
+
+            <div className="flex items-center gap-4 pt-1">
+              <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer" title="Require customer to fill out this text field before ordering">
+                <input
+                  type="checkbox"
+                  checked={props.isRequired === true}
+                  onChange={(e) => handlePropChange("isRequired", e.target.checked)}
+                  className="rounded text-blue-600 focus:ring-blue-500"
+                />
+                <span>Required</span>
+              </label>
+
+              <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer" title="Allow customer to personalize this text field on storefront order">
+                <input
+                  type="checkbox"
+                  checked={props.allowPersonalized !== false}
+                  onChange={(e) => handlePropChange("allowPersonalized", e.target.checked)}
+                  className="rounded text-emerald-600 focus:ring-emerald-500"
+                />
+                <span className="text-emerald-950 font-semibold">Allow Personalized</span>
+              </label>
+            </div>
+
+            {/* Min / Max Length & Special Characters Filter */}
+            <div className="space-y-2 pt-2 border-t border-slate-200">
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-600 mb-0.5">Min Chars</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={500}
+                    value={props.minCharacters !== undefined ? props.minCharacters : 3}
+                    onChange={(e) => handlePropChange("minCharacters", Number(e.target.value))}
+                    className="w-full border border-slate-300 rounded px-2 py-1 bg-white text-xs font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-semibold text-slate-600 mb-0.5">Max Chars</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={1000}
+                    value={props.maxCharacters !== undefined ? props.maxCharacters : 50}
+                    onChange={(e) => handlePropChange("maxCharacters", Number(e.target.value))}
+                    className="w-full border border-slate-300 rounded px-2 py-1 bg-white text-xs font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-4 pt-1">
+                <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer" title="Prevent customer from typing special/invalid symbols for printing">
+                  <input
+                    type="checkbox"
+                    checked={props.disallowSpecialChars === true}
+                    onChange={(e) => handlePropChange("disallowSpecialChars", e.target.checked)}
+                    className="rounded text-amber-600 focus:ring-amber-500"
+                  />
+                  <span className="text-amber-950 text-xs font-semibold">Disallow Special Characters</span>
+                </label>
+              </div>
+
+              <div className="space-y-1.5 pt-0.5">
+                <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer" title="Allow text to wrap onto multiple lines when typing (disables Auto-Fit)">
+                  <input
+                    type="checkbox"
+                    checked={props.allowMultiline === true}
+                    onChange={(e) => {
+                      const isChecked = e.target.checked;
+                      if (isChecked) {
+                        onUpdateLayer(selectedLayer.id, {
+                          properties: {
+                            ...(selectedLayer.properties || {}),
+                            allowMultiline: true,
+                            maxLines: props.maxLines || 2,
+                            autoFit: false,
+                          },
+                        });
+                      } else {
+                        handlePropChange("allowMultiline", false);
+                      }
+                    }}
+                    className="rounded text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span className="text-indigo-950 text-xs font-semibold">Allow Multi-line Text (Auto Wrap)</span>
+                </label>
+
+                {props.allowMultiline && (
+                  <div className="flex items-center gap-2 pt-1 pl-6">
+                    <label className="text-[11px] font-semibold text-slate-700 shrink-0">Max Lines Limit:</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={20}
+                      value={props.maxLines !== undefined ? props.maxLines : 2}
+                      onChange={(e) => handlePropChange("maxLines", Number(e.target.value))}
+                      className="w-16 border border-slate-300 rounded px-2 py-0.5 bg-white text-xs font-mono font-bold text-indigo-950 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                    />
+                    <span className="text-[10px] text-slate-400">(Max line count limit)</span>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -446,15 +559,27 @@ export default function StudioPropertyPanel({
                 />
               </div>
 
-              <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer pt-1">
-                <input
-                  type="checkbox"
-                  checked={props.isRequired !== false}
-                  onChange={(e) => handlePropChange("isRequired", e.target.checked)}
-                  className="rounded text-purple-600 focus:ring-purple-500"
-                />
-                <span>Required Field for Customer Order</span>
-              </label>
+              <div className="flex items-center gap-4 pt-1">
+                <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer" title="Require customer to upload photo before ordering">
+                  <input
+                    type="checkbox"
+                    checked={props.isRequired !== false}
+                    onChange={(e) => handlePropChange("isRequired", e.target.checked)}
+                    className="rounded text-purple-600 focus:ring-purple-500"
+                  />
+                  <span>Required</span>
+                </label>
+
+                <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer" title="Allow customer to personalize this photo upload on storefront order">
+                  <input
+                    type="checkbox"
+                    checked={props.allowPersonalized !== false}
+                    onChange={(e) => handlePropChange("allowPersonalized", e.target.checked)}
+                    className="rounded text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <span className="text-emerald-950 font-semibold">Allow Personalized</span>
+                </label>
+              </div>
             </div>
 
             {/* Sample Photo Selector for Admin Design Composition */}

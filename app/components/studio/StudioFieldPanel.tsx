@@ -220,18 +220,34 @@ export default function StudioFieldPanel({
                   <span className="bg-slate-100 px-2 py-0.5 rounded text-[10px] font-medium border border-slate-200">
                     {getFieldTypeLabel(field.fieldType)}
                   </span>
-                  <label
-                    onClick={(e) => e.stopPropagation()}
-                    className="flex items-center gap-1 text-[11px] cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={field.isRequired}
-                      onChange={(e) => onUpdateField(field.id, { isRequired: e.target.checked })}
-                      className="rounded text-blue-600 text-xs"
-                    />
-                    <span>Required</span>
-                  </label>
+                  <div className="flex items-center gap-3">
+                    <label
+                      onClick={(e) => e.stopPropagation()}
+                      className="flex items-center gap-1 text-[11px] cursor-pointer"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={field.isRequired}
+                        onChange={(e) => onUpdateField(field.id, { isRequired: e.target.checked })}
+                        className="rounded text-blue-600 text-xs"
+                      />
+                      <span>Required</span>
+                    </label>
+
+                    <label
+                      onClick={(e) => e.stopPropagation()}
+                      className="flex items-center gap-1 text-[11px] cursor-pointer"
+                      title="Allow customer to personalize this field on storefront order"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={field.allowPersonalized !== false}
+                        onChange={(e) => onUpdateField(field.id, { allowPersonalized: e.target.checked })}
+                        className="rounded text-emerald-600 text-xs"
+                      />
+                      <span className="font-semibold text-slate-700">Allow Personalized</span>
+                    </label>
+                  </div>
                 </div>
 
                 {/* OPTION VIEW TYPE SELECTOR (Dropdown / Text Button / Image Icon) */}
@@ -272,6 +288,98 @@ export default function StudioFieldPanel({
                       >
                         🔽 Dropdown
                       </button>
+                    </div>
+                {/* TEXT Field Specific Config (Min/Max Chars, Disallow Special Characters) */}
+                {field.fieldType === "TEXT" && (
+                  <div onClick={(e) => e.stopPropagation()} className="pt-2 border-t border-slate-200/60 space-y-2 text-xs">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-semibold text-slate-600 mb-0.5">Min Chars</label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={500}
+                          value={config.minCharacters !== undefined ? config.minCharacters : 3}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            onUpdateField(field.id, {
+                              config: { ...config, minCharacters: val },
+                            });
+                          }}
+                          className="w-full border border-slate-300 rounded px-2 py-1 bg-white text-xs font-mono"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-semibold text-slate-600 mb-0.5">Max Chars</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={1000}
+                          value={config.maxCharacters !== undefined ? config.maxCharacters : 50}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            onUpdateField(field.id, {
+                              config: { ...config, maxCharacters: val },
+                            });
+                          }}
+                          className="w-full border border-slate-300 rounded px-2 py-1 bg-white text-xs font-mono"
+                        />
+                      </div>
+                    </div>
+
+                    <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-700 cursor-pointer pt-1" title="Prevent customer from typing special/invalid symbols">
+                      <input
+                        type="checkbox"
+                        checked={config.disallowSpecialChars === true}
+                        onChange={(e) => {
+                          onUpdateField(field.id, {
+                            config: { ...config, disallowSpecialChars: e.target.checked },
+                          });
+                        }}
+                        className="rounded text-amber-600 text-xs"
+                      />
+                      <span className="text-amber-950 font-semibold">Disallow Special Characters</span>
+                    </label>
+
+                    <div className="space-y-1 pt-1">
+                      <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-700 cursor-pointer" title="Allow text to wrap onto multiple lines when typing">
+                        <input
+                          type="checkbox"
+                          checked={config.allowMultiline === true}
+                          onChange={(e) => {
+                            const isChecked = e.target.checked;
+                            onUpdateField(field.id, {
+                              config: {
+                                ...config,
+                                allowMultiline: isChecked,
+                                maxLines: config.maxLines || 2,
+                              },
+                            });
+                          }}
+                          className="rounded text-indigo-600 text-xs"
+                        />
+                        <span className="text-indigo-950 font-semibold">Allow Multi-line Text (Auto Wrap)</span>
+                      </label>
+
+                      {config.allowMultiline && (
+                        <div className="flex items-center gap-2 pt-1 pl-5">
+                          <label className="text-[10px] font-semibold text-slate-600 shrink-0">Max Lines Limit:</label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={20}
+                            value={config.maxLines !== undefined ? config.maxLines : 2}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              onUpdateField(field.id, {
+                                config: { ...config, maxLines: val },
+                              });
+                            }}
+                            className="w-14 border border-slate-300 rounded px-1.5 py-0.5 bg-white text-xs font-mono font-bold text-indigo-950"
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}

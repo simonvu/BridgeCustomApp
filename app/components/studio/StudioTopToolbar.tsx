@@ -447,14 +447,27 @@ export default function StudioTopToolbar({
                 </div>
                 <button
                   type="button"
-                  onClick={() => handlePropChange("autoFit", !(props.autoFit !== false))}
+                  onClick={() => {
+                    const isTurningOn = props.autoFit === false || props.allowMultiline;
+                    if (isTurningOn) {
+                      onUpdateLayer(selectedLayer.id, {
+                        properties: {
+                          ...(selectedLayer.properties || {}),
+                          autoFit: true,
+                          allowMultiline: false,
+                        },
+                      });
+                    } else {
+                      handlePropChange("autoFit", false);
+                    }
+                  }}
                   className={`px-2.5 py-1 rounded text-[11px] font-bold transition cursor-pointer ${
-                    props.autoFit !== false
-                      ? "bg-emerald-600 text-white"
-                      : "bg-slate-200 text-slate-600"
+                    props.autoFit !== false && !props.allowMultiline
+                      ? "bg-emerald-600 text-white shadow-2xs"
+                      : "bg-slate-200 text-slate-600 hover:bg-slate-300"
                   }`}
                 >
-                  {props.autoFit !== false ? "ON" : "OFF"}
+                  {props.autoFit !== false && !props.allowMultiline ? "ON" : "OFF"}
                 </button>
               </div>
             )}

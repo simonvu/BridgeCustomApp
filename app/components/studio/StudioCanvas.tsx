@@ -981,7 +981,7 @@ export default function StudioCanvas({
   // Synchronize React Layer State ➔ Fabric.js Objects
   useEffect(() => {
     const fc = fabricCanvasRef.current;
-    if (!fc || isUpdatingFromFabricRef.current) return;
+    if (!fc) return;
 
     isUpdatingFromFabricRef.current = true;
 
@@ -1021,12 +1021,45 @@ export default function StudioCanvas({
 
       if (layer.layerType === "TEXT") {
         const rawTextStr = props.text !== undefined ? props.text : layer.name;
-        const textStr = applyTextCase(rawTextStr, props.textCase);
+        let textStr = applyTextCase(rawTextStr, props.textCase);
+
         const font = props.fontFamily || "Roboto";
         const fontWeight = props.fontWeight || "normal";
         const baseFontSize = Number(props.fontSize) || 36;
-        const isAutoFit = props.autoFit !== false;
+        const isAutoFit = Boolean((props.autoFit !== false) && !props.allowMultiline);
         const fontSize = getFitFontSize(textStr, font, baseFontSize, layer.width, isAutoFit);
+
+        const maxLinesLimit = props.allowMultiline && props.maxLines && Number(props.maxLines) > 0 ? Number(props.maxLines) : 0;
+        if (maxLinesLimit > 0) {
+          // 1. Truncate hard line breaks if any
+          const hardLines = textStr.split("\n");
+          if (hardLines.length > maxLinesLimit) {
+            textStr = hardLines.slice(0, maxLinesLimit).join("\n");
+          }
+
+          // 2. Truncate soft word-wrapped lines inside layer width
+          try {
+            const tempTb = new fabric.Textbox(textStr, {
+              width: layer.width,
+              fontFamily: font,
+              fontSize: fontSize,
+              fontWeight: fontWeight,
+              splitByGrapheme: false,
+            });
+            const softLines = tempTb._textLines || [];
+            if (softLines.length > maxLinesLimit) {
+              const truncated: string[] = [];
+              for (let i = 0; i < maxLinesLimit; i++) {
+                const lineData = softLines[i];
+                const lineStr = Array.isArray(lineData) ? lineData.join("") : String(lineData || "");
+                truncated.push(lineStr.trim());
+              }
+              textStr = truncated.join("\n");
+            }
+          } catch (err) {
+            // Ignore error
+          }
+        }
         const opacity = props.opacity !== undefined ? Number(props.opacity) : 1;
         const strokeWidth = Number(props.strokeWidth) || 0;
         const curveAngle = Number(props.curveAngle) || 0;
@@ -1120,17 +1153,24 @@ export default function StudioCanvas({
         let fabricOriginY: any = "center";
 
         if (!curvePath) {
-          if (hAlign === "left") textX = -layer.width / 2;
-          else if (hAlign === "right") textX = layer.width / 2;
+          if (props.allowMultiline) {
+            textX = 0;
+            fabricOriginX = "center";
+          } else {
+            if (hAlign === "left") textX = -layer.width / 2;
+            else if (hAlign === "right") textX = layer.width / 2;
+            fabricOriginX = hAlign === "left" ? "left" : hAlign === "right" ? "right" : "center";
+          }
 
           if (vAlign === "top") textY = -layer.height / 2;
           else if (vAlign === "bottom") textY = layer.height / 2;
 
-          fabricOriginX = hAlign === "left" ? "left" : hAlign === "right" ? "right" : "center";
           fabricOriginY = vAlign === "top" ? "top" : vAlign === "bottom" ? "bottom" : "center";
         }
 
-        const textObj = new fabric.Text(textStr, {
+        const isMultilineTextbox = Boolean(props.allowMultiline && !curvePath);
+
+        const textOptions: any = {
           left: textX,
           top: textY,
           originX: fabricOriginX,
@@ -1139,64 +1179,67 @@ export default function StudioCanvas({
           fontWeight: fontWeight,
           fontSize: fontSize,
           fill: fillStyle,
+          textAlign: hAlign,
           stroke: strokeWidth > 0 ? (props.strokeColor || "#000000") : undefined,
           strokeWidth: strokeWidth,
           opacity: opacity,
           shadow: shadowObj,
           path: curvePath || undefined,
           pathStartOffset: curvePath ? pathStartOffset : 0,
+          splitByGrapheme: false,
           objectCaching: false,
           dirty: true,
-        });
+        };
+
+        const textObj = isMultilineTextbox
+          ? new fabric.Textbox(textStr, { ...textOptions, width: layer.width })
+          : new fabric.Text(textStr, textOptions);
 
         if (obj && obj instanceof fabric.Group) {
-          obj.set({
-            left: centerX,
-            top: centerY,
-            angle: layer.rotation,
-            width: layer.width,
-            height: layer.height,
-            selectable: !layer.isLocked,
-            evented: !layer.isLocked,
-            dirty: true,
-          });
           const groupChildren = obj.getObjects();
           const frameRectChild = groupChildren[0] as fabric.Rect;
           const textChild = groupChildren[1] as fabric.Text;
 
-          if (frameRectChild) {
-            frameRectChild.set({
+          // If text object type changed (Textbox vs Text), recreate the group
+          if (!textChild || (textChild instanceof fabric.Textbox) !== isMultilineTextbox) {
+            fc.remove(obj);
+            obj = undefined;
+          } else {
+            obj.set({
+              left: centerX,
+              top: centerY,
+              angle: layer.rotation,
               width: layer.width,
               height: layer.height,
-              stroke: isTextSelected ? "rgba(79, 70, 229, 0.45)" : "transparent",
-              strokeWidth: isTextSelected ? 1 : 0,
-              strokeDashArray: isTextSelected ? [4, 4] : undefined,
+              selectable: !layer.isLocked,
+              evented: !layer.isLocked,
               dirty: true,
             });
+
+            if (frameRectChild) {
+              frameRectChild.set({
+                width: layer.width,
+                height: layer.height,
+                stroke: isTextSelected ? "rgba(79, 70, 229, 0.45)" : "transparent",
+                strokeWidth: isTextSelected ? 1 : 0,
+                strokeDashArray: isTextSelected ? [4, 4] : undefined,
+                dirty: true,
+              });
+            }
+            if (textChild) {
+              if (isMultilineTextbox && textChild instanceof fabric.Textbox) {
+                textChild.set({ width: layer.width });
+              }
+              textChild.set({
+                text: textStr,
+                ...textOptions,
+              });
+            }
+            obj.setCoords();
           }
-          if (textChild) {
-            textChild.set({
-              text: textStr,
-              left: textX,
-              top: textY,
-              originX: fabricOriginX,
-              originY: fabricOriginY,
-              fontFamily: font,
-              fontWeight: fontWeight,
-              fontSize: fontSize,
-              fill: fillStyle,
-              stroke: strokeWidth > 0 ? (props.strokeColor || "#000000") : undefined,
-              strokeWidth: strokeWidth,
-              opacity: opacity,
-              shadow: shadowObj,
-              path: curvePath || undefined,
-              pathStartOffset: curvePath ? pathStartOffset : 0,
-              dirty: true,
-            });
-          }
-          obj.setCoords();
-        } else {
-          if (obj) fc.remove(obj);
+        }
+
+        if (!obj) {
           obj = new fabric.Group([frameRect, textObj], {
             left: centerX,
             top: centerY,
