@@ -295,6 +295,60 @@ export default function ArtworkStudioRoute() {
   const [niche, setNiche] = useState<string>(artworkData?.niche || "General");
   const [category, setCategory] = useState<string>(artworkData?.category || "General");
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+
+  // Right Sidebar Draggable Panel Height Resizer State (15% to 85%, default 50%)
+  const [layerPanelHeightPercent, setLayerPanelHeightPercent] = useState<number>(50);
+  const sidebarPanelsContainerRef = useRef<HTMLDivElement>(null);
+
+  const handleStartResizingPanels = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const container = sidebarPanelsContainerRef.current;
+    if (!container) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const containerHeight = containerRect.height;
+    const startY = e.clientY;
+    const startPercent = layerPanelHeightPercent;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const deltaY = moveEvent.clientY - startY;
+      const deltaPercent = (deltaY / containerHeight) * 100;
+      const newPercent = Math.max(15, Math.min(85, startPercent + deltaPercent));
+      setLayerPanelHeightPercent(newPercent);
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  };
+
+  // Right Sidebar Horizontal Width Resizer State (280px to 650px, default 400px)
+  const [rightSidebarWidthPx, setRightSidebarWidthPx] = useState<number>(400);
+
+  const handleStartResizingRightSidebar = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = rightSidebarWidthPx;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const deltaX = startX - moveEvent.clientX;
+      const newWidth = Math.max(280, Math.min(650, startWidth + deltaX));
+      setRightSidebarWidthPx(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  };
 
   // Photo Upload Customer Customization Modal State
   const [photoUploadModalOpen, setPhotoUploadModalOpen] = useState(false);
@@ -1369,18 +1423,42 @@ export default function ArtworkStudioRoute() {
             </div>
           </div>
 
-          {/* RIGHT SIDEBAR: Artwork Info Header + Layer Stack & Property Inspector (Widen to 400px) */}
-          <div className="flex flex-col border-l border-slate-200 bg-white shrink-0 w-[400px]">
+          {/* HORIZONTAL DRAGGABLE RESIZER SPLITTER BAR (BETWEEN CANVAS & RIGHT SIDEBAR) */}
+          <div
+            onMouseDown={handleStartResizingRightSidebar}
+            className="w-2 bg-slate-200/80 hover:bg-blue-300 border-x border-slate-300/60 cursor-ew-resize flex items-center justify-center group transition select-none shrink-0 z-20"
+            title="Drag left/right to adjust sidebar width"
+          >
+            <div className="h-8 w-1 rounded-full bg-slate-400 group-hover:bg-blue-600 transition" />
+          </div>
+
+          {/* RIGHT SIDEBAR: Artwork Info Header + Layer Stack & Property Inspector */}
+          <div style={{ width: `${rightSidebarWidthPx}px` }} className="flex flex-col bg-white shrink-0">
             {/* ARTWORK TITLE & SETTINGS HEADER (Relocated to Right Sidebar) */}
-            <div className="px-3 py-2 border-b border-slate-200 bg-slate-50/80 flex items-center justify-between gap-2 shrink-0">
+            <div className="h-9 px-3 border-b border-slate-200 bg-slate-50/80 flex items-center justify-between gap-2 shrink-0">
               <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                <input
-                  type="text"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  className="font-bold text-slate-900 text-xs bg-white hover:bg-slate-100 border border-slate-200 focus:border-blue-500 rounded px-2 py-1 focus:outline-none truncate w-full"
-                  placeholder="Artwork Title"
-                />
+                {isEditingTitle ? (
+                  <input
+                    type="text"
+                    autoFocus
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    onBlur={() => setIsEditingTitle(false)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === "Escape") setIsEditingTitle(false);
+                    }}
+                    className="font-bold text-slate-900 text-xs bg-white border border-blue-500 rounded px-2 py-1 focus:outline-none w-full shadow-2xs"
+                    placeholder="Artwork Title"
+                  />
+                ) : (
+                  <span
+                    onDoubleClick={() => setIsEditingTitle(true)}
+                    className="font-bold text-slate-900 text-xs hover:bg-slate-200/60 rounded px-2 py-1 transition cursor-pointer truncate max-w-[220px] select-none"
+                    title="Double click to edit artwork title"
+                  >
+                    {title || "Untitled Artwork"}
+                  </span>
+                )}
                 <span className="text-[11px] text-slate-400 font-mono shrink-0">
                   ({widthPx}×{heightPx})
                 </span>
@@ -1396,8 +1474,8 @@ export default function ArtworkStudioRoute() {
               </button>
             </div>
 
-            <div className="flex-1 flex flex-col overflow-hidden">
-              <div className="h-1/2 border-b border-slate-200 overflow-hidden">
+            <div ref={sidebarPanelsContainerRef} className="flex-1 flex flex-col overflow-hidden select-none">
+              <div style={{ height: `${layerPanelHeightPercent}%` }} className="overflow-hidden">
                 <StudioLayerPanel
                   layers={layers}
                   selectedLayerId={selectedLayerId}
@@ -1411,7 +1489,17 @@ export default function ArtworkStudioRoute() {
                   onReorderLayers={(newLayers) => setLayers(() => newLayers)}
                 />
               </div>
-              <div className="h-1/2 overflow-hidden">
+
+              {/* DRAGGABLE RESIZER SPLITTER BAR */}
+              <div
+                onMouseDown={handleStartResizingPanels}
+                className="h-2 bg-slate-100 hover:bg-blue-100 border-y border-slate-200 cursor-ns-resize flex items-center justify-center group transition select-none shrink-0"
+                title="Drag up/down to adjust panel heights"
+              >
+                <div className="w-8 h-1 rounded-full bg-slate-300 group-hover:bg-blue-500 transition" />
+              </div>
+
+              <div style={{ height: `calc(${100 - layerPanelHeightPercent}% - 8px)` }} className="overflow-hidden">
                 <StudioPropertyPanel
                   selectedLayer={selectedLayer}
                   selectedLayerIds={selectedLayerIds}

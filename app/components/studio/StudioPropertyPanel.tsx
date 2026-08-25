@@ -134,9 +134,9 @@ export default function StudioPropertyPanel({
   return (
     <div className="flex flex-col h-full bg-white w-full select-none overflow-y-auto">
       {/* Header */}
-      <div className="p-3.5 border-b border-slate-200 bg-slate-50/70">
-        <h3 className="font-bold text-slate-900 text-xs flex items-center gap-2 uppercase tracking-wider">
-          <SlidersHorizontal className="w-4 h-4 text-blue-600" />
+      <div className="h-9 px-3 border-b border-slate-200 bg-slate-50/80 flex items-center justify-between shrink-0">
+        <h3 className="font-bold text-slate-800 text-xs flex items-center gap-1.5 uppercase tracking-wider">
+          <SlidersHorizontal className="w-3.5 h-3.5 text-blue-600" />
           {selectedLayer.name} Properties
         </h3>
       </div>

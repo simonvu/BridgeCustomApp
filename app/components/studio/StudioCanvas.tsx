@@ -301,6 +301,23 @@ export function createFabricMaskObject(
     });
   }
 
+  if (shape === "RECTANGLE") {
+    const { borderRadius, rx: optRx, ry: optRy, ...restOptions } = options;
+    return new fabric.Rect({
+      left,
+      top,
+      width,
+      height,
+      originX,
+      originY,
+      absolutePositioned: options.absolutePositioned || false,
+      strokeUniform: true,
+      ...restOptions,
+      rx: 0,
+      ry: 0,
+    });
+  }
+
   if (shape === "CIRCLE") {
     return new fabric.Rect({
       left,
@@ -363,19 +380,20 @@ export function createFabricMaskObject(
     });
   }
 
-  // RECTANGLE or CUSTOM fallback guide rect
+  // Fallback RECTANGLE (100% sharp)
+  const { borderRadius, rx: optRx, ry: optRy, ...restOptions } = options;
   return new fabric.Rect({
     left,
     top,
     width,
     height,
-    rx: 8,
-    ry: 8,
     originX,
     originY,
     absolutePositioned: options.absolutePositioned || false,
     strokeUniform: true,
-    ...options,
+    ...restOptions,
+    rx: 0,
+    ry: 0,
   });
 }
 
@@ -655,7 +673,34 @@ export default function StudioCanvas({
       // Handle Object Modifications (Move, Scale, Rotate)
       const handleObjectModified = (e: any) => {
         const target = e.target;
-        if (!target || !target.layerId) return;
+        if (!target) return;
+
+        if (target instanceof fabric.ActiveSelection) {
+          isUpdatingFromFabricRef.current = true;
+          const groupObjects = target.getObjects();
+          groupObjects.forEach((obj: any) => {
+            if (!obj.layerId) return;
+            const matrix = obj.calcTransformMatrix();
+            const options = fabric.util.qrDecompose(matrix);
+
+            const newW = Math.round((obj.width || 100) * (obj.scaleX || 1));
+            const newH = Math.round((obj.height || 100) * (obj.scaleY || 1));
+            const newX = Math.round(options.translateX - newW / 2);
+            const newY = Math.round(options.translateY - newH / 2);
+
+            onUpdateLayer(obj.layerId, {
+              posX: newX,
+              posY: newY,
+            });
+          });
+
+          setTimeout(() => {
+            isUpdatingFromFabricRef.current = false;
+          }, 50);
+          return;
+        }
+
+        if (!target.layerId) return;
 
         isUpdatingFromFabricRef.current = true;
         const layerId = target.layerId;
@@ -699,16 +744,22 @@ export default function StudioCanvas({
 
       // Handle Selection Events
       const handleSelectionCreated = (e: any) => {
-        const isMultiKey = e.e ? Boolean(e.e.ctrlKey || e.e.metaKey) : false;
-        const selected = e.selected;
-        if (selected && selected.length > 0) {
-          if (selected.length === 1 && selected[0].layerId) {
-            onSelectLayer(selected[0].layerId, isMultiKey);
+        if (isUpdatingFromFabricRef.current) return;
+        const selected = e.selected || [];
+        const selectedIds = selected.map((o: any) => o.layerId).filter(Boolean);
+
+        if (selectedIds.length > 0) {
+          if (selectedIds.length === 1) {
+            const isMultiKey = e.e ? Boolean(e.e.ctrlKey || e.e.metaKey) : false;
+            onSelectLayer(selectedIds[0], isMultiKey);
+          } else {
+            selectedIds.forEach((id) => onSelectLayer(id, true));
           }
         }
       };
 
       const handleSelectionCleared = () => {
+        if (isUpdatingFromFabricRef.current) return;
         onSelectLayer(null);
       };
 
@@ -931,6 +982,8 @@ export default function StudioCanvas({
   useEffect(() => {
     const fc = fabricCanvasRef.current;
     if (!fc || isUpdatingFromFabricRef.current) return;
+
+    isUpdatingFromFabricRef.current = true;
 
     // Preload any custom mask images that are not yet in cache
     layers.forEach((l) => {
@@ -1443,8 +1496,8 @@ export default function StudioCanvas({
           const isPhotoUpload = layer.layerType === "PHOTO_UPLOAD";
           const maskShape = props.maskShape || "RECTANGLE";
 
-          const rx = maskShape === "CIRCLE" ? layer.width / 2 : maskShape === "ROUNDED" ? 16 : 4;
-          const ry = maskShape === "CIRCLE" ? layer.height / 2 : maskShape === "ROUNDED" ? 16 : 4;
+          const rx = maskShape === "CIRCLE" ? layer.width / 2 : maskShape === "ROUNDED" ? 16 : 0;
+          const ry = maskShape === "CIRCLE" ? layer.height / 2 : maskShape === "ROUNDED" ? 16 : 0;
 
           if (obj) fc.remove(obj);
 
@@ -1494,19 +1547,30 @@ export default function StudioCanvas({
       }
     });
 
-    // Sync active selection highlight (single vs multi-selection)
+    // Sync active selection highlight without triggering infinite selection event loops
+    isUpdatingFromFabricRef.current = true;
+    const allCanvasObjs = fc.getObjects();
+    const matchingObjs = allCanvasObjs.filter((o: any) => o.layerId && selectedLayerIds.includes(o.layerId));
+
     if (selectedLayerIds.length > 1) {
-      const matchingObjs = activeObjects.filter((o: any) => o.layerId && selectedLayerIds.includes(o.layerId));
       if (matchingObjs.length > 1) {
         const activeSel = new fabric.ActiveSelection(matchingObjs, { canvas: fc });
         fc.setActiveObject(activeSel);
+      } else if (matchingObjs.length === 1) {
+        fc.setActiveObject(matchingObjs[0]);
       }
-    } else if (selectedLayerId) {
-      const matchingObj = activeObjects.find((o: any) => o.layerId === selectedLayerId);
+    } else if (selectedLayerIds.length === 1) {
+      const matchingObj = matchingObjs[0] || allCanvasObjs.find((o: any) => o.layerId === selectedLayerIds[0]);
       if (matchingObj && fc.getActiveObject() !== matchingObj) {
         fc.setActiveObject(matchingObj);
       }
+    } else {
+      fc.discardActiveObject();
     }
+    fc.requestRenderAll();
+    setTimeout(() => {
+      isUpdatingFromFabricRef.current = false;
+    }, 50);
 
     // Render Subtle Dashed Photo Reference Guide Box if a MASK layer is currently focused/selected
     const selectedLayerItem = visibleLayers.find((l) => l.id === selectedLayerId);
@@ -1607,7 +1671,7 @@ export default function StudioCanvas({
   }, [layers, selectedLayerId, widthPx, heightPx, onSelectLayer, isPreviewMode, maskCacheVersion]);
 
   return (
-    <div className="w-full h-full min-h-full bg-slate-200/70 overflow-auto p-8 relative select-none flex flex-col">
+    <div className="w-full h-full min-h-full bg-slate-200/70 overflow-auto p-4 relative select-none flex flex-col">
       {/* STOREFRONT PREVIEW BADGE */}
       {isPreviewMode && (
         <div className="absolute top-4 right-6 z-30 bg-amber-500 text-white font-bold text-xs px-3 py-1.5 rounded-full shadow-lg flex items-center gap-1.5 tracking-wide animate-pulse">

@@ -46,6 +46,23 @@ export default function StudioLayerPanel({
   const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
   const [showAddMenu, setShowAddMenu] = useState(false);
 
+  // Double Click Inline Layer Rename State
+  const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
+  const [editingName, setEditingName] = useState<string>("");
+
+  const handleStartRename = (id: string, currentName: string) => {
+    setEditingLayerId(id);
+    setEditingName(currentName);
+  };
+
+  const handleSaveRename = (id: string) => {
+    const trimmed = editingName.trim();
+    if (trimmed) {
+      onUpdateLayer(id, { name: trimmed });
+    }
+    setEditingLayerId(null);
+  };
+
   const getLayerIcon = (type: string) => {
     switch (type) {
       case "TEXT":
@@ -124,9 +141,9 @@ export default function StudioLayerPanel({
   return (
     <div className="flex flex-col h-full bg-white w-full select-none overflow-visible">
       {/* Header Actions */}
-      <div className="p-3.5 border-b border-slate-200 bg-slate-50/70 flex items-center justify-between relative overflow-visible z-20">
-        <h3 className="font-bold text-slate-900 text-xs flex items-center gap-2 uppercase tracking-wider">
-          <Layers className="w-4 h-4 text-blue-600" />
+      <div className="h-9 px-3 border-b border-slate-200 bg-slate-50/80 flex items-center justify-between relative overflow-visible z-20 shrink-0">
+        <h3 className="font-bold text-slate-800 text-xs flex items-center gap-1.5 uppercase tracking-wider">
+          <Layers className="w-3.5 h-3.5 text-blue-600" />
           Layer Stack ({rootDisplayLayers.length})
         </h3>
 
@@ -135,11 +152,11 @@ export default function StudioLayerPanel({
           <button
             type="button"
             onClick={() => setShowAddMenu((prev) => !prev)}
-            className="flex items-center gap-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 px-2.5 py-1 rounded-lg transition shadow-2xs cursor-pointer"
+            className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 hover:text-blue-600 bg-white hover:bg-slate-100 border border-slate-200 hover:border-blue-300 px-2 py-1 rounded-md transition shadow-2xs cursor-pointer"
           >
-            <Plus className="w-3.5 h-3.5" />
+            <Plus className="w-3.5 h-3.5 text-blue-600" />
             <span>Add Layer</span>
-            <ChevronDown className="w-3 h-3 opacity-80" />
+            <ChevronDown className="w-3 h-3 opacity-70" />
           </button>
 
           {showAddMenu && (
@@ -230,7 +247,7 @@ export default function StudioLayerPanel({
                   onDragOver={(e) => handleDragOver(e, index)}
                   onDragEnd={handleDragEnd}
                   onClick={(e) => onSelectLayer(layer.id, e.ctrlKey || e.metaKey)}
-                  className={`group flex items-center justify-between p-2 rounded-lg border transition cursor-pointer ${
+                  className={`group flex items-center justify-between p-1.5 rounded-lg border transition cursor-pointer ${
                     isDragging
                       ? "opacity-50 border-dashed border-blue-500 bg-blue-100 shadow-inner"
                       : isSelected
@@ -249,7 +266,34 @@ export default function StudioLayerPanel({
 
                     {getLayerIcon(layer.layerType)}
 
-                    <span className="text-xs truncate font-medium">{layer.name}</span>
+                    {editingLayerId === layer.id ? (
+                      <input
+                        type="text"
+                        autoFocus
+                        value={editingName}
+                        onChange={(e) => setEditingName(e.target.value)}
+                        onBlur={() => handleSaveRename(layer.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleSaveRename(layer.id);
+                          if (e.key === "Escape") setEditingLayerId(null);
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="text-xs font-semibold text-slate-900 bg-white border border-blue-500 rounded px-1.5 py-0.5 focus:outline-none w-full shadow-2xs"
+                      />
+                    ) : (
+                      <span
+                        onDoubleClick={(e) => {
+                          e.stopPropagation();
+                          handleStartRename(layer.id, layer.name);
+                        }}
+                        className={`text-xs truncate rounded px-1 py-0.5 transition cursor-pointer select-none ${
+                          isSelected ? "font-semibold text-blue-950" : "font-normal text-slate-700 hover:bg-slate-200/60"
+                        }`}
+                        title="Double click to edit layer name"
+                      >
+                        {layer.name}
+                      </span>
+                    )}
                     <span className="text-[9px] font-mono text-slate-400 bg-slate-100 px-1 py-0.2 rounded border border-slate-200 shrink-0">
                       z:{rootDisplayLayers.length - 1 - index}
                     </span>
@@ -343,8 +387,8 @@ export default function StudioLayerPanel({
                 {/* NESTED DEPENDENT MASK LAYER (No drag & drop, no separate z-index badge) */}
                 {linkedMask && (
                   <div
-                    onClick={() => onSelectLayer(linkedMask.id)}
-                    className={`ml-4 flex items-center justify-between p-1.5 rounded-lg border transition cursor-pointer text-xs border-l-4 ${
+                    onClick={(e) => onSelectLayer(linkedMask.id, e.ctrlKey || e.metaKey)}
+                    className={`ml-4 flex items-center justify-between px-2 py-1 rounded-lg border transition cursor-pointer text-xs border-l-4 ${
                       isMaskSelected
                         ? "bg-purple-100/90 border-purple-400 text-purple-950 font-bold border-l-purple-600 shadow-2xs"
                         : "bg-purple-50/70 border-purple-200 text-purple-900 border-l-purple-400 hover:bg-purple-100/70"
@@ -355,7 +399,34 @@ export default function StudioLayerPanel({
                       {/* Curved connector icon showing dependency on parent above */}
                       <span className="text-purple-400 text-[11px] font-mono select-none">└─</span>
                       <Scissors className="w-3.5 h-3.5 text-purple-600 shrink-0" />
-                      <span className="truncate font-medium">{linkedMask.name}</span>
+                      {editingLayerId === linkedMask.id ? (
+                        <input
+                          type="text"
+                          autoFocus
+                          value={editingName}
+                          onChange={(e) => setEditingName(e.target.value)}
+                          onBlur={() => handleSaveRename(linkedMask.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleSaveRename(linkedMask.id);
+                            if (e.key === "Escape") setEditingLayerId(null);
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-xs font-semibold text-purple-950 bg-white border border-purple-500 rounded px-1.5 py-0.5 focus:outline-none w-full shadow-2xs"
+                        />
+                      ) : (
+                        <span
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            handleStartRename(linkedMask.id, linkedMask.name);
+                          }}
+                          className={`truncate rounded px-1 py-0.5 transition cursor-pointer select-none ${
+                            isMaskSelected ? "font-semibold text-purple-950" : "font-normal text-purple-900 hover:bg-purple-200/60"
+                          }`}
+                          title="Double click to edit mask name"
+                        >
+                          {linkedMask.name}
+                        </span>
+                      )}
                       <span className="text-[9px] font-bold text-purple-600 bg-purple-100/80 px-1 py-0.2 rounded border border-purple-200 shrink-0">
                         Mask
                       </span>
