@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { CanvasLayerItem } from "./StudioCanvas";
 import { FontItem, loadSingleFontOnDemand } from "../../utils/fontLoader";
+import StudioFontPicker from "./StudioFontPicker";
 import {
   Type,
   AlignLeft,
@@ -133,24 +134,13 @@ export default function StudioTopToolbar({
         {/* TEXT LAYER CORE PROPERTIES */}
         {selectedLayer.layerType === "TEXT" && (
           <>
-            {/* 1. Font Family Select (Compact 110px) */}
-            <div className="relative flex items-center shrink-0 w-[110px]">
-              <select
-                value={props.fontFamily || "Roboto"}
-                onChange={(e) => handleFontSelect(e.target.value)}
-                className="h-7 w-full border border-slate-300 rounded-md pl-1.5 pr-5 bg-white text-[11px] font-semibold cursor-pointer focus:ring-1 focus:ring-blue-500 focus:outline-none hover:border-slate-400 truncate"
-                style={{ fontFamily: props.fontFamily || "Roboto" }}
-              >
-                {fonts.map((f) => (
-                  <option key={f.id} value={f.family} style={{ fontFamily: f.family }}>
-                    {f.name}
-                  </option>
-                ))}
-              </select>
-              {isFontLoading && (
-                <span className="absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin pointer-events-none" title="Downloading font..." />
-              )}
-            </div>
+            {/* 1. Font Family Picker (Searchable, Lazy-Loaded, with Custom Font Upload) */}
+            <StudioFontPicker
+              selectedFont={props.fontFamily || "Roboto"}
+              fonts={fonts}
+              onSelectFont={(family) => handleFontSelect(family)}
+              isFontLoading={isFontLoading}
+            />
 
             {/* 2. Font Size (px) Input */}
             <div className="flex items-center bg-slate-100 border border-slate-300 rounded-md h-7 px-1 shrink-0">

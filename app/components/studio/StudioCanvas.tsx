@@ -465,22 +465,36 @@ function getFitFontSize(
   fontFamily: string,
   baseFontSize: number,
   containerWidth: number,
-  isAutoFit: boolean = true
+  isAutoFit: boolean = true,
+  fontWeight: string = "normal"
 ): number {
   if (!isAutoFit || !textStr || containerWidth <= 0) return baseFontSize;
   try {
-    const tempCanvas = document.createElement("canvas");
-    const tempCtx = tempCanvas.getContext("2d");
-    if (!tempCtx) return baseFontSize;
-    tempCtx.font = `${baseFontSize}px "${fontFamily}", sans-serif`;
-    const measuredWidth = tempCtx.measureText(textStr).width;
-    if (measuredWidth > containerWidth) {
-      const scaleFactor = containerWidth / measuredWidth;
-      const fitSize = Math.floor(baseFontSize * scaleFactor);
-      return Math.max(6, fitSize); // minimum legible font size 6px
+    const targetWidth = Math.max(10, containerWidth - 6);
+    let currentFontSize = baseFontSize;
+
+    for (let pass = 0; pass < 15; pass++) {
+      const tempText = new fabric.Text(textStr, {
+        fontFamily: fontFamily,
+        fontSize: currentFontSize,
+        fontWeight: fontWeight,
+      });
+      const measuredWidth = tempText.width || 0;
+      if (measuredWidth <= targetWidth || currentFontSize <= 6) {
+        break;
+      }
+      const scaleFactor = targetWidth / measuredWidth;
+      const nextSize = Math.floor(currentFontSize * scaleFactor);
+      if (nextSize >= currentFontSize) {
+        currentFontSize -= 1;
+      } else {
+        currentFontSize = Math.max(6, nextSize);
+      }
     }
-  } catch (e) {}
-  return baseFontSize;
+    return currentFontSize;
+  } catch (e) {
+    return baseFontSize;
+  }
 }
 
 export default function StudioCanvas({
@@ -1027,7 +1041,7 @@ export default function StudioCanvas({
         const fontWeight = props.fontWeight || "normal";
         const baseFontSize = Number(props.fontSize) || 36;
         const isAutoFit = Boolean((props.autoFit !== false) && !props.allowMultiline);
-        const fontSize = getFitFontSize(textStr, font, baseFontSize, layer.width, isAutoFit);
+        const fontSize = getFitFontSize(textStr, font, baseFontSize, layer.width, isAutoFit, fontWeight);
 
         const maxLinesLimit = props.allowMultiline && props.maxLines && Number(props.maxLines) > 0 ? Number(props.maxLines) : 0;
         if (maxLinesLimit > 0) {
@@ -1066,16 +1080,20 @@ export default function StudioCanvas({
         const hAlign = props.align || "center";
         const vAlign = props.verticalAlign || "middle";
 
-        // Ensure font is loaded into browser memory and trigger instant redraw
+        // Ensure font is loaded into browser memory and trigger instant redraw with accurate fitted font size
         ensureFontLoaded(font, fonts).then((loaded) => {
           if (loaded && fc) {
             document.fonts.ready.then(() => {
+              const freshFontSize = getFitFontSize(textStr, font, baseFontSize, layer.width, isAutoFit, fontWeight);
               if (obj && obj instanceof fabric.Group) {
                 const textChild = obj.getObjects()[1] as fabric.Text;
                 if (textChild) {
-                  textChild.set({ fontFamily: font, dirty: true });
+                  textChild.set({ fontFamily: font, fontSize: freshFontSize, dirty: true });
                   textChild.initDimensions();
                 }
+              } else if (obj instanceof fabric.Text || obj instanceof fabric.Textbox) {
+                obj.set({ fontFamily: font, fontSize: freshFontSize, dirty: true });
+                obj.initDimensions();
               }
               fc.requestRenderAll();
             });
