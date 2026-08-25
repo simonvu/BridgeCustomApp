@@ -26,9 +26,10 @@ interface DashboardLayoutProps {
     roleName?: string;
     avatarUrl?: string | null;
   } | null;
+  contentPaddingClassName?: string;
 }
 
-export default function DashboardLayout({ children, currentUser }: DashboardLayoutProps) {
+export default function DashboardLayout({ children, currentUser, contentPaddingClassName }: DashboardLayoutProps) {
   const location = useLocation();
   const isActive = (path: string) => location.pathname === path;
   const isTeamRoute = location.pathname.startsWith("/app/team");
@@ -413,7 +414,7 @@ export default function DashboardLayout({ children, currentUser }: DashboardLayo
         </aside>
 
         {/* Main Content Body - Full Width */}
-        <main className="flex-1 p-6 overflow-y-auto">
+        <main className={`flex-1 overflow-y-auto ${contentPaddingClassName || "p-6"}`}>
           <div className="w-full space-y-6">{children}</div>
         </main>
       </div>

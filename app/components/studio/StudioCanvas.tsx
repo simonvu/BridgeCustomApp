@@ -384,7 +384,8 @@ interface StudioCanvasProps {
   heightPx: number;
   layers: CanvasLayerItem[];
   selectedLayerId: string | null;
-  onSelectLayer: (layerId: string | null) => void;
+  selectedLayerIds?: string[];
+  onSelectLayer: (layerId: string | null, isMultiKey?: boolean) => void;
   onUpdateLayer: (layerId: string, updatedProps: Partial<CanvasLayerItem>) => void;
   bgUrl?: string | null;
   zoom?: number;
@@ -469,6 +470,7 @@ export default function StudioCanvas({
   heightPx,
   layers,
   selectedLayerId,
+  selectedLayerIds = [],
   onSelectLayer,
   onUpdateLayer,
   bgUrl,
@@ -697,9 +699,12 @@ export default function StudioCanvas({
 
       // Handle Selection Events
       const handleSelectionCreated = (e: any) => {
-        const selected = e.selected?.[0];
-        if (selected && selected.layerId) {
-          onSelectLayer(selected.layerId);
+        const isMultiKey = e.e ? Boolean(e.e.ctrlKey || e.e.metaKey) : false;
+        const selected = e.selected;
+        if (selected && selected.length > 0) {
+          if (selected.length === 1 && selected[0].layerId) {
+            onSelectLayer(selected[0].layerId, isMultiKey);
+          }
         }
       };
 
@@ -1043,14 +1048,14 @@ export default function StudioCanvas({
           }
         }
 
-        // Frame Container Rect (exact layer.width x layer.height)
+        const isTextSelected = selectedLayerIds.includes(layer.id) || selectedLayerId === layer.id;
         const frameRect = new fabric.Rect({
           width: layer.width,
           height: layer.height,
-          fill: "transparent",
-          stroke: "rgba(79, 70, 229, 0.35)",
-          strokeWidth: 1,
-          strokeDashArray: [4, 4],
+          fill: "rgba(0, 0, 0, 0.001)",
+          stroke: isTextSelected ? "rgba(79, 70, 229, 0.45)" : "transparent",
+          strokeWidth: isTextSelected ? 1 : 0,
+          strokeDashArray: isTextSelected ? [4, 4] : undefined,
           originX: "center",
           originY: "center",
         });
@@ -1091,27 +1096,77 @@ export default function StudioCanvas({
           dirty: true,
         });
 
-        if (obj) {
-          fc.remove(obj);
-        }
+        if (obj && obj instanceof fabric.Group) {
+          obj.set({
+            left: centerX,
+            top: centerY,
+            angle: layer.rotation,
+            width: layer.width,
+            height: layer.height,
+            selectable: !layer.isLocked,
+            evented: !layer.isLocked,
+            dirty: true,
+          });
+          const groupChildren = obj.getObjects();
+          const frameRectChild = groupChildren[0] as fabric.Rect;
+          const textChild = groupChildren[1] as fabric.Text;
 
-        obj = new fabric.Group([frameRect, textObj], {
-          left: centerX,
-          top: centerY,
-          originX: "center",
-          originY: "center",
-          angle: layer.rotation,
-          width: layer.width,
-          height: layer.height,
-          selectable: !layer.isLocked,
-          subTargetCheck: false,
-          objectCaching: false,
-          dirty: true,
-        });
-        (obj as any).layerId = layer.id;
-        fc.add(obj);
+          if (frameRectChild) {
+            frameRectChild.set({
+              width: layer.width,
+              height: layer.height,
+              stroke: isTextSelected ? "rgba(79, 70, 229, 0.45)" : "transparent",
+              strokeWidth: isTextSelected ? 1 : 0,
+              strokeDashArray: isTextSelected ? [4, 4] : undefined,
+              dirty: true,
+            });
+          }
+          if (textChild) {
+            textChild.set({
+              text: textStr,
+              left: textX,
+              top: textY,
+              originX: fabricOriginX,
+              originY: fabricOriginY,
+              fontFamily: font,
+              fontWeight: fontWeight,
+              fontSize: fontSize,
+              fill: fillStyle,
+              stroke: strokeWidth > 0 ? (props.strokeColor || "#000000") : undefined,
+              strokeWidth: strokeWidth,
+              opacity: opacity,
+              shadow: shadowObj,
+              path: curvePath || undefined,
+              pathStartOffset: curvePath ? pathStartOffset : 0,
+              dirty: true,
+            });
+          }
+          obj.setCoords();
+        } else {
+          if (obj) fc.remove(obj);
+          obj = new fabric.Group([frameRect, textObj], {
+            left: centerX,
+            top: centerY,
+            originX: "center",
+            originY: "center",
+            angle: layer.rotation,
+            width: layer.width,
+            height: layer.height,
+            selectable: !layer.isLocked,
+            evented: !layer.isLocked,
+            subTargetCheck: false,
+            objectCaching: false,
+            dirty: true,
+          });
+          (obj as any).layerId = layer.id;
+          fc.add(obj);
+        }
       } else if (layer.layerType === "MASK") {
         const maskShape = props.maskShape || "RECTANGLE";
+        const isMaskSelected =
+          selectedLayerIds.includes(layer.id) ||
+          selectedLayerId === layer.id ||
+          (layer.parentPhotoUploadId && (selectedLayerIds.includes(layer.parentPhotoUploadId) || selectedLayerId === layer.parentPhotoUploadId));
         let maskObj = fc.getObjects().find((o: any) => o.layerId === layer.id);
 
         if (
@@ -1133,8 +1188,13 @@ export default function StudioCanvas({
               scaleX: layer.width / pathW,
               scaleY: layer.height / pathH,
               angle: layer.rotation,
+              fill: isMaskSelected ? "rgba(168, 85, 247, 0.12)" : "transparent",
+              stroke: isMaskSelected ? "#9333ea" : "transparent",
+              strokeWidth: isMaskSelected ? 2 : 0,
+              strokeDashArray: isMaskSelected ? [6, 4] : undefined,
               selectable: !layer.isLocked,
               evented: !layer.isLocked,
+              dirty: true,
             });
           } else if (maskObj instanceof fabric.Image) {
             const nativeW = (maskObj as any).getElement?.()?.width || maskObj.width || 100;
@@ -1157,8 +1217,13 @@ export default function StudioCanvas({
               scaleX: 1,
               scaleY: 1,
               angle: layer.rotation,
+              fill: isMaskSelected ? "rgba(168, 85, 247, 0.12)" : "transparent",
+              stroke: isMaskSelected ? "#9333ea" : "transparent",
+              strokeWidth: isMaskSelected ? 2 : 0,
+              strokeDashArray: isMaskSelected ? [6, 4] : undefined,
               selectable: !layer.isLocked,
               evented: !layer.isLocked,
+              dirty: true,
             });
           }
           maskObj.setCoords();
@@ -1171,10 +1236,10 @@ export default function StudioCanvas({
             centerX,
             centerY,
             {
-              fill: "rgba(168, 85, 247, 0.12)",
-              stroke: "#9333ea",
-              strokeWidth: 2,
-              strokeDashArray: [6, 4],
+              fill: isMaskSelected ? "rgba(168, 85, 247, 0.12)" : "transparent",
+              stroke: isMaskSelected ? "#9333ea" : "transparent",
+              strokeWidth: isMaskSelected ? 2 : 0,
+              strokeDashArray: isMaskSelected ? [6, 4] : undefined,
               originX: "center",
               originY: "center",
               borderRadius: props.borderRadius || 16,
@@ -1383,15 +1448,28 @@ export default function StudioCanvas({
 
           if (obj) fc.remove(obj);
 
+          const isPhotoSelected =
+            selectedLayerIds.includes(layer.id) ||
+            selectedLayerId === layer.id ||
+            (layer.maskLayerId && (selectedLayerIds.includes(layer.maskLayerId) || selectedLayerId === layer.maskLayerId));
+
           const frameRect = new fabric.Rect({
             left: centerX,
             top: centerY,
             width: layer.width,
             height: layer.height,
-            fill: isPhotoUpload ? "rgba(254, 243, 199, 0.25)" : "rgba(240, 253, 244, 0.5)",
-            stroke: isPhotoUpload ? "#d97706" : "#059669",
-            strokeWidth: isPhotoUpload ? 2 : 1.5,
-            strokeDashArray: isPhotoUpload ? [8, 5] : [6, 6],
+            fill: isPhotoSelected
+              ? isPhotoUpload
+                ? "rgba(254, 243, 199, 0.25)"
+                : "rgba(240, 253, 244, 0.5)"
+              : "transparent",
+            stroke: isPhotoSelected
+              ? isPhotoUpload
+                ? "#d97706"
+                : "#059669"
+              : "transparent",
+            strokeWidth: isPhotoSelected ? (isPhotoUpload ? 2 : 1.5) : 0,
+            strokeDashArray: isPhotoSelected ? (isPhotoUpload ? [8, 5] : [6, 6]) : undefined,
             originX: "center",
             originY: "center",
             angle: layer.rotation,
@@ -1413,12 +1491,22 @@ export default function StudioCanvas({
 
       if (obj) {
         activeObjects.push(obj);
-        // Sync active selection highlight
-        if (selectedLayerId === layer.id && fc.getActiveObject() !== obj) {
-          fc.setActiveObject(obj);
-        }
       }
     });
+
+    // Sync active selection highlight (single vs multi-selection)
+    if (selectedLayerIds.length > 1) {
+      const matchingObjs = activeObjects.filter((o: any) => o.layerId && selectedLayerIds.includes(o.layerId));
+      if (matchingObjs.length > 1) {
+        const activeSel = new fabric.ActiveSelection(matchingObjs, { canvas: fc });
+        fc.setActiveObject(activeSel);
+      }
+    } else if (selectedLayerId) {
+      const matchingObj = activeObjects.find((o: any) => o.layerId === selectedLayerId);
+      if (matchingObj && fc.getActiveObject() !== matchingObj) {
+        fc.setActiveObject(matchingObj);
+      }
+    }
 
     // Render Subtle Dashed Photo Reference Guide Box if a MASK layer is currently focused/selected
     const selectedLayerItem = visibleLayers.find((l) => l.id === selectedLayerId);

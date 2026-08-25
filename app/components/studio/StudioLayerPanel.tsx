@@ -21,7 +21,8 @@ import {
 interface StudioLayerPanelProps {
   layers: CanvasLayerItem[];
   selectedLayerId: string | null;
-  onSelectLayer: (layerId: string | null) => void;
+  selectedLayerIds?: string[];
+  onSelectLayer: (layerId: string | null, isMultiKey?: boolean) => void;
   onUpdateLayer: (layerId: string, updatedProps: Partial<CanvasLayerItem>) => void;
   onAddLayer: (layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY") => void;
   onAddMaskLayer?: (photoLayerId: string) => void;
@@ -33,6 +34,7 @@ interface StudioLayerPanelProps {
 export default function StudioLayerPanel({
   layers,
   selectedLayerId,
+  selectedLayerIds = [],
   onSelectLayer,
   onUpdateLayer,
   onAddLayer,
@@ -43,9 +45,6 @@ export default function StudioLayerPanel({
 }: StudioLayerPanelProps) {
   const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
   const [showAddMenu, setShowAddMenu] = useState(false);
-
-  // Sort layers by zIndex descending for display in stack panel (top layer first)
-  const displayLayers = [...layers].sort((a, b) => b.zIndex - a.zIndex);
 
   const getLayerIcon = (type: string) => {
     switch (type) {
@@ -64,6 +63,27 @@ export default function StudioLayerPanel({
     }
   };
 
+  // Map linked mask layers to their parent PHOTO_UPLOAD layers
+  const linkedMaskMap = new Map<string, CanvasLayerItem>();
+  const dependentMaskIds = new Set<string>();
+
+  layers.forEach((l) => {
+    if (l.layerType === "MASK") {
+      const parentPhoto = layers.find(
+        (p) => p.layerType === "PHOTO_UPLOAD" && (p.maskLayerId === l.id || l.parentPhotoUploadId === p.id)
+      );
+      if (parentPhoto) {
+        linkedMaskMap.set(parentPhoto.id, l);
+        dependentMaskIds.add(l.id);
+      }
+    }
+  });
+
+  // Filter root layers to display in the main stack (excluding dependent mask layers)
+  const rootDisplayLayers = [...layers]
+    .filter((l) => !dependentMaskIds.has(l.id))
+    .sort((a, b) => b.zIndex - a.zIndex);
+
   // Drag & Drop Handlers for Layer Reordering
   const handleDragStart = (e: React.DragEvent, index: number) => {
     setDraggedIdx(index);
@@ -74,15 +94,24 @@ export default function StudioLayerPanel({
     if (draggedIdx === null || draggedIdx === targetIndex) return;
     e.preventDefault();
 
-    const updated = [...displayLayers];
+    const updated = [...rootDisplayLayers];
     const [draggedItem] = updated.splice(draggedIdx, 1);
     updated.splice(targetIndex, 0, draggedItem);
 
     // Reassign zIndex values (top of array = highest zIndex)
-    const finalLayers = updated.map((layer, idx) => ({
-      ...layer,
-      zIndex: updated.length - 1 - idx,
-    }));
+    let currentZ = updated.length * 2;
+    const finalLayers: CanvasLayerItem[] = [];
+
+    updated.forEach((layer) => {
+      const parentZ = currentZ;
+      currentZ--;
+
+      const linkedMask = linkedMaskMap.get(layer.id);
+      if (linkedMask) {
+        finalLayers.push({ ...linkedMask, zIndex: parentZ + 1 });
+      }
+      finalLayers.push({ ...layer, zIndex: parentZ });
+    });
 
     onReorderLayers(finalLayers);
     setDraggedIdx(targetIndex);
@@ -93,12 +122,12 @@ export default function StudioLayerPanel({
   };
 
   return (
-    <div className="flex flex-col h-full bg-white border-l border-slate-200 w-80 shrink-0 select-none overflow-visible">
+    <div className="flex flex-col h-full bg-white w-full select-none overflow-visible">
       {/* Header Actions */}
       <div className="p-3.5 border-b border-slate-200 bg-slate-50/70 flex items-center justify-between relative overflow-visible z-20">
         <h3 className="font-bold text-slate-900 text-xs flex items-center gap-2 uppercase tracking-wider">
           <Layers className="w-4 h-4 text-blue-600" />
-          Layer Stack ({layers.length})
+          Layer Stack ({rootDisplayLayers.length})
         </h3>
 
         {/* Add Layer Context Dropdown Menu Button */}
@@ -179,142 +208,216 @@ export default function StudioLayerPanel({
 
       {/* Layer List Items */}
       <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-        {displayLayers.length === 0 ? (
+        {rootDisplayLayers.length === 0 ? (
           <div className="py-12 text-center text-slate-400 space-y-2">
             <Layers className="w-8 h-8 mx-auto text-slate-300" />
             <p className="text-xs font-semibold text-slate-600">No layers created yet</p>
             <p className="text-[11px] text-slate-400">Click "+ Text" or "+ Image" to start</p>
           </div>
         ) : (
-          displayLayers.map((layer, index) => {
-            const isSelected = layer.id === selectedLayerId;
+          rootDisplayLayers.map((layer, index) => {
+            const isSelected = selectedLayerIds.includes(layer.id) || layer.id === selectedLayerId;
             const isDragging = draggedIdx === index;
+            const linkedMask = linkedMaskMap.get(layer.id);
+            const isMaskSelected = linkedMask && (selectedLayerIds.includes(linkedMask.id) || linkedMask.id === selectedLayerId);
 
             return (
-              <div
-                key={layer.id}
-                draggable={!layer.isLocked}
-                onDragStart={(e) => handleDragStart(e, index)}
-                onDragOver={(e) => handleDragOver(e, index)}
-                onDragEnd={handleDragEnd}
-                onClick={() => onSelectLayer(layer.id)}
-                className={`group flex items-center justify-between p-2 rounded-lg border transition cursor-pointer ${
-                  layer.layerType === "MASK"
-                    ? isSelected
-                      ? "ml-3 bg-purple-100/90 border-purple-400 text-purple-950 font-bold shadow-xs border-l-4 border-l-purple-600"
-                      : "ml-3 bg-purple-50/60 border-purple-200 text-purple-900 border-l-4 border-l-purple-400 hover:bg-purple-100/60"
-                    : isDragging
-                    ? "opacity-50 border-dashed border-blue-500 bg-blue-100 shadow-inner"
-                    : isSelected
-                    ? "bg-blue-50/90 border-blue-400 text-blue-950 font-medium shadow-xs"
-                    : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
-                }`}
-              >
-                <div className="flex items-center gap-1.5 min-w-0 flex-1">
-                  {/* Drag Handle */}
-                  <div
-                    className="text-slate-300 group-hover:text-slate-500 cursor-grab active:cursor-grabbing p-0.5 shrink-0 transition"
-                    title="Drag to reorder layer z-index"
-                  >
-                    <GripVertical className="w-3.5 h-3.5" />
+              <React.Fragment key={layer.id}>
+                {/* Parent Layer Item Card */}
+                <div
+                  draggable={!layer.isLocked}
+                  onDragStart={(e) => handleDragStart(e, index)}
+                  onDragOver={(e) => handleDragOver(e, index)}
+                  onDragEnd={handleDragEnd}
+                  onClick={(e) => onSelectLayer(layer.id, e.ctrlKey || e.metaKey)}
+                  className={`group flex items-center justify-between p-2 rounded-lg border transition cursor-pointer ${
+                    isDragging
+                      ? "opacity-50 border-dashed border-blue-500 bg-blue-100 shadow-inner"
+                      : isSelected
+                      ? "bg-blue-50/90 border-blue-400 text-blue-950 font-medium shadow-xs"
+                      : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                    {/* Drag Handle */}
+                    <div
+                      className="text-slate-300 group-hover:text-slate-500 cursor-grab active:cursor-grabbing p-0.5 shrink-0 transition"
+                      title="Drag to reorder layer"
+                    >
+                      <GripVertical className="w-3.5 h-3.5" />
+                    </div>
+
+                    {getLayerIcon(layer.layerType)}
+
+                    <span className="text-xs truncate font-medium">{layer.name}</span>
+                    <span className="text-[9px] font-mono text-slate-400 bg-slate-100 px-1 py-0.2 rounded border border-slate-200 shrink-0">
+                      z:{rootDisplayLayers.length - 1 - index}
+                    </span>
+
+                    {/* Add Mask Layer Icon Button for Photo Upload */}
+                    {layer.layerType === "PHOTO_UPLOAD" && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onAddMaskLayer && onAddMaskLayer(layer.id);
+                        }}
+                        className={`p-1 rounded transition text-purple-600 hover:bg-purple-100 cursor-pointer ${
+                          linkedMask ? "bg-purple-100 font-bold" : "hover:scale-110"
+                        }`}
+                        title={linkedMask ? "Mask Attached to Photo Upload" : "Add Mask Layer for Photo Upload"}
+                      >
+                        <Scissors className="w-3.5 h-3.5 text-purple-700" />
+                      </button>
+                    )}
                   </div>
 
-                  {getLayerIcon(layer.layerType)}
-
-                  <span className="text-xs truncate font-medium">{layer.name}</span>
-                  <span className="text-[9px] font-mono text-slate-400 bg-slate-100 px-1 py-0.2 rounded border border-slate-200 shrink-0">
-                    z:{layer.zIndex}
-                  </span>
-
-                  {/* Add Mask Layer Icon Button for Photo Upload */}
-                  {layer.layerType === "PHOTO_UPLOAD" && (
+                  {/* Parent Layer Control Buttons */}
+                  <div className="flex items-center gap-0.5 shrink-0">
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
-                        onAddMaskLayer && onAddMaskLayer(layer.id);
+                        onDuplicateLayer && onDuplicateLayer(layer.id);
                       }}
-                      className={`p-1 rounded transition text-purple-600 hover:bg-purple-100 cursor-pointer ${
-                        layer.maskLayerId ? "bg-purple-100 font-bold" : "hover:scale-110"
-                      }`}
-                      title={layer.maskLayerId ? "Edit Linked Mask Layer" : "Add Mask Layer for Photo Upload"}
+                      className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition"
+                      title="Duplicate Layer"
                     >
-                      <Scissors className="w-3.5 h-3.5 text-purple-700" />
+                      <Copy className="w-3.5 h-3.5" />
                     </button>
-                  )}
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onUpdateLayer(layer.id, { isVisible: !layer.isVisible });
+                      }}
+                      className={`p-1 rounded transition ${
+                        layer.isVisible
+                          ? "text-slate-400 hover:text-slate-700"
+                          : "text-amber-500 bg-amber-50"
+                      }`}
+                      title={layer.isVisible ? "Hide Layer" : "Show Layer"}
+                    >
+                      {layer.isVisible ? (
+                        <Eye className="w-3.5 h-3.5" />
+                      ) : (
+                        <EyeOff className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onUpdateLayer(layer.id, { isLocked: !layer.isLocked });
+                      }}
+                      className={`p-1 rounded transition ${
+                        layer.isLocked
+                          ? "text-red-500 bg-red-50"
+                          : "text-slate-400 hover:text-slate-700"
+                      }`}
+                      title={layer.isLocked ? "Unlock Layer" : "Lock Layer"}
+                    >
+                      {layer.isLocked ? (
+                        <Lock className="w-3.5 h-3.5" />
+                      ) : (
+                        <Unlock className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteLayer(layer.id);
+                      }}
+                      className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition"
+                      title="Delete Layer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
 
-                {/* Layer Control Buttons */}
-                <div className="flex items-center gap-0.5 shrink-0">
-                  {/* Duplicate Layer Button */}
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDuplicateLayer && onDuplicateLayer(layer.id);
-                    }}
-                    className="p-1 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition"
-                    title="Duplicate Layer"
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                  </button>
-
-                  {/* Visibility Button */}
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onUpdateLayer(layer.id, { isVisible: !layer.isVisible });
-                    }}
-                    className={`p-1 rounded transition ${
-                      layer.isVisible
-                        ? "text-slate-400 hover:text-slate-700"
-                        : "text-amber-500 bg-amber-50"
+                {/* NESTED DEPENDENT MASK LAYER (No drag & drop, no separate z-index badge) */}
+                {linkedMask && (
+                  <div
+                    onClick={() => onSelectLayer(linkedMask.id)}
+                    className={`ml-4 flex items-center justify-between p-1.5 rounded-lg border transition cursor-pointer text-xs border-l-4 ${
+                      isMaskSelected
+                        ? "bg-purple-100/90 border-purple-400 text-purple-950 font-bold border-l-purple-600 shadow-2xs"
+                        : "bg-purple-50/70 border-purple-200 text-purple-900 border-l-purple-400 hover:bg-purple-100/70"
                     }`}
-                    title={layer.isVisible ? "Hide Layer" : "Show Layer"}
+                    title="Dependent Mask Layer (Bound to Parent Photo Upload)"
                   >
-                    {layer.isVisible ? (
-                      <Eye className="w-3.5 h-3.5" />
-                    ) : (
-                      <EyeOff className="w-3.5 h-3.5" />
-                    )}
-                  </button>
+                    <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                      {/* Curved connector icon showing dependency on parent above */}
+                      <span className="text-purple-400 text-[11px] font-mono select-none">└─</span>
+                      <Scissors className="w-3.5 h-3.5 text-purple-600 shrink-0" />
+                      <span className="truncate font-medium">{linkedMask.name}</span>
+                      <span className="text-[9px] font-bold text-purple-600 bg-purple-100/80 px-1 py-0.2 rounded border border-purple-200 shrink-0">
+                        Mask
+                      </span>
+                    </div>
 
-                  {/* Lock Button */}
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onUpdateLayer(layer.id, { isLocked: !layer.isLocked });
-                    }}
-                    className={`p-1 rounded transition ${
-                      layer.isLocked
-                        ? "text-red-500 bg-red-50"
-                        : "text-slate-400 hover:text-slate-700"
-                    }`}
-                    title={layer.isLocked ? "Unlock Layer" : "Lock Layer"}
-                  >
-                    {layer.isLocked ? (
-                      <Lock className="w-3.5 h-3.5" />
-                    ) : (
-                      <Unlock className="w-3.5 h-3.5" />
-                    )}
-                  </button>
+                    {/* Mask Controls (Visibility, Lock, Delete) - NO Drag & NO Index */}
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onUpdateLayer(linkedMask.id, { isVisible: !linkedMask.isVisible });
+                        }}
+                        className={`p-1 rounded transition ${
+                          linkedMask.isVisible
+                            ? "text-purple-500 hover:text-purple-800"
+                            : "text-amber-500 bg-amber-50"
+                        }`}
+                        title={linkedMask.isVisible ? "Hide Mask" : "Show Mask"}
+                      >
+                        {linkedMask.isVisible ? (
+                          <Eye className="w-3.5 h-3.5" />
+                        ) : (
+                          <EyeOff className="w-3.5 h-3.5" />
+                        )}
+                      </button>
 
-                  {/* Delete Button */}
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onDeleteLayer(layer.id);
-                    }}
-                    className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition"
-                    title="Delete Layer"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onUpdateLayer(linkedMask.id, { isLocked: !linkedMask.isLocked });
+                        }}
+                        className={`p-1 rounded transition ${
+                          linkedMask.isLocked
+                            ? "text-red-500 bg-red-50"
+                            : "text-purple-500 hover:text-purple-800"
+                        }`}
+                        title={linkedMask.isLocked ? "Unlock Mask" : "Lock Mask"}
+                      >
+                        {linkedMask.isLocked ? (
+                          <Lock className="w-3.5 h-3.5" />
+                        ) : (
+                          <Unlock className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteLayer(linkedMask.id);
+                        }}
+                        className="p-1 text-purple-400 hover:text-red-600 hover:bg-red-50 rounded transition"
+                        title="Delete Mask Layer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </React.Fragment>
             );
           })
         )}

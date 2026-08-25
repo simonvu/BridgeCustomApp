@@ -18,6 +18,7 @@ import {
   Upload,
   Edit3,
   Scissors,
+  Layers,
 } from "lucide-react";
 
 export interface BackgroundOptionItem {
@@ -32,6 +33,7 @@ export interface BackgroundOptionItem {
 
 interface StudioPropertyPanelProps {
   selectedLayer: CanvasLayerItem | null;
+  selectedLayerIds?: string[];
   fields: StudioFieldItem[];
   fonts?: { id: string; name: string; family: string; fontType: string }[] | any;
   onUpdateLayer: (layerId: string, updatedProps: Partial<CanvasLayerItem>) => void;
@@ -43,6 +45,7 @@ interface StudioPropertyPanelProps {
 
 export default function StudioPropertyPanel({
   selectedLayer,
+  selectedLayerIds = [],
   fields,
   fonts = [],
   onUpdateLayer,
@@ -51,9 +54,26 @@ export default function StudioPropertyPanel({
 }: StudioPropertyPanelProps) {
   const [isUploadingMask, setIsUploadingMask] = React.useState(false);
 
+  if (selectedLayerIds.length > 1) {
+    return (
+      <div className="flex flex-col h-full bg-white w-full select-none items-center justify-center p-6 text-center">
+        <div className="w-12 h-12 rounded-2xl bg-blue-50 border border-blue-200 flex items-center justify-center mb-3">
+          <Layers className="w-6 h-6 text-blue-600" />
+        </div>
+        <h3 className="text-xs font-bold text-slate-900 mb-1 uppercase tracking-wider">Multi-Selection Active</h3>
+        <span className="px-2.5 py-1 rounded-full bg-blue-100 text-blue-700 text-xs font-extrabold mb-3">
+          {selectedLayerIds.length} Layers Selected
+        </span>
+        <p className="text-[11px] text-slate-500 max-w-[240px] leading-relaxed">
+          Drag any selected layer on canvas or use Keyboard Arrow Keys (Shift + Arrow for 10px) to move all selected layers together in lockstep.
+        </p>
+      </div>
+    );
+  }
+
   if (!selectedLayer) {
     return (
-      <div className="flex flex-col h-full bg-white border-l border-slate-200 w-80 shrink-0 select-none items-center justify-center p-6 text-center text-slate-400">
+      <div className="flex flex-col h-full bg-white w-full select-none items-center justify-center p-6 text-center text-slate-400">
         <SlidersHorizontal className="w-8 h-8 text-slate-300 mb-2" />
         <p className="text-xs font-semibold text-slate-600">No Layer Selected</p>
         <p className="text-[11px] text-slate-400">Click a layer on the canvas or layer stack to edit properties</p>
@@ -112,7 +132,7 @@ export default function StudioPropertyPanel({
   };
 
   return (
-    <div className="flex flex-col h-full bg-white border-l border-slate-200 w-80 shrink-0 select-none overflow-y-auto">
+    <div className="flex flex-col h-full bg-white w-full select-none overflow-y-auto">
       {/* Header */}
       <div className="p-3.5 border-b border-slate-200 bg-slate-50/70">
         <h3 className="font-bold text-slate-900 text-xs flex items-center gap-2 uppercase tracking-wider">

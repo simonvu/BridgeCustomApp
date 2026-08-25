@@ -262,7 +262,28 @@ export default function ArtworkStudioRoute() {
   const fields = activeScreen?.fields || [];
 
   const [rules, setRules] = useState<StudioConditionRuleItem[]>(artworkData?.rules || []);
-  const [selectedLayerId, setSelectedLayerId] = useState<string | null>(layers[0]?.id || null);
+  const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(() => (layers[0]?.id ? [layers[0].id] : []));
+
+  const handleSelectLayer = (layerId: string | null, isMultiKey: boolean = false) => {
+    if (!layerId) {
+      setSelectedLayerIds([]);
+      return;
+    }
+    if (isMultiKey) {
+      setSelectedLayerIds((prev) =>
+        prev.includes(layerId) ? prev.filter((id) => id !== layerId) : [...prev, layerId]
+      );
+    } else {
+      setSelectedLayerIds([layerId]);
+    }
+  };
+
+  const selectedLayerId = selectedLayerIds.length === 1 ? selectedLayerIds[0] : null;
+  const setSelectedLayerId = (layerId: string | null) => {
+    if (!layerId) setSelectedLayerIds([]);
+    else setSelectedLayerIds([layerId]);
+  };
+
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(fields[0]?.id || null);
   const [activeTab, setActiveTab] = useState<"FIELDS" | "LAYERS" | "CONDITIONS">("FIELDS");
   const [isSaving, setIsSaving] = useState(false);
@@ -711,19 +732,93 @@ export default function ArtworkStudioRoute() {
     const targetLayer = layers.find((l) => l.id === layerId);
     if (!targetLayer) return;
 
-    const maxZ = layers.length > 0 ? Math.max(...layers.map((l) => l.zIndex)) : 0;
-    const duplicatedLayer: CanvasLayerItem = {
-      ...targetLayer,
-      id: `layer_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-      name: `${targetLayer.name} (Copy)`,
-      posX: targetLayer.posX + 20,
-      posY: targetLayer.posY + 20,
-      zIndex: maxZ + 1,
-      properties: JSON.parse(JSON.stringify(targetLayer.properties || {})),
-    };
+    const timeSuffix = `${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 
-    setLayers((prev) => [...prev, duplicatedLayer]);
-    setSelectedLayerId(duplicatedLayer.id);
+    if (targetLayer.layerType === "PHOTO_UPLOAD") {
+      // Find linked mask layer if present
+      const existingMask = layers.find(
+        (l) => l.id === targetLayer.maskLayerId || (l.layerType === "MASK" && l.parentPhotoUploadId === targetLayer.id)
+      );
+
+      const targetZ = Math.max(targetLayer.zIndex, existingMask ? existingMask.zIndex : targetLayer.zIndex);
+      const newPhotoId = `layer_${timeSuffix}`;
+      const newMaskId = existingMask ? `mask_${timeSuffix}` : undefined;
+      const shiftCount = existingMask ? 2 : 1;
+
+      const duplicatedPhoto: CanvasLayerItem = {
+        ...targetLayer,
+        id: newPhotoId,
+        name: `${targetLayer.name} (Copy)`,
+        maskLayerId: newMaskId,
+        posX: targetLayer.posX + 20,
+        posY: targetLayer.posY + 20,
+        zIndex: targetZ + 1,
+        properties: JSON.parse(JSON.stringify(targetLayer.properties || {})),
+      };
+
+      setLayers((prev) => {
+        const shifted = prev.map((l) => (l.zIndex > targetZ ? { ...l, zIndex: l.zIndex + shiftCount } : l));
+
+        if (existingMask && newMaskId) {
+          const duplicatedMask: CanvasLayerItem = {
+            ...existingMask,
+            id: newMaskId,
+            name: `Mask for ${targetLayer.name} (Copy)`,
+            parentPhotoUploadId: newPhotoId,
+            posX: existingMask.posX + 20,
+            posY: existingMask.posY + 20,
+            zIndex: targetZ + 2,
+            properties: JSON.parse(JSON.stringify(existingMask.properties || {})),
+          };
+          return [...shifted, duplicatedPhoto, duplicatedMask];
+        } else {
+          return [...shifted, duplicatedPhoto];
+        }
+      });
+      setSelectedLayerId(newPhotoId);
+    } else if (targetLayer.layerType === "MASK") {
+      // Duplicating a mask layer duplicates its parent Photo Upload layer & Mask pair
+      const parentPhoto = layers.find(
+        (l) => l.id === targetLayer.parentPhotoUploadId || l.maskLayerId === targetLayer.id
+      );
+
+      if (parentPhoto) {
+        handleDuplicateLayer(parentPhoto.id);
+      } else {
+        const targetZ = targetLayer.zIndex;
+        const duplicatedMaskOnly: CanvasLayerItem = {
+          ...targetLayer,
+          id: `mask_${timeSuffix}`,
+          name: `${targetLayer.name} (Copy)`,
+          posX: targetLayer.posX + 20,
+          posY: targetLayer.posY + 20,
+          zIndex: targetZ + 1,
+          properties: JSON.parse(JSON.stringify(targetLayer.properties || {})),
+        };
+        setLayers((prev) =>
+          prev.map((l) => (l.zIndex > targetZ ? { ...l, zIndex: l.zIndex + 1 } : l)).concat(duplicatedMaskOnly)
+        );
+        setSelectedLayerId(duplicatedMaskOnly.id);
+      }
+    } else {
+      const targetZ = targetLayer.zIndex;
+      const duplicatedLayer: CanvasLayerItem = {
+        ...targetLayer,
+        id: `layer_${timeSuffix}`,
+        name: `${targetLayer.name} (Copy)`,
+        maskLayerId: undefined,
+        parentPhotoUploadId: undefined,
+        posX: targetLayer.posX + 20,
+        posY: targetLayer.posY + 20,
+        zIndex: targetZ + 1,
+        properties: JSON.parse(JSON.stringify(targetLayer.properties || {})),
+      };
+
+      setLayers((prev) =>
+        prev.map((l) => (l.zIndex > targetZ ? { ...l, zIndex: l.zIndex + 1 } : l)).concat(duplicatedLayer)
+      );
+      setSelectedLayerId(duplicatedLayer.id);
+    }
   };
 
   const handleUpdateLayer = (layerId: string, updatedProps: Partial<CanvasLayerItem>) => {
@@ -803,7 +898,7 @@ export default function ArtworkStudioRoute() {
         return;
       }
 
-      if (!selectedLayerId) return;
+      if (selectedLayerIds.length === 0) return;
 
       const isArrowKey = [
         "ArrowUp",
@@ -815,30 +910,29 @@ export default function ArtworkStudioRoute() {
       if (isArrowKey) {
         e.preventDefault();
         const step = e.shiftKey ? 10 : 1;
+        let dx = 0;
+        let dy = 0;
+        if (e.key === "ArrowUp") dy = -step;
+        if (e.key === "ArrowDown") dy = step;
+        if (e.key === "ArrowLeft") dx = -step;
+        if (e.key === "ArrowRight") dx = step;
 
         setLayers((prevLayers) =>
           prevLayers.map((layer) => {
-            if (layer.id !== selectedLayerId || layer.isLocked) return layer;
-            let { posX, posY } = layer;
-            if (e.key === "ArrowUp") posY -= step;
-            if (e.key === "ArrowDown") posY += step;
-            if (e.key === "ArrowLeft") posX -= step;
-            if (e.key === "ArrowRight") posX += step;
-            return { ...layer, posX, posY };
+            if (!selectedLayerIds.includes(layer.id) || layer.isLocked) return layer;
+            return { ...layer, posX: layer.posX + dx, posY: layer.posY + dy };
           })
         );
       } else if (e.key === "Delete" || e.key === "Backspace") {
-        const targetLayer = layers.find((l) => l.id === selectedLayerId);
-        if (targetLayer && !targetLayer.isLocked) {
-          e.preventDefault();
-          handleDeleteLayer(selectedLayerId);
-        }
+        e.preventDefault();
+        selectedLayerIds.forEach((id) => handleDeleteLayer(id));
+        setSelectedLayerIds([]);
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [selectedLayerId, layers]);
+  }, [selectedLayerIds, layers]);
 
   // Field Handlers
   const handleAddField = (fieldType: StudioFieldItem["fieldType"]) => {
@@ -1109,8 +1203,8 @@ export default function ArtworkStudioRoute() {
   const selectedLayer = layers.find((l) => l.id === selectedLayerId) || null;
 
   return (
-    <DashboardLayout currentUser={currentUser}>
-      <div className="flex flex-col h-[calc(100vh-64px)] min-h-[650px] overflow-hidden bg-slate-100">
+    <DashboardLayout currentUser={currentUser} contentPaddingClassName="p-4">
+      <div className="flex flex-col h-[calc(100vh-80px)] min-h-[650px] overflow-hidden bg-slate-100 rounded-xl border border-slate-200 shadow-2xs">
         {/* Ultra-slim Top Navigation & Screens Header Bar (height 44px) */}
         <div className="bg-white border-b border-slate-200 px-3 py-1.5 flex items-center justify-between shrink-0 z-50 relative gap-2 overflow-visible">
           {/* SCREENS MANAGEMENT BAR (Sits at the far left!) */}
@@ -1172,15 +1266,11 @@ export default function ArtworkStudioRoute() {
               {/* Preview Toggle Icon Button */}
               <button
                 type="button"
-                onClick={() => setIsPreviewMode(!isPreviewMode)}
-                className={`p-1 h-6 w-6 rounded flex items-center justify-center transition cursor-pointer ${
-                  isPreviewMode
-                    ? "bg-amber-500 text-white shadow-2xs"
-                    : "text-slate-600 hover:bg-slate-200"
-                }`}
-                title={isPreviewMode ? "Exit Storefront Preview (Edit Mode)" : "Storefront Preview Mode"}
+                onClick={() => setStorefrontPreviewOpen(true)}
+                className="px-2 h-6 rounded flex items-center justify-center transition cursor-pointer text-indigo-600 hover:bg-indigo-50 bg-indigo-50/50 border border-indigo-200"
+                title="Live Preview & Customer Customization Form"
               >
-                {isPreviewMode ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                <Eye className="w-3.5 h-3.5" />
               </button>
 
               <div className="w-[1px] h-3.5 bg-slate-300 mx-0.5" />
@@ -1228,25 +1318,16 @@ export default function ArtworkStudioRoute() {
               </button>
             </div>
 
-            {/* Storefront Live Preview & Form Button */}
-            <button
-              type="button"
-              onClick={() => setStorefrontPreviewOpen(true)}
-              className="h-8 flex items-center gap-1.5 text-xs font-bold text-slate-800 bg-white hover:bg-slate-100 border border-slate-300 px-3 rounded-lg shadow-2xs transition cursor-pointer"
-              title="Open Storefront Customer Live Preview & Form"
-            >
-              <Eye className="w-3.5 h-3.5 text-indigo-600" />
-              <span>Live Preview & Form</span>
-            </button>
-
             {/* Save Artwork Button (Fixed 32px Height) */}
             <button
               onClick={handleSaveArtwork}
               disabled={isSaving}
-              className="h-8 flex items-center gap-1.5 text-xs font-bold text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 px-3.5 rounded-lg shadow-2xs transition cursor-pointer"
+              className="h-8 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs px-3 rounded-lg shadow-sm transition flex items-center gap-1.5 shrink-0 cursor-pointer disabled:opacity-50"
             >
               {isSaving ? (
-                "Saving..."
+                <>
+                  <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> Saving...
+                </>
               ) : saveToast ? (
                 <>
                   <Check className="w-3.5 h-3.5 text-emerald-300" /> Saved!
@@ -1276,7 +1357,8 @@ export default function ArtworkStudioRoute() {
                 heightPx={heightPx}
                 layers={layers}
                 selectedLayerId={selectedLayerId}
-                onSelectLayer={setSelectedLayerId}
+                selectedLayerIds={selectedLayerIds}
+                onSelectLayer={handleSelectLayer}
                 onUpdateLayer={handleUpdateLayer}
                 bgUrl={activeScreen?.bgUrl}
                 zoom={zoom}
@@ -1287,8 +1369,8 @@ export default function ArtworkStudioRoute() {
             </div>
           </div>
 
-          {/* RIGHT SIDEBAR: Artwork Info Header + Layer Stack & Property Inspector */}
-          <div className="flex flex-col border-l border-slate-200 bg-white shrink-0 w-80">
+          {/* RIGHT SIDEBAR: Artwork Info Header + Layer Stack & Property Inspector (Widen to 400px) */}
+          <div className="flex flex-col border-l border-slate-200 bg-white shrink-0 w-[400px]">
             {/* ARTWORK TITLE & SETTINGS HEADER (Relocated to Right Sidebar) */}
             <div className="px-3 py-2 border-b border-slate-200 bg-slate-50/80 flex items-center justify-between gap-2 shrink-0">
               <div className="flex items-center gap-1.5 min-w-0 flex-1">
@@ -1319,7 +1401,8 @@ export default function ArtworkStudioRoute() {
                 <StudioLayerPanel
                   layers={layers}
                   selectedLayerId={selectedLayerId}
-                  onSelectLayer={setSelectedLayerId}
+                  selectedLayerIds={selectedLayerIds}
+                  onSelectLayer={handleSelectLayer}
                   onUpdateLayer={handleUpdateLayer}
                   onAddLayer={handleAddLayer}
                   onAddMaskLayer={handleAddMaskLayer}
@@ -1331,6 +1414,7 @@ export default function ArtworkStudioRoute() {
               <div className="h-1/2 overflow-hidden">
                 <StudioPropertyPanel
                   selectedLayer={selectedLayer}
+                  selectedLayerIds={selectedLayerIds}
                   fields={fields}
                   fonts={fonts}
                   onUpdateLayer={handleUpdateLayer}
