@@ -93,7 +93,7 @@ export default function StudioFieldPanel({
       case "RADIO":
         return "Radio / Swatches";
       case "SELECT":
-        return "Dropdown Select";
+        return "List / Item";
       case "IMAGE_UPLOAD":
         return "Photo Upload";
       case "FIELD_ASSET":
@@ -107,7 +107,7 @@ export default function StudioFieldPanel({
     { type: "TEXT", label: "Text Field", desc: "Customer enters custom text or name", icon: Type },
     { type: "CALENDAR", label: "Calendar Date", desc: "Date picker for anniversaries & birthdays", icon: Calendar },
     { type: "RADIO", label: "Radio / Swatches", desc: "Key option choice with image/position settings", icon: Radio },
-    { type: "SELECT", label: "Dropdown Select", desc: "Select options from dropdown list", icon: ListFilter },
+    { type: "SELECT", label: "List / Item", desc: "Selectable list items for customer choice", icon: ListFilter },
     { type: "IMAGE_UPLOAD", label: "Customer Photo Upload", desc: "Customer uploads photo/logo", icon: Upload },
     { type: "FIELD_ASSET", label: "Clipart Asset Field", desc: "Select graphics from R2 asset library", icon: Sparkles },
   ];
@@ -250,46 +250,55 @@ export default function StudioFieldPanel({
                   </div>
                 </div>
 
-                {/* OPTION VIEW TYPE SELECTOR (Dropdown / Text Button / Image Icon) */}
+                {/* OPTION VIEW TYPE SELECTOR (Dropdown / Radio Button / Thumbnail Select) */}
                 {(field.fieldType === "RADIO" || field.fieldType === "SELECT" || field.fieldType === "FIELD_ASSET") && (
                   <div onClick={(e) => e.stopPropagation()} className="space-y-1.5 pt-1">
-                    <label className="block text-[10px] font-semibold text-slate-600">Option View Type:</label>
+                    <label className="block text-[11px] font-bold text-slate-700">View Type (Storefront Layout)</label>
                     <div className="grid grid-cols-3 gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-[10px]">
                       <button
                         type="button"
-                        onClick={() => onUpdateField(field.id, { displayType: "IMAGE_SWATCH" })}
-                        className={`py-1 rounded font-semibold transition cursor-pointer ${
-                          !field.displayType || field.displayType === "IMAGE_SWATCH"
-                            ? "bg-white text-blue-600 shadow-2xs font-bold"
-                            : "text-slate-600 hover:text-slate-900"
-                        }`}
-                      >
-                        🖼️ Image Icon
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onUpdateField(field.id, { displayType: "TEXT_BUTTON" })}
-                        className={`py-1 rounded font-semibold transition cursor-pointer ${
-                          field.displayType === "TEXT_BUTTON"
-                            ? "bg-white text-blue-600 shadow-2xs font-bold"
-                            : "text-slate-600 hover:text-slate-900"
-                        }`}
-                      >
-                        🔘 Button
-                      </button>
-                      <button
-                        type="button"
                         onClick={() => onUpdateField(field.id, { displayType: "DROPDOWN" })}
-                        className={`py-1 rounded font-semibold transition cursor-pointer ${
-                          field.displayType === "DROPDOWN"
-                            ? "bg-white text-blue-600 shadow-2xs font-bold"
+                        className={`py-1 rounded font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                          !field.displayType || field.displayType === "DROPDOWN"
+                            ? "bg-white text-indigo-700 shadow-2xs"
                             : "text-slate-600 hover:text-slate-900"
                         }`}
+                        title="Standard Dropdown Select Menu"
                       >
-                        🔽 Dropdown
+                        <ListFilter className="w-3 h-3" />
+                        <span>Dropdown</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => onUpdateField(field.id, { displayType: "RADIO" })}
+                        className={`py-1 rounded font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                          field.displayType === "RADIO" || field.displayType === "TEXT_BUTTON"
+                            ? "bg-white text-indigo-700 shadow-2xs"
+                            : "text-slate-600 hover:text-slate-900"
+                        }`}
+                        title="Radio Button List"
+                      >
+                        <Radio className="w-3 h-3" />
+                        <span>Radio</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => onUpdateField(field.id, { displayType: "THUMBNAIL" })}
+                        className={`py-1 rounded font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                          field.displayType === "THUMBNAIL" || field.displayType === "IMAGE_SWATCH"
+                            ? "bg-white text-indigo-700 shadow-2xs"
+                            : "text-slate-600 hover:text-slate-900"
+                        }`}
+                        title="Thumbnail / Image Select Grid"
+                      >
+                        <LayoutGrid className="w-3 h-3" />
+                        <span>Thumbnail</span>
                       </button>
                     </div>
-                {/* TEXT Field Specific Config (Min/Max Chars, Disallow Special Characters) */}
+                  </div>
+                )}           {/* TEXT Field Specific Config (Min/Max Chars, Disallow Special Characters) */}
                 {field.fieldType === "TEXT" && (
                   <div onClick={(e) => e.stopPropagation()} className="pt-2 border-t border-slate-200/60 space-y-2 text-xs">
                     <div className="grid grid-cols-2 gap-2">

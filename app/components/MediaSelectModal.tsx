@@ -188,47 +188,97 @@ export default function MediaSelectModal({
     }
   };
 
-  // Upload new file via XHR with Progress bar
+  // Upload multiple files to R2 via XHR with overall Progress bar
   const handleUploadFiles = async (fileList: FileList | File[]) => {
     if (!fileList || fileList.length === 0) return;
-    const file = fileList[0];
+    const filesToUpload = Array.from(fileList);
 
     setIsUploading(true);
     setUploadProgress(0);
 
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("folder", destinationFolder);
+    const newlyUploadedRecords: MediaFileItem[] = [];
+    let completedCount = 0;
+    let hasError = false;
 
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/api/upload", true);
+    for (let i = 0; i < filesToUpload.length; i++) {
+      const file = filesToUpload[i];
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("folder", destinationFolder);
 
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        const percentComplete = Math.round((event.loaded / event.total) * 100);
-        setUploadProgress(percentComplete);
-      }
-    };
+      try {
+        const result = await new Promise<any>((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open("POST", "/api/upload", true);
 
-    xhr.onload = async () => {
-      setIsUploading(false);
-      if (xhr.status >= 200 && xhr.status < 300) {
-        const data = JSON.parse(xhr.responseText);
-        if (data.success && data.fileRecord) {
-          await fetchMediaFilesAndFolders();
-          handleToggleSelect(data.fileRecord);
+          xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable) {
+              const fileRatio = event.loaded / event.total;
+              const overallPercent = Math.round(((completedCount + fileRatio) / filesToUpload.length) * 100);
+              setUploadProgress(overallPercent);
+            }
+          };
+
+          xhr.onload = () => {
+            let resData: any = {};
+            try {
+              resData = JSON.parse(xhr.responseText);
+            } catch (e) {
+              return reject(new Error("Invalid server JSON response"));
+            }
+
+            if (xhr.status >= 200 && xhr.status < 300 && resData.success) {
+              resolve(resData);
+            } else {
+              reject(new Error(resData.error || `HTTP ${xhr.status}`));
+            }
+          };
+
+          xhr.onerror = () => reject(new Error("Network connection error"));
+          xhr.send(formData);
+        });
+
+        if (result.success) {
+          const record = result.fileRecord || {
+            id: result.key || `file_${Date.now()}_${i}`,
+            fileName: result.fileName || file.name,
+            fileSize: file.size,
+            fileType: file.type || "application/octet-stream",
+            category: file.type.startsWith("font/") ? "FONT" : "IMAGE",
+            url: result.url,
+            thumbnailUrl: result.thumbnailUrl || result.url,
+            folder: destinationFolder,
+          };
+          newlyUploadedRecords.push(record);
         }
-      } else {
-        alert("Failed to upload file");
+      } catch (err: any) {
+        console.error(`❌ Error uploading file "${file.name}" to Cloudflare R2:`, err.message);
+        hasError = true;
       }
-    };
 
-    xhr.onerror = () => {
-      setIsUploading(false);
-      alert("Error uploading file");
-    };
+      completedCount++;
+      setUploadProgress(Math.round((completedCount / filesToUpload.length) * 100));
+    }
 
-    xhr.send(formData);
+    setIsUploading(false);
+    await fetchMediaFilesAndFolders();
+
+    // Automatically select newly uploaded files
+    if (newlyUploadedRecords.length > 0) {
+      if (multiSelect) {
+        setSelectedFiles((prev) => {
+          const existingIds = new Set(prev.map((f) => f.id));
+          const additions = newlyUploadedRecords.filter((f) => !existingIds.has(f.id));
+          return [...prev, ...additions];
+        });
+      } else {
+        setSelectedFiles([newlyUploadedRecords[0]]);
+      }
+    }
+
+    if (hasError) {
+      alert("Some files failed to upload to Cloudflare R2. Please check your connection and try again.");
+    }
   };
 
   const handleDone = () => {
@@ -358,6 +408,7 @@ export default function MediaSelectModal({
           >
             <input
               type="file"
+              multiple
               className="hidden"
               onChange={(e) => {
                 if (e.target.files) handleUploadFiles(e.target.files);

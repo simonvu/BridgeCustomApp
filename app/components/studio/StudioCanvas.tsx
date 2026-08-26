@@ -401,10 +401,12 @@ interface StudioCanvasProps {
   widthPx: number;
   heightPx: number;
   layers: CanvasLayerItem[];
+  fields?: any[];
   selectedLayerId: string | null;
   selectedLayerIds?: string[];
   onSelectLayer: (layerId: string | null, isMultiKey?: boolean) => void;
   onUpdateLayer: (layerId: string, updatedProps: Partial<CanvasLayerItem>) => void;
+  onUpdateField?: (fieldId: string, updatedProps: any) => void;
   bgUrl?: string | null;
   zoom?: number;
   onZoomIn?: () => void;
@@ -501,10 +503,12 @@ export default function StudioCanvas({
   widthPx,
   heightPx,
   layers,
+  fields = [],
   selectedLayerId,
   selectedLayerIds = [],
   onSelectLayer,
   onUpdateLayer,
+  onUpdateField,
   bgUrl,
   zoom: propZoom,
   onZoomIn,
@@ -525,6 +529,11 @@ export default function StudioCanvas({
   useEffect(() => {
     layersRef.current = layers;
   }, [layers]);
+
+  const fieldsRef = useRef(fields);
+  useEffect(() => {
+    fieldsRef.current = fields;
+  }, [fields]);
 
   const [internalZoom, setInternalZoom] = useState(1);
   const [internalShowGrid, setInternalShowGrid] = useState(true);
@@ -742,6 +751,36 @@ export default function StudioCanvas({
         const newPosX = Math.round((target.left || 0) - newWidth / 2);
         const newPosY = Math.round((target.top || 0) - newHeight / 2);
         const newRotation = Math.round(target.angle || 0);
+
+        const targetLayer = layersRef.current.find((l) => l.id === layerId);
+        let hasActiveOption = false;
+
+        if (targetLayer && targetLayer.linkedFieldId && onUpdateField) {
+          const currentFields = fieldsRef.current || fields || [];
+          const linkedF = currentFields.find((f) => f.id === targetLayer.linkedFieldId);
+          if (linkedF) {
+            const config = linkedF.config || {};
+            const opts: any[] = config.options || [];
+            const activeOptId = linkedF.activeOptionId || opts[0]?.id;
+            const activeOptIdx = activeOptId ? opts.findIndex((o) => o.id === activeOptId) : -1;
+
+            if (activeOptIdx >= 0) {
+              hasActiveOption = true;
+              const updatedOpts = [...opts];
+              updatedOpts[activeOptIdx] = {
+                ...updatedOpts[activeOptIdx],
+                posX: newPosX,
+                posY: newPosY,
+                width: newWidth,
+                height: newHeight,
+                rotation: newRotation,
+              };
+              onUpdateField(linkedF.id, {
+                config: { ...config, options: updatedOpts },
+              });
+            }
+          }
+        }
 
         onUpdateLayer(layerId, {
           posX: newPosX,
@@ -1080,20 +1119,24 @@ export default function StudioCanvas({
         const hAlign = props.align || "center";
         const vAlign = props.verticalAlign || "middle";
 
-        // Ensure font is loaded into browser memory and trigger instant redraw with accurate fitted font size
+        // Ensure font is loaded into browser memory and trigger instant redraw with accurate fitted font size and centered bounds
         ensureFontLoaded(font, fonts).then((loaded) => {
           if (loaded && fc) {
             document.fonts.ready.then(() => {
               const freshFontSize = getFitFontSize(textStr, font, baseFontSize, layer.width, isAutoFit, fontWeight);
-              if (obj && obj instanceof fabric.Group) {
-                const textChild = obj.getObjects()[1] as fabric.Text;
+              const groupObj = fc.getObjects().find((o: any) => o.layerId === layer.id);
+              if (groupObj && groupObj instanceof fabric.Group) {
+                const textChild = groupObj.getObjects()[1] as fabric.Text;
                 if (textChild) {
                   textChild.set({ fontFamily: font, fontSize: freshFontSize, dirty: true });
                   textChild.initDimensions();
                 }
-              } else if (obj instanceof fabric.Text || obj instanceof fabric.Textbox) {
-                obj.set({ fontFamily: font, fontSize: freshFontSize, dirty: true });
-                obj.initDimensions();
+                (groupObj as any)._calcBounds?.();
+                (groupObj as any)._updateObjectsCoords?.();
+                groupObj.set({ dirty: true });
+              } else if (groupObj instanceof fabric.Text || groupObj instanceof fabric.Textbox) {
+                groupObj.set({ fontFamily: font, fontSize: freshFontSize, dirty: true });
+                groupObj.initDimensions();
               }
               fc.requestRenderAll();
             });
@@ -1213,48 +1256,10 @@ export default function StudioCanvas({
           ? new fabric.Textbox(textStr, { ...textOptions, width: layer.width })
           : new fabric.Text(textStr, textOptions);
 
-        if (obj && obj instanceof fabric.Group) {
-          const groupChildren = obj.getObjects();
-          const frameRectChild = groupChildren[0] as fabric.Rect;
-          const textChild = groupChildren[1] as fabric.Text;
-
-          // If text object type changed (Textbox vs Text), recreate the group
-          if (!textChild || (textChild instanceof fabric.Textbox) !== isMultilineTextbox) {
-            fc.remove(obj);
-            obj = undefined;
-          } else {
-            obj.set({
-              left: centerX,
-              top: centerY,
-              angle: layer.rotation,
-              width: layer.width,
-              height: layer.height,
-              selectable: !layer.isLocked,
-              evented: !layer.isLocked,
-              dirty: true,
-            });
-
-            if (frameRectChild) {
-              frameRectChild.set({
-                width: layer.width,
-                height: layer.height,
-                stroke: isTextSelected ? "rgba(79, 70, 229, 0.45)" : "transparent",
-                strokeWidth: isTextSelected ? 1 : 0,
-                strokeDashArray: isTextSelected ? [4, 4] : undefined,
-                dirty: true,
-              });
-            }
-            if (textChild) {
-              if (isMultilineTextbox && textChild instanceof fabric.Textbox) {
-                textChild.set({ width: layer.width });
-              }
-              textChild.set({
-                text: textStr,
-                ...textOptions,
-              });
-            }
-            obj.setCoords();
-          }
+        // Recreate text group on each property change to ensure Fabric.js group bounds & alignment are 100% pixel-perfect
+        if (obj) {
+          fc.remove(obj);
+          obj = undefined;
         }
 
         if (!obj) {
@@ -1376,8 +1381,40 @@ export default function StudioCanvas({
         layer.layerType === "OVERLAY" ||
         layer.layerType === "PHOTO_UPLOAD"
       ) {
-        const assetUrl = props.assetUrl;
-        const opacity = props.opacity !== undefined ? Number(props.opacity) : 1;
+        let assetUrl = props.assetUrl;
+        let opacity = props.opacity !== undefined ? Number(props.opacity) : 1;
+        let renderPosX = layer.posX;
+        let renderPosY = layer.posY;
+        let renderWidth = layer.width;
+        let renderHeight = layer.height;
+        let renderRotation = layer.rotation;
+
+        if (layer.linkedFieldId) {
+          const linkedF = (fields || []).find((f) => f.id === layer.linkedFieldId);
+          if (linkedF) {
+            const config = linkedF.config || {};
+            if (config.isConditionOnly) {
+              assetUrl = "";
+            } else {
+              const opts = config.options || [];
+              const activeOpt = opts.find((o: any) => o.id === linkedF.activeOptionId) || opts[0];
+              if (activeOpt && activeOpt.isVisible !== false) {
+                assetUrl = activeOpt.assetImageUrl || "";
+                if (activeOpt.posX !== undefined) renderPosX = activeOpt.posX;
+                if (activeOpt.posY !== undefined) renderPosY = activeOpt.posY;
+                if (activeOpt.width !== undefined) renderWidth = activeOpt.width;
+                if (activeOpt.height !== undefined) renderHeight = activeOpt.height;
+                if (activeOpt.rotation !== undefined) renderRotation = activeOpt.rotation;
+                if (activeOpt.opacity !== undefined) opacity = Number(activeOpt.opacity);
+              } else {
+                assetUrl = "";
+              }
+            }
+          }
+        }
+
+        const centerX = renderPosX + renderWidth / 2;
+        const centerY = renderPosY + renderHeight / 2;
 
         // Check if this PHOTO_UPLOAD layer has a linked child MASK layer
         const linkedMaskLayer = visibleLayers.find(
@@ -1424,10 +1461,10 @@ export default function StudioCanvas({
           const maskRelY = linkedMaskLayer ? linkedMaskLayer.posY - layer.posY : 0;
 
           const existingImgObj = fc.getObjects().find(
-            (o: any) => o.layerId === layer.id && o instanceof fabric.Image && (o as any).assetUrl === assetUrl
+            (o: any) => o.layerId === layer.id && o instanceof fabric.Image
           ) as fabric.Image | undefined;
 
-          if (existingImgObj) {
+          if (existingImgObj && (existingImgObj as any).assetUrl === assetUrl) {
             const rawImgEl = (existingImgObj as any)._rawImageElement || (existingImgObj as any)._element;
             let activeClipMask: fabric.Object | undefined = clipMask;
             let currentW = (existingImgObj as any).nativeWidth || 100;
@@ -1445,23 +1482,35 @@ export default function StudioCanvas({
               (existingImgObj as any)._isClippedCanvas = false;
             }
 
-            const baseScaleX = layer.width / currentW;
-            const baseScaleY = layer.height / currentH;
+            const baseScaleX = renderWidth / currentW;
+            const baseScaleY = renderHeight / currentH;
 
             existingImgObj.set({
               left: centerX,
               top: centerY,
               originX: "center",
               originY: "center",
-              angle: layer.rotation,
+              angle: renderRotation,
               scaleX: baseScaleX,
               scaleY: baseScaleY,
               opacity: opacity,
               selectable: !layer.isLocked,
               evented: !layer.isLocked,
+              lockUniScaling: true,
               clipPath: activeClipMask,
               objectCaching: false,
               dirty: true,
+            });
+            existingImgObj.setControlsVisibility({
+              mt: false,
+              mb: false,
+              ml: false,
+              mr: false,
+              tl: true,
+              tr: true,
+              bl: true,
+              br: true,
+              mtr: true,
             });
             existingImgObj.setCoords();
             obj = existingImgObj;
@@ -1469,10 +1518,13 @@ export default function StudioCanvas({
             const imgEl = new Image();
             imgEl.crossOrigin = "anonymous";
             imgEl.src = assetUrl;
+            imgEl.onerror = () => {
+              console.error("❌ Failed to load canvas asset image:", assetUrl);
+            };
             imgEl.onload = () => {
               if (!fc) return;
-              const nativeW = imgEl.naturalWidth || imgEl.width || layer.width;
-              const nativeH = imgEl.naturalHeight || imgEl.height || layer.height;
+              const nativeW = imgEl.naturalWidth || imgEl.width || renderWidth;
+              const nativeH = imgEl.naturalHeight || imgEl.height || renderHeight;
 
               const oldObj = fc.getObjects().find((o: any) => o.layerId === layer.id);
               if (oldObj) fc.remove(oldObj);
@@ -1491,12 +1543,12 @@ export default function StudioCanvas({
               const freshMaskCanvas =
                 freshIsCustomMask && freshMProps.maskAssetUrl ? customMaskCache.get(freshMProps.maskAssetUrl) : null;
 
-              const freshPhotoW = layer.width;
-              const freshPhotoH = layer.height;
+              const freshPhotoW = renderWidth;
+              const freshPhotoH = renderHeight;
               const freshMaskW = freshLinkedMaskLayer ? freshLinkedMaskLayer.width : freshPhotoW;
               const freshMaskH = freshLinkedMaskLayer ? freshLinkedMaskLayer.height : freshPhotoH;
-              const freshMaskRelX = freshLinkedMaskLayer ? freshLinkedMaskLayer.posX - layer.posX : 0;
-              const freshMaskRelY = freshLinkedMaskLayer ? freshLinkedMaskLayer.posY - layer.posY : 0;
+              const freshMaskRelX = freshLinkedMaskLayer ? freshLinkedMaskLayer.posX - renderPosX : 0;
+              const freshMaskRelY = freshLinkedMaskLayer ? freshLinkedMaskLayer.posY - renderPosY : 0;
 
               let finalImageSource: HTMLImageElement | HTMLCanvasElement = imgEl;
               let activeClipMask: fabric.Object | undefined = clipMask;
@@ -1520,24 +1572,36 @@ export default function StudioCanvas({
                 currentH = clippedCanvas.height || nativeH;
               }
 
-              const baseScaleX = layer.width / currentW;
-              const baseScaleY = layer.height / currentH;
+              const baseScaleX = renderWidth / currentW;
+              const baseScaleY = renderHeight / currentH;
 
               const fabricImg = new fabric.Image(finalImageSource, {
                 left: centerX,
                 top: centerY,
                 originX: "center",
                 originY: "center",
-                angle: layer.rotation,
+                angle: renderRotation,
                 scaleX: baseScaleX,
                 scaleY: baseScaleY,
                 opacity: opacity,
                 selectable: !layer.isLocked,
                 evented: !layer.isLocked,
-                lockUniScaling: false,
+                lockUniScaling: true,
                 clipPath: activeClipMask,
                 objectCaching: false,
                 dirty: true,
+              });
+
+              fabricImg.setControlsVisibility({
+                mt: false,
+                mb: false,
+                ml: false,
+                mr: false,
+                tl: true,
+                tr: true,
+                bl: true,
+                br: true,
+                mtr: true,
               });
 
               (fabricImg as any).layerId = layer.id;
@@ -1553,53 +1617,59 @@ export default function StudioCanvas({
             };
           }
         } else {
-          // Placeholder Frame & Text for empty Image or Photo Upload Layer
-          const isPhotoUpload = layer.layerType === "PHOTO_UPLOAD";
-          const maskShape = props.maskShape || "RECTANGLE";
+          // If this layer is a List container layer with no active graphic asset image, do NOT render any canvas placeholder frame!
+          const isListContainerLayer = Boolean(layer.linkedFieldId || (fields && fields.some((f) => f.id === layer.linkedFieldId)));
+          if (isListContainerLayer) {
+            if (obj) fc.remove(obj);
+          } else {
+            // Placeholder Frame & Text for empty Image or Photo Upload Layer
+            const isPhotoUpload = layer.layerType === "PHOTO_UPLOAD";
+            const maskShape = props.maskShape || "RECTANGLE";
 
-          const rx = maskShape === "CIRCLE" ? layer.width / 2 : maskShape === "ROUNDED" ? 16 : 0;
-          const ry = maskShape === "CIRCLE" ? layer.height / 2 : maskShape === "ROUNDED" ? 16 : 0;
+            const rx = maskShape === "CIRCLE" ? layer.width / 2 : maskShape === "ROUNDED" ? 16 : 0;
+            const ry = maskShape === "CIRCLE" ? layer.height / 2 : maskShape === "ROUNDED" ? 16 : 0;
 
-          if (obj) fc.remove(obj);
+            if (obj) fc.remove(obj);
 
-          const isPhotoSelected =
-            selectedLayerIds.includes(layer.id) ||
-            selectedLayerId === layer.id ||
-            (layer.maskLayerId && (selectedLayerIds.includes(layer.maskLayerId) || selectedLayerId === layer.maskLayerId));
+            const isPhotoSelected =
+              selectedLayerIds.includes(layer.id) ||
+              selectedLayerId === layer.id ||
+              (layer.maskLayerId && (selectedLayerIds.includes(layer.maskLayerId) || selectedLayerId === layer.maskLayerId));
 
-          const frameRect = new fabric.Rect({
-            left: centerX,
-            top: centerY,
-            width: layer.width,
-            height: layer.height,
-            fill: isPhotoSelected
-              ? isPhotoUpload
-                ? "rgba(254, 243, 199, 0.25)"
-                : "rgba(240, 253, 244, 0.5)"
-              : "transparent",
-            stroke: isPhotoSelected
-              ? isPhotoUpload
-                ? "#d97706"
-                : "#059669"
-              : "transparent",
-            strokeWidth: isPhotoSelected ? (isPhotoUpload ? 2 : 1.5) : 0,
-            strokeDashArray: isPhotoSelected ? (isPhotoUpload ? [8, 5] : [6, 6]) : undefined,
-            originX: "center",
-            originY: "center",
-            angle: layer.rotation,
-            rx,
-            ry,
-            selectable: !layer.isLocked,
-            lockUniScaling: false,
-            clipPath: clipMask,
-            subTargetCheck: false,
-            objectCaching: false,
-            dirty: true,
-          });
-          (frameRect as any).layerId = layer.id;
+            const frameRect = new fabric.Rect({
+              left: centerX,
+              top: centerY,
+              width: layer.width,
+              height: layer.height,
+              fill: isPhotoSelected
+                ? isPhotoUpload
+                  ? "rgba(254, 243, 199, 0.25)"
+                  : "rgba(240, 253, 244, 0.5)"
+                : "transparent",
+              stroke: isPhotoSelected
+                ? isPhotoUpload
+                  ? "#d97706"
+                  : "#059669"
+                : "transparent",
+              strokeWidth: isPhotoSelected ? (isPhotoUpload ? 2 : 1.5) : 0,
+              strokeDashArray: isPhotoSelected ? (isPhotoUpload ? [8, 5] : [6, 6]) : undefined,
+              originX: "center",
+              originY: "center",
+              angle: layer.rotation,
+              rx,
+              ry,
+              selectable: !layer.isLocked,
+              lockUniScaling: false,
+              clipPath: clipMask,
+              subTargetCheck: false,
+              objectCaching: false,
+              dirty: true,
+            });
+            (frameRect as any).layerId = layer.id;
 
-          fc.add(frameRect);
-          obj = frameRect;
+            fc.add(frameRect);
+            obj = frameRect;
+          }
         }
       }
 
@@ -1608,26 +1678,35 @@ export default function StudioCanvas({
       }
     });
 
-    // Sync active selection highlight without triggering infinite selection event loops
-    isUpdatingFromFabricRef.current = true;
-    const allCanvasObjs = fc.getObjects();
-    const matchingObjs = allCanvasObjs.filter((o: any) => o.layerId && selectedLayerIds.includes(o.layerId));
+      // Sync active selection highlight without triggering infinite selection event loops
+      isUpdatingFromFabricRef.current = true;
+      const allCanvasObjs = fc.getObjects();
+      const matchingObjs = allCanvasObjs.filter((o: any) => o.layerId && selectedLayerIds.includes(o.layerId));
 
-    if (selectedLayerIds.length > 1) {
-      if (matchingObjs.length > 1) {
-        const activeSel = new fabric.ActiveSelection(matchingObjs, { canvas: fc });
-        fc.setActiveObject(activeSel);
-      } else if (matchingObjs.length === 1) {
-        fc.setActiveObject(matchingObjs[0]);
+      if (selectedLayerIds.length > 1) {
+        if (matchingObjs.length > 1) {
+          const activeSel = new fabric.ActiveSelection(matchingObjs, { canvas: fc });
+          fc.setActiveObject(activeSel);
+        } else if (matchingObjs.length === 1) {
+          fc.setActiveObject(matchingObjs[0]);
+        }
+      } else if (selectedLayerIds.length === 1) {
+        const selectedId = selectedLayerIds[0];
+        const selectedLayerObj = layers.find((l) => l.id === selectedId);
+        const linkedF = selectedLayerObj ? fields.find((f) => f.id === selectedLayerObj.linkedFieldId) : null;
+        const isListSelectedWithoutOption = linkedF && !linkedF.activeOptionId;
+
+        if (isListSelectedWithoutOption) {
+          fc.discardActiveObject();
+        } else {
+          const matchingObj = matchingObjs[0] || allCanvasObjs.find((o: any) => o.layerId === selectedId);
+          if (matchingObj && fc.getActiveObject() !== matchingObj) {
+            fc.setActiveObject(matchingObj);
+          }
+        }
+      } else {
+        fc.discardActiveObject();
       }
-    } else if (selectedLayerIds.length === 1) {
-      const matchingObj = matchingObjs[0] || allCanvasObjs.find((o: any) => o.layerId === selectedLayerIds[0]);
-      if (matchingObj && fc.getActiveObject() !== matchingObj) {
-        fc.setActiveObject(matchingObj);
-      }
-    } else {
-      fc.discardActiveObject();
-    }
     fc.requestRenderAll();
     setTimeout(() => {
       isUpdatingFromFabricRef.current = false;

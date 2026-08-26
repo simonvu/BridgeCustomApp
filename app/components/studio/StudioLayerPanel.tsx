@@ -15,17 +15,27 @@ import {
   Sparkles,
   Copy,
   ChevronDown,
+  ChevronRight,
   Scissors,
+  ListFilter,
+  Images,
 } from "lucide-react";
+
+import { StudioFieldItem } from "./StudioFieldPanel";
 
 interface StudioLayerPanelProps {
   layers: CanvasLayerItem[];
   selectedLayerId: string | null;
   selectedLayerIds?: string[];
+  fields?: StudioFieldItem[];
   onSelectLayer: (layerId: string | null, isMultiKey?: boolean) => void;
   onUpdateLayer: (layerId: string, updatedProps: Partial<CanvasLayerItem>) => void;
-  onAddLayer: (layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY") => void;
+  onUpdateField?: (fieldId: string, updatedProps: Partial<StudioFieldItem>) => void;
+  onAddLayer: (layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY" | "DROPDOWN") => void;
   onAddMaskLayer?: (photoLayerId: string) => void;
+  onOpenMediaPickerForOption?: (fieldId: string, optionIndex: number, targetType: "SWATCH" | "ASSET") => void;
+  onOpenMediaPickerForBatchOptions?: (fieldId: string) => void;
+  onPreviewOptionChoice?: (fieldId: string, option: any) => void;
   onDuplicateLayer?: (layerId: string) => void;
   onDeleteLayer: (layerId: string) => void;
   onReorderLayers: (reorderedLayers: CanvasLayerItem[]) => void;
@@ -35,16 +45,63 @@ export default function StudioLayerPanel({
   layers,
   selectedLayerId,
   selectedLayerIds = [],
+  fields = [],
   onSelectLayer,
   onUpdateLayer,
+  onUpdateField,
   onAddLayer,
   onAddMaskLayer,
+  onOpenMediaPickerForOption,
+  onOpenMediaPickerForBatchOptions,
+  onPreviewOptionChoice,
   onDuplicateLayer,
   onDeleteLayer,
   onReorderLayers,
 }: StudioLayerPanelProps) {
   const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
   const [showAddMenu, setShowAddMenu] = useState(false);
+  const [collapsedLayerIds, setCollapsedLayerIds] = useState<Record<string, boolean>>({});
+
+  const toggleCollapseLayer = (layerId: string) => {
+    setCollapsedLayerIds((prev) => ({
+      ...prev,
+      [layerId]: !prev[layerId],
+    }));
+  };
+
+  // Item Drag & Drop Reordering State
+  const [draggedItemIdx, setDraggedItemIdx] = useState<number | null>(null);
+  const [draggedItemFieldId, setDraggedItemFieldId] = useState<string | null>(null);
+
+  const handleItemDragStart = (e: React.DragEvent, fieldId: string, itemIdx: number) => {
+    e.stopPropagation();
+    setDraggedItemIdx(itemIdx);
+    setDraggedItemFieldId(fieldId);
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleItemDragOver = (e: React.DragEvent, fieldId: string, targetIdx: number, linkedField: any) => {
+    e.stopPropagation();
+    if (draggedItemIdx === null || draggedItemFieldId !== fieldId || draggedItemIdx === targetIdx) return;
+    e.preventDefault();
+
+    const options = [...(linkedField.config?.options || [])];
+    const [draggedOpt] = options.splice(draggedItemIdx, 1);
+    options.splice(targetIdx, 0, draggedOpt);
+
+    if (onUpdateField) {
+      onUpdateField(fieldId, {
+        config: { ...linkedField.config, options },
+      });
+    }
+    setDraggedItemIdx(targetIdx);
+  };
+
+  const handleItemDragEnd = (e: React.DragEvent) => {
+    e.stopPropagation();
+    setDraggedItemIdx(null);
+    setDraggedItemFieldId(null);
+  };
 
   // Double Click Inline Layer Rename State
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
@@ -209,12 +266,27 @@ export default function StudioLayerPanel({
                     onAddLayer("PHOTO_UPLOAD");
                     setShowAddMenu(false);
                   }}
-                  className="w-full px-3 py-2 text-left hover:bg-purple-50 flex items-center gap-2.5 text-slate-800 transition cursor-pointer"
+                  className="w-full px-3 py-2 text-left hover:bg-slate-50 flex items-start gap-2.5 transition group cursor-pointer"
                 >
-                  <Upload className="w-4 h-4 text-purple-600 shrink-0" />
+                  <Upload className="w-4 h-4 text-purple-600 shrink-0 mt-0.5" />
                   <div>
-                    <p className="font-bold text-xs text-purple-900">Photo Upload</p>
-                    <p className="text-[10px] text-purple-600">Customer photo upload box</p>
+                    <div className="font-bold text-slate-800 group-hover:text-purple-600">Photo Upload</div>
+                    <div className="text-[10px] text-slate-400">Customer photo upload box</div>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    onAddLayer("DROPDOWN");
+                    setShowAddMenu(false);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-slate-50 flex items-start gap-2.5 transition group cursor-pointer border-t border-slate-100 mt-1 pt-2"
+                >
+                  <ListFilter className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                  <div>
+                    <div className="font-bold text-slate-800 group-hover:text-blue-600">List / Item</div>
+                    <div className="text-[10px] text-slate-400">List options & items choice</div>
                   </div>
                 </button>
               </div>
@@ -246,7 +318,13 @@ export default function StudioLayerPanel({
                   onDragStart={(e) => handleDragStart(e, index)}
                   onDragOver={(e) => handleDragOver(e, index)}
                   onDragEnd={handleDragEnd}
-                  onClick={(e) => onSelectLayer(layer.id, e.ctrlKey || e.metaKey)}
+                  onClick={(e) => {
+                    onSelectLayer(layer.id, e.ctrlKey || e.metaKey);
+                    const linkedField = fields.find((f) => f.id === layer.linkedFieldId);
+                    if (linkedField && onUpdateField) {
+                      onUpdateField(linkedField.id, { activeOptionId: null });
+                    }
+                  }}
                   className={`group flex items-center justify-between p-1.5 rounded-lg border transition cursor-pointer ${
                     isDragging
                       ? "opacity-50 border-dashed border-blue-500 bg-blue-100 shadow-inner"
@@ -263,6 +341,24 @@ export default function StudioLayerPanel({
                     >
                       <GripVertical className="w-3.5 h-3.5" />
                     </div>
+
+                    {Boolean(layer.linkedFieldId) && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleCollapseLayer(layer.id);
+                        }}
+                        className="p-0.5 text-indigo-500 hover:text-indigo-700 hover:bg-indigo-100 rounded transition cursor-pointer shrink-0"
+                        title={collapsedLayerIds[layer.id] ? "Expand List Items" : "Collapse List Items"}
+                      >
+                        {collapsedLayerIds[layer.id] ? (
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        ) : (
+                          <ChevronDown className="w-3.5 h-3.5" />
+                        )}
+                      </button>
+                    )}
 
                     {getLayerIcon(layer.layerType)}
 
@@ -488,6 +584,191 @@ export default function StudioLayerPanel({
                     </div>
                   </div>
                 )}
+
+                {/* NESTED DEPENDENT LIST / ITEM LAYERS (Bound to Parent List/Item Layer) */}
+                {(() => {
+                  const linkedField = fields.find((f) => f.id === layer.linkedFieldId);
+                  if (!collapsedLayerIds[layer.id] && linkedField && (linkedField.fieldType === "SELECT" || linkedField.fieldType === "DROPDOWN" || linkedField.fieldType === "RADIO")) {
+                    const options = linkedField.config?.options || [];
+                    return (
+                      <div className="ml-3 mt-1 space-y-1 pl-1.5 border-l-2 border-indigo-300/80">
+                        {options.map((opt: any, optIdx: number) => {
+                          const isSelectedOption = isSelected && (linkedField.activeOptionId === opt.id || (!linkedField.activeOptionId && optIdx === 0));
+                          const isItemDragging = draggedItemIdx === optIdx && draggedItemFieldId === linkedField.id;
+
+                          return (
+                            <div
+                              key={opt.id || optIdx}
+                              draggable={true}
+                              onDragStart={(e) => handleItemDragStart(e, linkedField.id, optIdx)}
+                              onDragOver={(e) => handleItemDragOver(e, linkedField.id, optIdx, linkedField)}
+                              onDragEnd={handleItemDragEnd}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onSelectLayer(layer.id);
+                                if (onUpdateField) onUpdateField(linkedField.id, { activeOptionId: opt.id });
+                                if (onPreviewOptionChoice) onPreviewOptionChoice(linkedField.id, opt);
+                              }}
+                              className={`flex items-center justify-between px-2 py-1.5 rounded-lg border transition cursor-pointer text-xs ${
+                                isItemDragging
+                                  ? "opacity-40 border-dashed border-indigo-500 bg-indigo-100"
+                                  : isSelectedOption
+                                  ? "bg-indigo-100/90 border-indigo-400 text-indigo-950 font-bold shadow-2xs"
+                                  : isSelected
+                                  ? "bg-indigo-50/50 border-indigo-200/80 text-indigo-900 hover:bg-indigo-100/70"
+                                  : "bg-slate-50/70 border-slate-200/80 text-slate-700 hover:bg-slate-100"
+                              }`}
+                              title="Drag handle to reorder, click to select"
+                            >
+                              <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                                <GripVertical className="w-3.5 h-3.5 text-indigo-400 hover:text-indigo-700 cursor-grab active:cursor-grabbing shrink-0" title="Drag to reorder Item" />
+                                <span className="text-indigo-400 text-[11px] font-mono select-none">└─</span>
+                                <div className="w-5 h-5 rounded border border-indigo-300 bg-white flex items-center justify-center shrink-0 overflow-hidden">
+                                  {opt.swatchImageUrl ? (
+                                    <img src={opt.swatchImageUrl} alt="" className="w-full h-full object-cover" />
+                                  ) : opt.assetImageUrl ? (
+                                    <img src={opt.assetImageUrl} alt="" className="w-full h-full object-contain p-0.5" />
+                                  ) : (
+                                    <ImageIcon className="w-3 h-3 text-indigo-500" />
+                                  )}
+                                </div>
+
+                                <span className="truncate text-xs select-none">
+                                  {opt.label || `Item ${optIdx + 1}`}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <span className="text-[9px] font-mono font-semibold text-indigo-700 bg-indigo-100/90 px-1 py-0.2 rounded border border-indigo-200" title={`Internal Item Index ${optIdx + 1}`}>
+                                  i:{optIdx + 1}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const updatedOpts = [...options];
+                                    const isVis = opt.isVisible !== false;
+                                    updatedOpts[optIdx] = { ...opt, isVisible: !isVis };
+                                    if (onUpdateField) {
+                                      onUpdateField(linkedField.id, {
+                                        config: { ...linkedField.config, options: updatedOpts },
+                                      });
+                                    }
+                                  }}
+                                  className="p-1 rounded transition cursor-pointer hover:bg-indigo-200/50"
+                                  title={opt.isVisible !== false ? "Hide Item on Studio Canvas" : "Show Item on Studio Canvas"}
+                                >
+                                  {opt.isVisible !== false ? (
+                                    <Eye className="w-3.5 h-3.5 text-indigo-600" />
+                                  ) : (
+                                    <EyeOff className="w-3.5 h-3.5 text-slate-400" />
+                                  )}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const sourceOpt = options[optIdx];
+                                    const newOpt = {
+                                      ...sourceOpt,
+                                      id: `item_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                                      label: `${sourceOpt.label || `Item ${optIdx + 1}`} (Copy)`,
+                                      value: `${sourceOpt.value || `item_${optIdx + 1}`}_copy_${Date.now().toString(36).substring(2, 6)}`,
+                                      posX: (sourceOpt.posX !== undefined ? sourceOpt.posX : layer.posX) + 20,
+                                      posY: (sourceOpt.posY !== undefined ? sourceOpt.posY : layer.posY) + 20,
+                                    };
+                                    const updatedOpts = [...options];
+                                    updatedOpts.splice(optIdx + 1, 0, newOpt);
+                                    onSelectLayer(layer.id);
+                                    if (onUpdateField) {
+                                      onUpdateField(linkedField.id, {
+                                        config: { ...linkedField.config, options: updatedOpts },
+                                        activeOptionId: newOpt.id,
+                                      });
+                                    }
+                                  }}
+                                  className="p-1 text-indigo-400 hover:text-indigo-700 hover:bg-indigo-50 rounded transition cursor-pointer"
+                                  title="Duplicate Item"
+                                >
+                                  <Copy className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const updatedOpts = options.filter((_: any, i: number) => i !== optIdx);
+                                    const nextOpt = updatedOpts[0];
+                                    if (onUpdateField) onUpdateField(linkedField.id, {
+                                      config: { ...linkedField.config, options: updatedOpts },
+                                      activeOptionId: isSelectedOption ? nextOpt?.id : linkedField.activeOptionId,
+                                    });
+                                  }}
+                                  className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition cursor-pointer"
+                                  title="Remove Item"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        <div className="ml-5 my-1 flex items-center justify-end gap-1.5 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSelectLayer(layer.id);
+                              if (onOpenMediaPickerForBatchOptions) {
+                                onOpenMediaPickerForBatchOptions(linkedField.id);
+                              }
+                            }}
+                            className="py-1 px-2 text-[10px] font-bold text-indigo-700 bg-indigo-100/90 hover:bg-indigo-200 border border-indigo-300 rounded-md transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                            title="Select multiple images from Media Library to create items automatically"
+                          >
+                            <Images className="w-3 h-3 text-indigo-600" />
+                            <span>+ Add Items by Images</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onSelectLayer(layer.id);
+                              const item1 = options[0];
+                              const firstPosX = item1?.posX !== undefined ? item1.posX : layer.posX;
+                              const firstPosY = item1?.posY !== undefined ? item1.posY : layer.posY;
+
+                              const newOpt = {
+                                id: `item_${Date.now()}`,
+                                label: `Item ${options.length + 1}`,
+                                value: `item_${options.length + 1}`,
+                                swatchImageUrl: "",
+                                assetImageUrl: "",
+                                posX: firstPosX,
+                                posY: firstPosY,
+                                width: 300,
+                                height: 300,
+                                rotation: item1?.rotation !== undefined ? item1.rotation : layer.rotation || 0,
+                                opacity: item1?.opacity !== undefined ? item1.opacity : layer.properties?.opacity ?? 1,
+                                isVisible: true,
+                              };
+                              if (onUpdateField) onUpdateField(linkedField.id, {
+                                config: { ...linkedField.config, options: [...options, newOpt] },
+                                activeOptionId: newOpt.id,
+                              });
+                            }}
+                            className="py-1 px-2 text-[10px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-md transition flex items-center gap-1 cursor-pointer"
+                          >
+                            <Plus className="w-3 h-3 text-indigo-600" />
+                            <span>Add Item</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
               </React.Fragment>
             );
           })

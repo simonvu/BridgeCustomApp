@@ -507,49 +507,92 @@ export default function StudioStorefrontPreviewModal({
                           />
                         )}
 
-                        {/* SELECT DROPDOWN */}
-                        {field.fieldType === "SELECT" && (
-                          <select
-                            value={val}
-                            onChange={(e) => handleValueChange(field.id, e.target.value)}
-                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:bg-white focus:border-blue-600 focus:outline-none transition shadow-2xs cursor-pointer"
-                          >
-                            {(field.config?.options || []).map((opt: any, idx: number) => (
-                              <option key={idx} value={opt.value || opt.assetUrl || opt.label}>
-                                {opt.label}
-                              </option>
-                            ))}
-                          </select>
-                        )}
+                        {/* DROPDOWN SELECT MENU */}
+                        {(field.fieldType === "SELECT" || field.fieldType === "DROPDOWN" || field.fieldType === "RADIO" || field.fieldType === "FIELD_ASSET") &&
+                          (!field.displayType || field.displayType === "DROPDOWN") && (
+                            <select
+                              value={val}
+                              onChange={(e) => handleValueChange(field.id, e.target.value)}
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:bg-white focus:border-indigo-600 focus:outline-none transition shadow-2xs cursor-pointer"
+                            >
+                              {(field.config?.options || []).map((opt: any, idx: number) => {
+                                const optVal = opt.value || opt.assetImageUrl || opt.assetUrl || opt.label;
+                                return (
+                                  <option key={idx} value={optVal}>
+                                    {opt.label || opt.name || `Option ${idx + 1}`}
+                                  </option>
+                                );
+                              })}
+                            </select>
+                          )}
 
-                        {/* RADIO / BUTTON GROUP */}
-                        {(field.fieldType === "RADIO" || field.fieldType === "BUTTON_GROUP") && (
-                          <div className="flex flex-wrap gap-2">
-                            {(field.config?.options || []).map((opt: any, idx: number) => {
-                              const optVal = opt.value || opt.assetUrl || opt.label;
-                              const isSel = val === optVal;
-                              return (
-                                <button
-                                  key={idx}
-                                  type="button"
-                                  onClick={() => handleValueChange(field.id, optVal)}
-                                  className={`px-3.5 py-1.5 rounded-lg border text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
-                                    isSel
-                                      ? "bg-white border-blue-600 text-blue-900 ring-2 ring-blue-600/30 shadow-2xs"
-                                      : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
-                                  }`}
-                                >
-                                  <span>{opt.label}</span>
-                                  {isSel && (
-                                    <span className="w-3.5 h-3.5 bg-blue-600 text-white rounded-full flex items-center justify-center">
-                                      <Check className="w-2.5 h-2.5 stroke-[3]" />
-                                    </span>
-                                  )}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        )}
+                        {/* RADIO BUTTON PILLS LIST */}
+                        {(field.fieldType === "RADIO" || field.fieldType === "SELECT" || field.fieldType === "DROPDOWN" || field.fieldType === "BUTTON_GROUP") &&
+                          (field.displayType === "RADIO" || field.displayType === "TEXT_BUTTON") && (
+                            <div className="flex flex-wrap gap-2">
+                              {(field.config?.options || []).map((opt: any, idx: number) => {
+                                const optVal = opt.value || opt.assetImageUrl || opt.assetUrl || opt.label;
+                                const isSel = val === optVal;
+                                return (
+                                  <button
+                                    key={idx}
+                                    type="button"
+                                    onClick={() => handleValueChange(field.id, optVal)}
+                                    className={`px-3.5 py-1.5 rounded-lg border text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                                      isSel
+                                        ? "bg-white border-indigo-600 text-indigo-900 ring-2 ring-indigo-600/30 shadow-2xs"
+                                        : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
+                                    }`}
+                                  >
+                                    <span>{opt.label || opt.name}</span>
+                                    {isSel && (
+                                      <span className="w-3.5 h-3.5 bg-indigo-600 text-white rounded-full flex items-center justify-center">
+                                        <Check className="w-2.5 h-2.5 stroke-[3]" />
+                                      </span>
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                        {/* THUMBNAIL / IMAGE SELECT GRID */}
+                        {(field.fieldType === "RADIO" || field.fieldType === "SELECT" || field.fieldType === "DROPDOWN" || field.fieldType === "FIELD_ASSET") &&
+                          (field.displayType === "THUMBNAIL" || field.displayType === "IMAGE_SWATCH") && (
+                            <div className="grid grid-cols-3 gap-2.5">
+                              {(field.config?.options || []).map((opt: any, idx: number) => {
+                                const optVal = opt.value || opt.assetImageUrl || opt.assetUrl || opt.label;
+                                const isSel = val === optVal;
+                                const displayImage = opt.swatchImageUrl || opt.assetImageUrl || opt.assetUrl || opt.imageUrl;
+                                return (
+                                  <button
+                                    key={idx}
+                                    type="button"
+                                    onClick={() => handleValueChange(field.id, optVal)}
+                                    className={`p-1.5 rounded-xl border text-center transition flex flex-col items-center gap-1.5 cursor-pointer relative ${
+                                      isSel
+                                        ? "bg-indigo-50/60 border-indigo-600 ring-2 ring-indigo-600/30 shadow-xs"
+                                        : "bg-slate-50 border-slate-200 hover:bg-slate-100 text-slate-700"
+                                    }`}
+                                  >
+                                    <div className="w-full aspect-square rounded-lg bg-white border border-slate-200 overflow-hidden flex items-center justify-center p-1 relative">
+                                      {displayImage ? (
+                                        <img src={displayImage} alt={opt.label || opt.name} className="w-full h-full object-contain" />
+                                      ) : (
+                                        <ImageIcon className="w-5 h-5 text-slate-300" />
+                                      )}
+                                      {isSel && (
+                                        <span className="absolute top-1 right-1 w-4 h-4 bg-indigo-600 text-white rounded-full flex items-center justify-center shadow-xs">
+                                          <Check className="w-3 h-3 stroke-[3]" />
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className="text-[11px] font-bold text-slate-800 line-clamp-1">{opt.label || opt.name}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
 
                         {/* COLOR SWATCH */}
                         {field.fieldType === "COLOR_SWATCH" && (

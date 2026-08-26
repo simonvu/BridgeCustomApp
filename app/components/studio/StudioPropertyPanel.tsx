@@ -15,20 +15,24 @@ import {
   Trash2,
   Palette,
   Eye,
+  EyeOff,
   Upload,
   Edit3,
   Scissors,
   Layers,
+  ListFilter,
+  Radio,
+  LayoutGrid,
+  Images,
+  Copy,
 } from "lucide-react";
+import { autoGenerateSquareThumbnail } from "../../utils/thumbnailGenerator";
 
 export interface BackgroundOptionItem {
   id: string;
-  label: string;
-  bgType: "IMAGE" | "COLOR" | "TRANSPARENT";
+  label?: string;
   assetUrl?: string;
-  color?: string;
-  fitMode?: "COVER" | "CONTAIN" | "STRETCH";
-  opacity?: number;
+  aspectRatio?: number;
 }
 
 interface StudioPropertyPanelProps {
@@ -37,7 +41,12 @@ interface StudioPropertyPanelProps {
   fields: StudioFieldItem[];
   fonts?: { id: string; name: string; family: string; fontType: string }[] | any;
   onUpdateLayer: (layerId: string, updatedProps: Partial<CanvasLayerItem>) => void;
+  onUpdateField?: (fieldId: string, updatedProps: Partial<StudioFieldItem>) => void;
+  onAddField?: (fieldType: StudioFieldItem["fieldType"]) => void;
   onOpenMediaPickerForLayer?: (layerId: string, bgOptionIndex?: number) => void;
+  onOpenMediaPickerForOption?: (fieldId: string, optionIndex: number, targetType: "SWATCH" | "ASSET") => void;
+  onOpenMediaPickerForBatchOptions?: (fieldId: string) => void;
+  onPreviewOptionChoice?: (fieldId: string, option: any) => void;
   onOpenPhotoUploadModal?: (layerId: string) => void;
   onAddMaskLayer?: (photoLayerId: string) => void;
   onDeleteLayer?: (layerId: string) => void;
@@ -49,7 +58,12 @@ export default function StudioPropertyPanel({
   fields,
   fonts = [],
   onUpdateLayer,
+  onUpdateField,
+  onAddField,
   onOpenMediaPickerForLayer,
+  onOpenMediaPickerForOption,
+  onOpenMediaPickerForBatchOptions,
+  onPreviewOptionChoice,
   onOpenPhotoUploadModal,
   onAddMaskLayer,
   onDeleteLayer,
@@ -133,27 +147,36 @@ export default function StudioPropertyPanel({
     handlePropChange("activeOptionIndex", Math.max(0, index - 1));
   };
 
+  const isListTypeLayer = Boolean(
+    selectedLayer.linkedFieldId ||
+    selectedLayer.name.toLowerCase().includes("list") ||
+    selectedLayer.name.toLowerCase().includes("dropdown") ||
+    selectedLayer.name.toLowerCase().includes("select")
+  );
+
   return (
     <div className="flex flex-col h-full bg-white w-full select-none overflow-y-auto">
       {/* Header */}
       <div className="h-9 px-3 border-b border-slate-200 bg-slate-50/80 flex items-center justify-between shrink-0">
         <h3 className="font-bold text-slate-800 text-xs flex items-center gap-1.5 uppercase tracking-wider">
-          <SlidersHorizontal className="w-3.5 h-3.5 text-blue-600" />
+          <SlidersHorizontal className="w-3.5 h-3.5 text-indigo-600" />
           {selectedLayer.name} Properties
         </h3>
       </div>
 
       <div className="p-4 space-y-4 text-xs">
-        {/* Layer Name Input */}
-        <div>
-          <label className="block text-[11px] font-semibold text-slate-700 mb-1">Layer Name</label>
-          <input
-            type="text"
-            value={selectedLayer.name}
-            onChange={(e) => onUpdateLayer(selectedLayer.id, { name: e.target.value })}
-            className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-blue-500 focus:outline-none font-semibold text-slate-800"
-          />
-        </div>
+        {/* Layer Name Input (Only for non-List layers; List layers render Layer Name inside !activeOpt) */}
+        {!isListTypeLayer && (
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-700 mb-1">Layer Name</label>
+            <input
+              type="text"
+              value={selectedLayer.name}
+              onChange={(e) => onUpdateLayer(selectedLayer.id, { name: e.target.value })}
+              className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none font-semibold text-slate-800"
+            />
+          </div>
+        )}
 
         {/* SMART BACKGROUND OPTIONS EDITOR */}
         {selectedLayer.layerType === "BACKGROUND" && (
@@ -455,8 +478,8 @@ export default function StudioPropertyPanel({
           </div>
         )}
 
-        {/* Graphic Asset Selector & Opacity (If LayerType is ASSET or OVERLAY) */}
-        {(selectedLayer.layerType === "ASSET" || selectedLayer.layerType === "OVERLAY") && (
+        {/* Graphic Asset Selector & Opacity (If LayerType is ASSET or OVERLAY and NOT a List Container Layer) */}
+        {((selectedLayer.layerType === "ASSET" || selectedLayer.layerType === "OVERLAY") && !selectedLayer.linkedFieldId) && (
           <div className="space-y-3 pt-3 border-t border-slate-200">
             {/* Non-customizable Static Design Element Notice */}
             <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-2.5 flex items-start gap-2 text-emerald-900">
@@ -526,6 +549,560 @@ export default function StudioPropertyPanel({
             </div>
           </div>
         )}
+
+        {/* List / Item Customization Properties Editor (Independent top-level block) */}
+            {(() => {
+              let linkedField = fields.find((f) => f.id === selectedLayer.linkedFieldId);
+
+              // Fallback 1: If linkedFieldId is set or layer name indicates List / Item layer
+              const isListTypeLayer = Boolean(
+                selectedLayer.linkedFieldId ||
+                selectedLayer.name.toLowerCase().includes("list") ||
+                selectedLayer.name.toLowerCase().includes("dropdown") ||
+                selectedLayer.name.toLowerCase().includes("select")
+              );
+
+              if (!linkedField && isListTypeLayer) {
+                linkedField = fields.find((f) => f.fieldType === "SELECT") || {
+                  id: selectedLayer.linkedFieldId || `field_${selectedLayer.id}`,
+                  label: selectedLayer.name || "List / Item",
+                  fieldType: "SELECT",
+                  displayType: "DROPDOWN",
+                  isRequired: true,
+                  allowPersonalized: true,
+                  config: {
+                    isConditionOnly: false,
+                    options: [
+                      { id: `item_${Date.now()}_1`, label: "Item 1", value: "item_1", swatchImageUrl: "", assetImageUrl: "" },
+                      { id: `item_${Date.now()}_2`, label: "Item 2", value: "item_2", swatchImageUrl: "", assetImageUrl: "" },
+                      { id: `item_${Date.now()}_3`, label: "Item 3", value: "item_3", swatchImageUrl: "", assetImageUrl: "" },
+                    ],
+                  },
+                };
+              }
+
+              if (linkedField) {
+                const config = linkedField.config || {};
+                const options: any[] = config.options || [];
+                const isItemSelected = Boolean(linkedField.activeOptionId);
+                const activeOptIdx = isItemSelected ? options.findIndex((o) => o.id === linkedField.activeOptionId) : -1;
+                const activeOpt = activeOptIdx >= 0 ? options[activeOptIdx] : null;
+
+                const handleFieldUpdate = (fieldId: string, updates: any) => {
+                  if (onUpdateField) onUpdateField(fieldId, updates);
+                  if (!selectedLayer.linkedFieldId) {
+                    onUpdateLayer(selectedLayer.id, { linkedFieldId: fieldId });
+                  }
+                };
+
+                return (
+                  <div className="pt-3 border-t border-slate-200 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h4 className="font-bold text-xs text-indigo-900 flex items-center gap-1.5 uppercase tracking-wider">
+                        <ListFilter className="w-4 h-4 text-indigo-600" />
+                        {activeOpt ? "Item Properties" : "List Field Settings"}
+                      </h4>
+                      <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 font-bold text-[10px]">
+                        {linkedField.label}
+                      </span>
+                    </div>
+
+                    {/* IF PARENT LIST LAYER IS SELECTED: SHOW LIST FIELD LEVEL PROPERTIES */}
+                    {!activeOpt && (
+                      <div className="space-y-3">
+                        {/* Layer Name Input */}
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">Layer Name</label>
+                          <input
+                            type="text"
+                            value={selectedLayer.name}
+                            onChange={(e) => onUpdateLayer(selectedLayer.id, { name: e.target.value })}
+                            className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none font-semibold text-slate-800"
+                          />
+                        </div>
+
+                        {/* Customer Field Title / Label */}
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                            Customer Field Title / Label
+                          </label>
+                          <input
+                            type="text"
+                            value={linkedField.label}
+                            onChange={(e) => handleFieldUpdate(linkedField.id, { label: e.target.value })}
+                            className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none text-xs font-semibold text-slate-800 bg-white"
+                            placeholder="e.g. Select You Pet"
+                          />
+                        </div>
+
+                        {/* List Type: Condition Only Checkbox */}
+                        <div className="bg-indigo-50/70 border border-indigo-200/90 rounded-lg p-2.5 space-y-1">
+                          <label className="flex items-center gap-2 font-bold text-indigo-950 cursor-pointer text-xs select-none">
+                            <input
+                              type="checkbox"
+                              checked={config.isConditionOnly === true}
+                              onChange={(e) => {
+                                handleFieldUpdate(linkedField.id, {
+                                  config: { ...config, isConditionOnly: e.target.checked },
+                                });
+                              }}
+                              className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                            />
+                            <span>Condition only</span>
+                          </label>
+                          <p className="text-[10px] text-indigo-700 leading-tight pl-6">
+                            {config.isConditionOnly
+                              ? "Only used for conditional rules. Items inside will NOT show graphic images on Studio canvas."
+                              : "Items have graphic images visible on Studio canvas for design composition."}
+                          </p>
+                        </div>
+
+                        {/* View Type Selector */}
+                        <div className="space-y-1.5">
+                          <label className="block text-[11px] font-bold text-slate-700">View Type (Storefront Layout)</label>
+                          <div className="grid grid-cols-3 gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-[10px]">
+                            <button
+                              type="button"
+                              onClick={() => handleFieldUpdate(linkedField.id, { displayType: "DROPDOWN" })}
+                              className={`py-1.5 px-1 rounded font-bold transition flex items-center justify-center gap-1 cursor-pointer text-center ${
+                                !linkedField.displayType || linkedField.displayType === "DROPDOWN"
+                                  ? "bg-white text-indigo-700 shadow-2xs border border-indigo-200"
+                                  : "text-slate-600 hover:text-slate-900"
+                              }`}
+                              title="Dropdown (item name)"
+                            >
+                              <span>Dropdown</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleFieldUpdate(linkedField.id, { displayType: "RADIO" })}
+                              className={`py-1.5 px-1 rounded font-bold transition flex items-center justify-center gap-1 cursor-pointer text-center ${
+                                linkedField.displayType === "RADIO" || linkedField.displayType === "BUTTON"
+                                  ? "bg-white text-indigo-700 shadow-2xs border border-indigo-200"
+                                  : "text-slate-600 hover:text-slate-900"
+                              }`}
+                              title="Button View (item name)"
+                            >
+                              <span>Button View</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleFieldUpdate(linkedField.id, { displayType: "THUMBNAIL" })}
+                              className={`py-1.5 px-1 rounded font-bold transition flex items-center justify-center gap-1 cursor-pointer text-center ${
+                                linkedField.displayType === "THUMBNAIL" || linkedField.displayType === "IMAGE_SWATCH"
+                                  ? "bg-white text-indigo-700 shadow-2xs border border-indigo-200"
+                                  : "text-slate-600 hover:text-slate-900"
+                              }`}
+                              title="Thumbnail Swatcher"
+                            >
+                              <span>Thumbnail Swatch</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Required & Allow Personalized Checkboxes */}
+                        <div className="flex items-center gap-4 pt-1">
+                          <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer text-xs">
+                            <input
+                              type="checkbox"
+                              checked={linkedField.isRequired !== false}
+                              onChange={(e) => handleFieldUpdate(linkedField.id, { isRequired: e.target.checked })}
+                              className="rounded text-indigo-600 focus:ring-indigo-500"
+                            />
+                            <span>Required</span>
+                          </label>
+
+                          <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer text-xs">
+                            <input
+                              type="checkbox"
+                              checked={linkedField.allowPersonalized !== false}
+                              onChange={(e) => handleFieldUpdate(linkedField.id, { allowPersonalized: e.target.checked })}
+                              className="rounded text-emerald-600 focus:ring-emerald-500"
+                            />
+                            <span className="text-emerald-950 font-semibold">Allow Personalized</span>
+                          </label>
+                        </div>
+
+                        {/* Items Summary & Add Item Button */}
+                        <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
+                          <span className="text-xs font-semibold text-slate-600">
+                            Configured Items ({options.length})
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onOpenMediaPickerForBatchOptions && onOpenMediaPickerForBatchOptions(linkedField.id)
+                              }
+                              className="text-xs font-bold bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 px-2.5 py-1 rounded-md transition flex items-center gap-1 cursor-pointer"
+                              title="Select multiple images from Media Library to create items automatically"
+                            >
+                              <Images className="w-3.5 h-3.5 text-indigo-600" /> + Add Items by Images
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const item1 = options[0];
+                                const firstPosX = item1?.posX !== undefined ? item1.posX : selectedLayer.posX;
+                                const firstPosY = item1?.posY !== undefined ? item1.posY : selectedLayer.posY;
+
+                                const newOpt = {
+                                  id: `item_${Date.now()}`,
+                                  label: `Item ${options.length + 1}`,
+                                  value: `item_${options.length + 1}`,
+                                  swatchImageUrl: "",
+                                  assetImageUrl: "",
+                                  posX: firstPosX,
+                                  posY: firstPosY,
+                                  width: 300,
+                                  height: 300,
+                                  rotation: item1?.rotation !== undefined ? item1.rotation : selectedLayer.rotation || 0,
+                                  opacity: item1?.opacity !== undefined ? item1.opacity : selectedLayer.properties?.opacity ?? 1,
+                                  isVisible: true,
+                                };
+                                onUpdateField(linkedField.id, {
+                                  config: { ...config, options: [...options, newOpt] },
+                                  activeOptionId: newOpt.id,
+                                });
+                              }}
+                              className="text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded-md transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                            >
+                              <Plus className="w-3.5 h-3.5" /> Add Item
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* IF A SPECIFIC ITEM ROW IS SELECTED: SHOW ITEM LEVEL PROPERTIES */}
+                    {activeOpt && (
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="block text-[11px] font-bold text-indigo-900 uppercase tracking-wider truncate flex-1">
+                            Editing Item {activeOptIdx + 1}: {activeOpt.label || `Item ${activeOptIdx + 1}`}
+                          </label>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const updatedOpts = [...options];
+                                const isVis = activeOpt.isVisible !== false;
+                                updatedOpts[activeOptIdx] = { ...activeOpt, isVisible: !isVis };
+                                handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
+                              }}
+                              className={`text-[10px] font-bold flex items-center gap-0.5 cursor-pointer px-2 py-0.5 rounded border transition ${
+                                activeOpt.isVisible !== false
+                                  ? "text-indigo-700 bg-indigo-50 border-indigo-200 hover:bg-indigo-100"
+                                  : "text-slate-500 bg-slate-100 border-slate-300 hover:bg-slate-200"
+                              }`}
+                              title={activeOpt.isVisible !== false ? "Hide Item on Studio Canvas" : "Show Item on Studio Canvas"}
+                            >
+                              {activeOpt.isVisible !== false ? (
+                                <Eye className="w-3 h-3 text-indigo-600" />
+                              ) : (
+                                <EyeOff className="w-3 h-3 text-slate-400" />
+                              )}
+                              {activeOpt.isVisible !== false ? "Visible" : "Hidden"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const newOpt = {
+                                  ...activeOpt,
+                                  id: `item_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+                                  label: `${activeOpt.label || `Item ${activeOptIdx + 1}`} (Copy)`,
+                                  value: `${activeOpt.value || `item_${activeOptIdx + 1}`}_copy_${Date.now().toString(36).substring(2, 6)}`,
+                                  posX: (activeOpt.posX !== undefined ? activeOpt.posX : selectedLayer.posX) + 20,
+                                  posY: (activeOpt.posY !== undefined ? activeOpt.posY : selectedLayer.posY) + 20,
+                                  isVisible: true,
+                                };
+                                const updatedOpts = [...options];
+                                updatedOpts.splice(activeOptIdx + 1, 0, newOpt);
+                                onUpdateField(linkedField.id, {
+                                  config: { ...config, options: updatedOpts },
+                                  activeOptionId: newOpt.id,
+                                });
+                              }}
+                              className="text-[10px] font-bold text-indigo-600 hover:text-indigo-700 flex items-center gap-0.5 cursor-pointer bg-indigo-50 px-2 py-0.5 rounded border border-indigo-200"
+                              title="Duplicate this Item"
+                            >
+                              <Copy className="w-3 h-3" /> Duplicate
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const updatedOpts = options.filter((_: any, i: number) => i !== activeOptIdx);
+                                const nextOpt = updatedOpts[0];
+                                onUpdateField(linkedField.id, {
+                                  config: { ...config, options: updatedOpts },
+                                  activeOptionId: nextOpt?.id || null,
+                                });
+                              }}
+                              className="text-[10px] font-bold text-rose-600 hover:text-rose-700 flex items-center gap-0.5 cursor-pointer bg-rose-50 px-2 py-0.5 rounded border border-rose-200"
+                              title="Delete this Item"
+                            >
+                              <Trash2 className="w-3 h-3" /> Delete
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Item Name Input */}
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                            Item Name
+                          </label>
+                          <input
+                            type="text"
+                            value={activeOpt.label}
+                            onChange={(e) => {
+                              const updatedOpts = [...options];
+                              updatedOpts[activeOptIdx] = {
+                                ...activeOpt,
+                                label: e.target.value,
+                                value: e.target.value.toLowerCase().replace(/\s+/g, "_"),
+                              };
+                              onUpdateField(linkedField.id, {
+                                config: { ...config, options: updatedOpts },
+                              });
+                            }}
+                            placeholder="e.g. Golden Retriever"
+                            className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none text-xs font-semibold text-slate-800 bg-white"
+                          />
+                        </div>
+
+                        {/* Swatch Image Picker */}
+                        <div className="space-y-1">
+                          <label className="block text-[11px] font-semibold text-slate-700">
+                            Swatch Thumbnail Image
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <div className="w-9 h-9 rounded-lg border border-slate-300 bg-slate-50 flex items-center justify-center shrink-0 overflow-hidden">
+                              {activeOpt.swatchImageUrl ? (
+                                <img src={activeOpt.swatchImageUrl} alt="" className="w-full h-full object-cover" />
+                              ) : (
+                                <ImageIcon className="w-4 h-4 text-slate-400" />
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onOpenMediaPickerForOption && onOpenMediaPickerForOption(linkedField.id, activeOptIdx, "SWATCH")
+                              }
+                              className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 rounded-lg text-xs font-semibold transition cursor-pointer"
+                            >
+                              {activeOpt.swatchImageUrl ? "Change Swatch" : "+ Choose Swatch"}
+                            </button>
+                            {activeOpt.assetImageUrl && (
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  const trimmedSquareUrl = await autoGenerateSquareThumbnail(activeOpt.assetImageUrl);
+                                  const updatedOpts = [...options];
+                                  updatedOpts[activeOptIdx] = { ...activeOpt, swatchImageUrl: trimmedSquareUrl };
+                                  handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
+                                }}
+                                className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1"
+                                title="Auto trim transparent padding & center in a 1:1 square"
+                              >
+                                <Sparkles className="w-3.5 h-3.5 text-indigo-600" /> Auto Swatch
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Canvas Image Picker & Visual Properties (Hidden if Condition Only is checked) */}
+                        {!config.isConditionOnly ? (
+                          <div className="space-y-3 pt-2 border-t border-slate-200">
+                            <div className="space-y-1">
+                              <label className="block text-[11px] font-semibold text-slate-700">
+                                Canvas Graphic Image
+                              </label>
+                              {activeOpt.assetImageUrl ? (
+                                <div className="space-y-1.5">
+                                  <div className="w-full aspect-square max-h-32 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center p-2">
+                                    <img src={activeOpt.assetImageUrl} alt="" className="w-full h-full object-contain" />
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      onOpenMediaPickerForOption && onOpenMediaPickerForOption(linkedField.id, activeOptIdx, "ASSET")
+                                    }
+                                    className="w-full py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition cursor-pointer"
+                                  >
+                                    Change Canvas Image
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onOpenMediaPickerForOption && onOpenMediaPickerForOption(linkedField.id, activeOptIdx, "ASSET")
+                                  }
+                                  className="w-full py-2.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-300 rounded-xl border-dashed flex items-center justify-center gap-1 transition cursor-pointer"
+                                >
+                                  <Plus className="w-4 h-4 text-indigo-600" /> Choose Canvas Graphic Image
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Position & Size Controls for Item Graphic */}
+                            <div className="space-y-2 pt-2 border-t border-slate-100">
+                              <div className="flex items-center justify-between">
+                                <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                                  <Maximize2 className="w-3.5 h-3.5 text-indigo-600" /> Position & Size
+                                </h4>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                                <div>
+                                  <label className="block text-[10px] font-medium text-slate-500 mb-0.5">X Position (px)</label>
+                                  <input
+                                    type="number"
+                                    value={activeOpt.posX !== undefined ? activeOpt.posX : selectedLayer.posX}
+                                    onChange={(e) => {
+                                      const val = Number(e.target.value);
+                                      const updatedOpts = [...options];
+                                      updatedOpts[activeOptIdx] = { ...activeOpt, posX: val };
+                                      handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
+                                    }}
+                                    className="w-full border border-slate-300 rounded px-2 py-1 bg-white text-xs font-mono"
+                                  />
+                                </div>
+
+                                <div>
+                                  <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Y Position (px)</label>
+                                  <input
+                                    type="number"
+                                    value={activeOpt.posY !== undefined ? activeOpt.posY : selectedLayer.posY}
+                                    onChange={(e) => {
+                                      const val = Number(e.target.value);
+                                      const updatedOpts = [...options];
+                                      updatedOpts[activeOptIdx] = { ...activeOpt, posY: val };
+                                      handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
+                                    }}
+                                    className="w-full border border-slate-300 rounded px-2 py-1 bg-white text-xs font-mono"
+                                  />
+                                </div>
+
+                                <div>
+                                  <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Width (px)</label>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    value={activeOpt.width !== undefined ? activeOpt.width : selectedLayer.width}
+                                    onChange={(e) => {
+                                      const val = Math.max(1, Number(e.target.value));
+                                      const updatedOpts = [...options];
+                                      updatedOpts[activeOptIdx] = { ...activeOpt, width: val };
+                                      handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
+                                    }}
+                                    className="w-full border border-slate-300 rounded px-2 py-1 bg-white text-xs font-mono"
+                                  />
+                                </div>
+
+                                <div>
+                                  <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Height (px)</label>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    value={activeOpt.height !== undefined ? activeOpt.height : selectedLayer.height}
+                                    onChange={(e) => {
+                                      const val = Math.max(1, Number(e.target.value));
+                                      const updatedOpts = [...options];
+                                      updatedOpts[activeOptIdx] = { ...activeOpt, height: val };
+                                      handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
+                                    }}
+                                    className="w-full border border-slate-300 rounded px-2 py-1 bg-white text-xs font-mono"
+                                  />
+                                </div>
+
+                                <div className="col-span-2">
+                                  <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Rotation (°)</label>
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="range"
+                                      min="-180"
+                                      max="180"
+                                      value={activeOpt.rotation !== undefined ? activeOpt.rotation : selectedLayer.rotation || 0}
+                                      onChange={(e) => {
+                                        const val = Number(e.target.value);
+                                        const updatedOpts = [...options];
+                                        updatedOpts[activeOptIdx] = { ...activeOpt, rotation: val };
+                                        handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
+                                      }}
+                                      className="flex-1 accent-indigo-600 cursor-pointer h-1.5 bg-slate-200 rounded-lg"
+                                    />
+                                    <input
+                                      type="number"
+                                      value={activeOpt.rotation !== undefined ? activeOpt.rotation : selectedLayer.rotation || 0}
+                                      onChange={(e) => {
+                                        const val = Number(e.target.value);
+                                        const updatedOpts = [...options];
+                                        updatedOpts[activeOptIdx] = { ...activeOpt, rotation: val };
+                                        handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
+                                      }}
+                                      className="w-14 text-center font-mono text-[11px] font-bold border border-slate-300 rounded px-1 py-0.5"
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Opacity Control for Item Graphic */}
+                            <div className="pt-2 border-t border-slate-100 space-y-1">
+                              <div className="flex items-center justify-between text-[11px]">
+                                <span className="font-bold text-slate-700">Opacity / Transparency</span>
+                                <span className="font-mono font-bold text-indigo-600">
+                                  {Math.round(((activeOpt.opacity !== undefined ? activeOpt.opacity : props.opacity !== undefined ? Number(props.opacity) : 1)) * 100)}%
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="range"
+                                  min="0"
+                                  max="1"
+                                  step="0.01"
+                                  value={activeOpt.opacity !== undefined ? activeOpt.opacity : props.opacity !== undefined ? Number(props.opacity) : 1}
+                                  onChange={(e) => {
+                                    const val = Number(e.target.value);
+                                    const updatedOpts = [...options];
+                                    updatedOpts[activeOptIdx] = { ...activeOpt, opacity: val };
+                                    handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
+                                  }}
+                                  className="flex-1 accent-indigo-600 cursor-pointer h-1.5 bg-slate-200 rounded-lg"
+                                />
+                                <input
+                                  type="number"
+                                  min="0"
+                                  max="100"
+                                  value={Math.round(((activeOpt.opacity !== undefined ? activeOpt.opacity : props.opacity !== undefined ? Number(props.opacity) : 1)) * 100)}
+                                  onChange={(e) => {
+                                    const val = Math.max(0, Math.min(100, Number(e.target.value))) / 100;
+                                    const updatedOpts = [...options];
+                                    updatedOpts[activeOptIdx] = { ...activeOpt, opacity: val };
+                                    handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
+                                  }}
+                                  className="w-12 text-center font-mono text-[11px] font-bold border border-slate-300 rounded px-1 py-0.5"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="bg-indigo-50/60 border border-indigo-200 rounded-lg p-2.5 text-[11px] text-indigo-900">
+                            <span className="font-bold block">Condition Only Enabled</span>
+                            <span className="text-[10px] text-indigo-700 leading-tight block">
+                              Canvas graphic image is disabled for items because this List layer is set to "Condition only".
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              }
+
+              return null;
+            })()}
 
         {/* Photo Upload Configuration (If LayerType is PHOTO_UPLOAD) */}
         {selectedLayer.layerType === "PHOTO_UPLOAD" && (
@@ -869,81 +1446,83 @@ export default function StudioPropertyPanel({
           </div>
         )}
 
-        {/* Bounding Box Position & Dimensions */}
-        <div className="space-y-3 pt-3 border-t border-slate-200">
-          <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
-            <Maximize2 className="w-4 h-4 text-slate-600" /> Position & Size
-          </h4>
+        {/* Bounding Box Position & Dimensions (Hidden for List Container Layer) */}
+        {!selectedLayer.linkedFieldId && (
+          <div className="space-y-3 pt-3 border-t border-slate-200">
+            <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+              <Maximize2 className="w-4 h-4 text-slate-600" /> Position & Size
+            </h4>
 
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className="block text-[10px] font-medium text-slate-500 mb-0.5">X Position (px)</label>
-              <input
-                type="number"
-                value={selectedLayer.posX}
-                onChange={(e) => onUpdateLayer(selectedLayer.id, { posX: Number(e.target.value) })}
-                className="w-full border border-slate-300 rounded px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none font-mono"
-              />
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-[10px] font-medium text-slate-500 mb-0.5">X Position (px)</label>
+                <input
+                  type="number"
+                  value={selectedLayer.posX}
+                  onChange={(e) => onUpdateLayer(selectedLayer.id, { posX: Number(e.target.value) })}
+                  className="w-full border border-slate-300 rounded px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Y Position (px)</label>
+                <input
+                  type="number"
+                  value={selectedLayer.posY}
+                  onChange={(e) => onUpdateLayer(selectedLayer.id, { posY: Number(e.target.value) })}
+                  className="w-full border border-slate-300 rounded px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Width (px)</label>
+                <input
+                  type="number"
+                  value={selectedLayer.width}
+                  onChange={(e) => {
+                    const newW = Number(e.target.value);
+                    const isImageLayer = ["ASSET", "IMAGE", "OVERLAY"].includes(selectedLayer.layerType);
+                    if (isImageLayer) {
+                      const ratio = props.aspectRatio || (selectedLayer.width / selectedLayer.height) || 1;
+                      const newH = Math.max(1, Math.round(newW / ratio));
+                      onUpdateLayer(selectedLayer.id, { width: newW, height: newH });
+                    } else {
+                      onUpdateLayer(selectedLayer.id, { width: newW });
+                    }
+                  }}
+                  className="w-full border border-slate-300 rounded px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Height (px)</label>
+                <input
+                  type="number"
+                  value={selectedLayer.height}
+                  onChange={(e) => {
+                    const newH = Number(e.target.value);
+                    const isImageLayer = ["ASSET", "IMAGE", "OVERLAY"].includes(selectedLayer.layerType);
+                    if (isImageLayer) {
+                      const ratio = props.aspectRatio || (selectedLayer.width / selectedLayer.height) || 1;
+                      const newW = Math.max(1, Math.round(newH * ratio));
+                      onUpdateLayer(selectedLayer.id, { width: newW, height: newH });
+                    } else {
+                      onUpdateLayer(selectedLayer.id, { height: newH });
+                    }
+                  }}
+                  className="w-full border border-slate-300 rounded px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none font-mono"
+                />
+              </div>
             </div>
+
             <div>
-              <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Y Position (px)</label>
+              <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Rotation (°)</label>
               <input
                 type="number"
-                value={selectedLayer.posY}
-                onChange={(e) => onUpdateLayer(selectedLayer.id, { posY: Number(e.target.value) })}
-                className="w-full border border-slate-300 rounded px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none font-mono"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Width (px)</label>
-              <input
-                type="number"
-                value={selectedLayer.width}
-                onChange={(e) => {
-                  const newW = Number(e.target.value);
-                  const isImageLayer = ["ASSET", "IMAGE", "OVERLAY"].includes(selectedLayer.layerType);
-                  if (isImageLayer) {
-                    const ratio = props.aspectRatio || (selectedLayer.width / selectedLayer.height) || 1;
-                    const newH = Math.max(1, Math.round(newW / ratio));
-                    onUpdateLayer(selectedLayer.id, { width: newW, height: newH });
-                  } else {
-                    onUpdateLayer(selectedLayer.id, { width: newW });
-                  }
-                }}
-                className="w-full border border-slate-300 rounded px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none font-mono"
-              />
-            </div>
-            <div>
-              <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Height (px)</label>
-              <input
-                type="number"
-                value={selectedLayer.height}
-                onChange={(e) => {
-                  const newH = Number(e.target.value);
-                  const isImageLayer = ["ASSET", "IMAGE", "OVERLAY"].includes(selectedLayer.layerType);
-                  if (isImageLayer) {
-                    const ratio = props.aspectRatio || (selectedLayer.width / selectedLayer.height) || 1;
-                    const newW = Math.max(1, Math.round(newH * ratio));
-                    onUpdateLayer(selectedLayer.id, { width: newW, height: newH });
-                  } else {
-                    onUpdateLayer(selectedLayer.id, { height: newH });
-                  }
-                }}
+                value={selectedLayer.rotation}
+                onChange={(e) => onUpdateLayer(selectedLayer.id, { rotation: Number(e.target.value) })}
                 className="w-full border border-slate-300 rounded px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none font-mono"
               />
             </div>
           </div>
-
-          <div>
-            <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Rotation (°)</label>
-            <input
-              type="number"
-              value={selectedLayer.rotation}
-              onChange={(e) => onUpdateLayer(selectedLayer.id, { rotation: Number(e.target.value) })}
-              className="w-full border border-slate-300 rounded px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none font-mono"
-            />
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );

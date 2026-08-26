@@ -20,6 +20,7 @@ import {
   Move,
   Image as ImageIcon,
   Eye,
+  ListFilter,
 } from "lucide-react";
 
 interface StudioTopToolbarProps {
@@ -43,6 +44,17 @@ export default function StudioTopToolbar({
       <div className="h-11 bg-white border-b border-slate-200 px-3 flex items-center justify-between text-xs text-slate-400 select-none shrink-0 shadow-2xs w-full">
         <span className="flex items-center gap-2 text-slate-400 font-medium italic">
           <Sliders className="w-3.5 h-3.5" /> Select any layer on canvas to edit visual properties
+        </span>
+      </div>
+    );
+  }
+
+  if (selectedLayer.linkedFieldId) {
+    return (
+      <div className="h-11 bg-white border-b border-slate-200 px-3 flex items-center justify-between text-xs text-slate-500 select-none shrink-0 shadow-2xs w-full">
+        <span className="flex items-center gap-2 text-indigo-700 font-semibold">
+          <ListFilter className="w-4 h-4 text-indigo-600" />
+          List / Item Layer ({selectedLayer.name}) - Configure field settings & items in the right panel
         </span>
       </div>
     );

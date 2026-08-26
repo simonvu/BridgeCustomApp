@@ -28,6 +28,7 @@ import StudioLayerPanel from "../components/studio/StudioLayerPanel";
 import StudioFieldPanel, { StudioFieldItem } from "../components/studio/StudioFieldPanel";
 import StudioPropertyPanel from "../components/studio/StudioPropertyPanel";
 import StudioConditionPanel, { StudioConditionRuleItem } from "../components/studio/StudioConditionPanel";
+import { autoGenerateSquareThumbnail } from "../utils/thumbnailGenerator";
 import StudioScreenBar, { StudioScreenItem } from "../components/studio/StudioScreenBar";
 import StudioTopToolbar from "../components/studio/StudioTopToolbar";
 import StudioStorefrontPreviewModal from "../components/studio/StudioStorefrontPreviewModal";
@@ -788,12 +789,56 @@ export default function ArtworkStudioRoute() {
   };
 
   // Layer Handlers
-  const handleAddLayer = (type: CanvasLayerItem["layerType"]) => {
+  const handleAddLayer = (type: CanvasLayerItem["layerType"] | "DROPDOWN") => {
     const newZ = layers.length > 0 ? Math.max(...layers.map((l) => l.zIndex)) + 1 : 0;
+    const nowStamp = Date.now();
+
+    if (type === "DROPDOWN") {
+      // 1. Create a linked custom field of type "SELECT" (List / Item)
+      const newFieldId = `field_${nowStamp}`;
+      const newField: StudioFieldItem = {
+        id: newFieldId,
+        label: "List / Item",
+        fieldType: "SELECT",
+        displayType: "DROPDOWN",
+        sortOrder: fields.length + 1,
+        isRequired: true,
+        allowPersonalized: true,
+        config: {
+          options: [
+            { id: `item_${nowStamp}_1`, label: "Item 1", value: "item_1", swatchImageUrl: "", assetImageUrl: "" },
+            { id: `item_${nowStamp}_2`, label: "Item 2", value: "item_2", swatchImageUrl: "", assetImageUrl: "" },
+            { id: `item_${nowStamp}_3`, label: "Item 3", value: "item_3", swatchImageUrl: "", assetImageUrl: "" },
+          ],
+        },
+      };
+      setFields((prev) => [...prev, newField]);
+
+      // 2. Create the linked ASSET layer
+      const newLayer: CanvasLayerItem = {
+        id: `layer_${nowStamp}`,
+        name: "List / Item Layer",
+        layerType: "ASSET",
+        zIndex: newZ,
+        posX: Math.round(widthPx / 4),
+        posY: Math.round(heightPx / 4),
+        width: 300,
+        height: 300,
+        rotation: 0,
+        isVisible: true,
+        isLocked: false,
+        linkedFieldId: newFieldId,
+        properties: { opacity: 1 },
+      };
+      setLayers((prev) => [...prev, newLayer]);
+      setSelectedLayerId(newLayer.id);
+      return;
+    }
+
     const newLayer: CanvasLayerItem = {
-      id: `layer_${Date.now()}`,
+      id: `layer_${nowStamp}`,
       name: type === "ASSET" ? "Image Layer" : type === "PHOTO_UPLOAD" ? "Photo Upload Area" : `New ${type.toLowerCase()} layer`,
-      layerType: type,
+      layerType: type as CanvasLayerItem["layerType"],
       zIndex: newZ,
       posX: Math.round(widthPx / 4),
       posY: Math.round(heightPx / 4),
@@ -1036,21 +1081,24 @@ export default function ArtworkStudioRoute() {
 
   // Field Handlers
   const handleAddField = (fieldType: StudioFieldItem["fieldType"]) => {
-    const newFieldId = `field_${Date.now()}`;
-    const newFieldLabel = `New ${fieldType.toLowerCase()} field`;
+    const nowStamp = Date.now();
+    const newFieldId = `field_${nowStamp}`;
+    const newFieldLabel = fieldType === "SELECT" ? "List / Item" : `New ${fieldType.toLowerCase()} field`;
 
     const newField: StudioFieldItem = {
       id: newFieldId,
       label: newFieldLabel,
       fieldType,
+      displayType: fieldType === "SELECT" ? "DROPDOWN" : undefined,
       sortOrder: fields.length,
       isRequired: false,
       config:
         fieldType === "RADIO" || fieldType === "SELECT" || fieldType === "FIELD_ASSET"
           ? {
               options: [
-                { label: "Option 1", value: "option_1" },
-                { label: "Option 2", value: "option_2" },
+                { id: `item_${nowStamp}_1`, label: "Item 1", value: "item_1", swatchImageUrl: "", assetImageUrl: "" },
+                { id: `item_${nowStamp}_2`, label: "Item 2", value: "item_2", swatchImageUrl: "", assetImageUrl: "" },
+                { id: `item_${nowStamp}_3`, label: "Item 3", value: "item_3", swatchImageUrl: "", assetImageUrl: "" },
               ],
             }
           : fieldType === "TEXT"
@@ -1122,10 +1170,18 @@ export default function ArtworkStudioRoute() {
     setRules((prev) => prev.filter((r) => r.id !== ruleId));
   };
 
+function detectCleanNameFromFileName(fileName: string): string {
+  if (!fileName) return "Item";
+  let name = fileName.replace(/\.[^/.]+$/, "");
+  name = name.replace(/[-_]+/g, " ").trim();
+  return name.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
   // Media Picker Modal State
   const [mediaPickerOpen, setMediaPickerOpen] = useState(false);
+  const [pickerMultiSelect, setPickerMultiSelect] = useState(false);
   const [pickerTarget, setPickerTarget] = useState<{
-    type: "LAYER" | "OPTION" | "SCREEN_BG" | "SCREEN_ICON";
+    type: "LAYER" | "OPTION" | "BATCH_OPTIONS" | "SCREEN_BG" | "SCREEN_ICON";
     layerId?: string;
     fieldId?: string;
     optionIndex?: number;
@@ -1136,6 +1192,7 @@ export default function ArtworkStudioRoute() {
 
   const handleOpenMediaPickerForLayer = (layerId: string, bgOptionIndex?: number) => {
     setPickerTarget({ type: "LAYER", layerId, bgOptionIndex });
+    setPickerMultiSelect(false);
     setMediaPickerOpen(true);
   };
 
@@ -1145,16 +1202,25 @@ export default function ArtworkStudioRoute() {
     targetType: "SWATCH" | "ASSET" = "ASSET"
   ) => {
     setPickerTarget({ type: "OPTION", fieldId, optionIndex, optionTargetType: targetType });
+    setPickerMultiSelect(false);
+    setMediaPickerOpen(true);
+  };
+
+  const handleOpenMediaPickerForBatchOptions = (fieldId: string) => {
+    setPickerTarget({ type: "BATCH_OPTIONS", fieldId });
+    setPickerMultiSelect(true);
     setMediaPickerOpen(true);
   };
 
   const handleOpenMediaPickerForScreenBg = (screenId: string) => {
     setPickerTarget({ type: "SCREEN_BG", screenId });
+    setPickerMultiSelect(false);
     setMediaPickerOpen(true);
   };
 
   const handleOpenMediaPickerForScreenIcon = (screenId: string) => {
     setPickerTarget({ type: "SCREEN_ICON", screenId });
+    setPickerMultiSelect(false);
     setMediaPickerOpen(true);
   };
 
@@ -1202,13 +1268,83 @@ export default function ArtworkStudioRoute() {
     }
   };
 
-  const handleSelectMediaAsset = (fileUrl: string) => {
-    if (!pickerTarget) return;
+  const handleSelectMediaAssets = async (selectedFiles: any[]) => {
+    if (!pickerTarget || !selectedFiles || selectedFiles.length === 0) return;
+    const firstUrl = selectedFiles[0]?.url || selectedFiles[0]?.thumbnailUrl;
+
+    if (pickerTarget.type === "BATCH_OPTIONS" && pickerTarget.fieldId) {
+      const field = fields.find((f) => f.id === pickerTarget.fieldId);
+      if (field) {
+        const config = field.config || {};
+        const existingOpts = [...(config.options || [])];
+        const item1 = existingOpts[0];
+
+        const refLayer = layers.find((l) => l.linkedFieldId === field.id);
+        const firstPosX = item1?.posX !== undefined ? item1.posX : refLayer?.posX || 100;
+        const firstPosY = item1?.posY !== undefined ? item1.posY : refLayer?.posY || 100;
+        const firstWidth = item1?.width !== undefined ? item1.width : 300;
+        const firstRotation = item1?.rotation !== undefined ? item1.rotation : refLayer?.rotation || 0;
+        const firstOpacity = item1?.opacity !== undefined ? item1.opacity : refLayer?.properties?.opacity ?? 1;
+
+        const newOptions: any[] = [];
+
+        for (let i = 0; i < selectedFiles.length; i++) {
+          const file = selectedFiles[i];
+          const fileUrl = file.url || file.thumbnailUrl;
+          if (!fileUrl) continue;
+
+          const detectedLabel = detectCleanNameFromFileName(file.fileName);
+          const optId = `item_${Date.now()}_${i}_${Math.random().toString(36).substring(2, 6)}`;
+          const valueStr = `${detectedLabel.toLowerCase().replace(/\s+/g, "_")}_${Date.now().toString(36).substring(2, 5)}`;
+
+          const calcH = await new Promise<number>((resH) => {
+            const img = new Image();
+            img.crossOrigin = "anonymous";
+            img.src = fileUrl;
+            img.onload = () => {
+              const natW = img.naturalWidth || 300;
+              const natH = img.naturalHeight || 300;
+              resH(Math.max(10, Math.round(firstWidth / (natW / natH))));
+            };
+            img.onerror = () => resH(300);
+          });
+
+          const autoSwatchUrl = await autoGenerateSquareThumbnail(fileUrl);
+
+          newOptions.push({
+            id: optId,
+            label: detectedLabel,
+            value: valueStr,
+            swatchImageUrl: autoSwatchUrl || fileUrl,
+            assetImageUrl: fileUrl,
+            posX: firstPosX,
+            posY: firstPosY,
+            width: firstWidth,
+            height: calcH,
+            rotation: firstRotation,
+            opacity: firstOpacity,
+            isVisible: true,
+          });
+        }
+
+        const updatedOptions = [...existingOpts, ...newOptions];
+        handleUpdateField(field.id, {
+          config: { ...config, options: updatedOptions },
+          activeOptionId: newOptions[0]?.id || field.activeOptionId,
+        });
+        if (newOptions[0]) {
+          handlePreviewOptionChoice(field.id, newOptions[0]);
+        }
+      }
+      return;
+    }
+
+    if (!firstUrl) return;
 
     if (pickerTarget.type === "SCREEN_BG" && pickerTarget.screenId) {
-      handleUpdateScreen(pickerTarget.screenId, { bgUrl: fileUrl });
+      handleUpdateScreen(pickerTarget.screenId, { bgUrl: firstUrl });
     } else if (pickerTarget.type === "SCREEN_ICON" && pickerTarget.screenId) {
-      handleUpdateScreen(pickerTarget.screenId, { iconUrl: fileUrl });
+      handleUpdateScreen(pickerTarget.screenId, { iconUrl: firstUrl });
     } else if (pickerTarget.type === "LAYER" && pickerTarget.layerId) {
       const targetLayer = layers.find((l) => l.id === pickerTarget.layerId);
       const currentProps = targetLayer?.properties || {};
@@ -1218,10 +1354,10 @@ export default function ArtworkStudioRoute() {
         if (bgOptions[pickerTarget.bgOptionIndex]) {
           bgOptions[pickerTarget.bgOptionIndex] = {
             ...bgOptions[pickerTarget.bgOptionIndex],
-            assetUrl: fileUrl,
+            assetUrl: firstUrl,
           };
           handleUpdateLayer(pickerTarget.layerId, {
-            properties: { ...currentProps, bgOptions, assetUrl: fileUrl },
+            properties: { ...currentProps, bgOptions, assetUrl: firstUrl },
           });
         }
       } else if (targetLayer && targetLayer.layerType === "MASK") {
@@ -1229,45 +1365,27 @@ export default function ArtworkStudioRoute() {
           properties: {
             ...currentProps,
             maskShape: "CUSTOM",
-            maskAssetUrl: fileUrl,
+            maskAssetUrl: firstUrl,
           },
         });
       } else {
-        // Preload image to calculate natural aspect ratio and 50% artwork max size limit
         const img = new Image();
         img.crossOrigin = "anonymous";
-        img.src = fileUrl;
+        img.src = firstUrl;
         img.onload = () => {
           const naturalW = img.naturalWidth || 300;
           const naturalH = img.naturalHeight || 300;
           const aspectRatio = naturalW / naturalH;
 
-          // Max allowed dimensions: 50% of artwork dimensions
-          const maxW = widthPx * 0.5;
-          const maxH = heightPx * 0.5;
-
-          let calcW = Math.min(naturalW, maxW);
-          let calcH = calcW / aspectRatio;
-
-          if (calcH > maxH) {
-            calcH = maxH;
-            calcW = calcH * aspectRatio;
-          }
-
-          calcW = Math.round(calcW);
-          calcH = Math.round(calcH);
-
-          const posX = Math.round((widthPx - calcW) / 2);
-          const posY = Math.round((heightPx - calcH) / 2);
+          const currentW = targetLayer ? targetLayer.width : 300;
+          const calcH = Math.max(10, Math.round(currentW / aspectRatio));
 
           handleUpdateLayer(pickerTarget.layerId!, {
-            width: calcW,
+            width: currentW,
             height: calcH,
-            posX,
-            posY,
             properties: {
               ...currentProps,
-              assetUrl: fileUrl,
+              assetUrl: firstUrl,
               aspectRatio,
               naturalWidth: naturalW,
               naturalHeight: naturalH,
@@ -1276,7 +1394,7 @@ export default function ArtworkStudioRoute() {
         };
         img.onerror = () => {
           handleUpdateLayer(pickerTarget.layerId!, {
-            properties: { ...currentProps, assetUrl: fileUrl },
+            properties: { ...currentProps, assetUrl: firstUrl },
           });
         };
       }
@@ -1285,17 +1403,53 @@ export default function ArtworkStudioRoute() {
       if (field) {
         const config = field.config || {};
         const options = [...(config.options || [])];
-        if (options[pickerTarget.optionIndex]) {
+        const targetOpt = options[pickerTarget.optionIndex];
+        if (targetOpt) {
           const isSwatch = pickerTarget.optionTargetType === "SWATCH";
-          options[pickerTarget.optionIndex] = {
-            ...options[pickerTarget.optionIndex],
-            swatchImageUrl: isSwatch ? fileUrl : options[pickerTarget.optionIndex].swatchImageUrl,
-            assetImageUrl: !isSwatch ? fileUrl : options[pickerTarget.optionIndex].assetImageUrl || fileUrl,
-          };
-          handleUpdateField(field.id, { config: { ...config, options } });
-
           if (!isSwatch) {
-            handlePreviewOptionChoice(field.id, options[pickerTarget.optionIndex]);
+            const img = new Image();
+            img.crossOrigin = "anonymous";
+            img.src = firstUrl;
+            img.onload = async () => {
+              const natW = img.naturalWidth || 300;
+              const natH = img.naturalHeight || 300;
+              const currentW = targetOpt.width || 300;
+              const calcH = Math.max(10, Math.round(currentW / (natW / natH)));
+
+              let autoSwatchUrl = targetOpt.swatchImageUrl;
+              if (!autoSwatchUrl || autoSwatchUrl.startsWith("data:image")) {
+                autoSwatchUrl = await autoGenerateSquareThumbnail(firstUrl);
+              }
+
+              options[pickerTarget.optionIndex] = {
+                ...targetOpt,
+                assetImageUrl: firstUrl,
+                swatchImageUrl: autoSwatchUrl || firstUrl,
+                width: currentW,
+                height: calcH,
+              };
+              handleUpdateField(field.id, { config: { ...config, options } });
+              handlePreviewOptionChoice(field.id, options[pickerTarget.optionIndex]);
+            };
+            img.onerror = async () => {
+              let autoSwatchUrl = targetOpt.swatchImageUrl;
+              if (!autoSwatchUrl || autoSwatchUrl.startsWith("data:image")) {
+                autoSwatchUrl = await autoGenerateSquareThumbnail(firstUrl);
+              }
+              options[pickerTarget.optionIndex] = {
+                ...targetOpt,
+                assetImageUrl: firstUrl,
+                swatchImageUrl: autoSwatchUrl || firstUrl,
+              };
+              handleUpdateField(field.id, { config: { ...config, options } });
+              handlePreviewOptionChoice(field.id, options[pickerTarget.optionIndex]);
+            };
+          } else {
+            options[pickerTarget.optionIndex] = {
+              ...targetOpt,
+              swatchImageUrl: firstUrl,
+            };
+            handleUpdateField(field.id, { config: { ...config, options } });
           }
         }
       }
@@ -1475,10 +1629,12 @@ export default function ArtworkStudioRoute() {
                 widthPx={widthPx}
                 heightPx={heightPx}
                 layers={layers}
+                fields={fields}
                 selectedLayerId={selectedLayerId}
                 selectedLayerIds={selectedLayerIds}
                 onSelectLayer={handleSelectLayer}
                 onUpdateLayer={handleUpdateLayer}
+                onUpdateField={handleUpdateField}
                 bgUrl={activeScreen?.bgUrl}
                 zoom={zoom}
                 showGrid={showGrid}
@@ -1545,10 +1701,15 @@ export default function ArtworkStudioRoute() {
                   layers={layers}
                   selectedLayerId={selectedLayerId}
                   selectedLayerIds={selectedLayerIds}
+                  fields={fields}
                   onSelectLayer={handleSelectLayer}
                   onUpdateLayer={handleUpdateLayer}
+                  onUpdateField={handleUpdateField}
                   onAddLayer={handleAddLayer}
                   onAddMaskLayer={handleAddMaskLayer}
+                  onOpenMediaPickerForOption={handleOpenMediaPickerForOption}
+                  onOpenMediaPickerForBatchOptions={handleOpenMediaPickerForBatchOptions}
+                  onPreviewOptionChoice={handlePreviewOptionChoice}
                   onDuplicateLayer={handleDuplicateLayer}
                   onDeleteLayer={handleDeleteLayer}
                   onReorderLayers={(newLayers) => setLayers(() => newLayers)}
@@ -1571,7 +1732,12 @@ export default function ArtworkStudioRoute() {
                   fields={fields}
                   fonts={fonts}
                   onUpdateLayer={handleUpdateLayer}
+                  onUpdateField={handleUpdateField}
+                  onAddField={handleAddField}
                   onOpenMediaPickerForLayer={handleOpenMediaPickerForLayer}
+                  onOpenMediaPickerForOption={handleOpenMediaPickerForOption}
+                  onOpenMediaPickerForBatchOptions={handleOpenMediaPickerForBatchOptions}
+                  onPreviewOptionChoice={handlePreviewOptionChoice}
                   onOpenPhotoUploadModal={handleOpenPhotoUploadModal}
                   onAddMaskLayer={handleAddMaskLayer}
                   onDeleteLayer={handleDeleteLayer}
@@ -1885,9 +2051,10 @@ export default function ArtworkStudioRoute() {
       <MediaSelectModal
         isOpen={mediaPickerOpen}
         onClose={() => setMediaPickerOpen(false)}
-        onSelect={(selectedFiles) => {
+        multiSelect={pickerMultiSelect}
+        onSelect={async (selectedFiles) => {
           if (selectedFiles.length > 0) {
-            handleSelectMediaAsset(selectedFiles[0].url);
+            await handleSelectMediaAssets(selectedFiles);
           }
           setMediaPickerOpen(false);
         }}

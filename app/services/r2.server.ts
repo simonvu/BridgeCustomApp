@@ -112,26 +112,57 @@ export async function getFromR2(key: string): Promise<{ body: Buffer; contentTyp
   const client = getR2Client();
   const bucketName = process.env.R2_BUCKET_NAME || "assets";
 
-  if (!client) return null;
+  if (client) {
+    try {
+      const command = new GetObjectCommand({
+        Bucket: bucketName,
+        Key: key,
+      });
 
-  try {
-    const command = new GetObjectCommand({
-      Bucket: bucketName,
-      Key: key,
-    });
-
-    const response = await client.send(command);
-    if (!response.Body) return null;
-
-    const byteArray = await response.Body.transformToByteArray();
-    return {
-      body: Buffer.from(byteArray),
-      contentType: response.ContentType,
-    };
-  } catch (error) {
-    console.error("❌ Error fetching file from Cloudflare R2:", error);
-    return null;
+      const response = await client.send(command);
+      if (response.Body) {
+        const byteArray = await response.Body.transformToByteArray();
+        return {
+          body: Buffer.from(byteArray),
+          contentType: response.ContentType,
+        };
+      }
+    } catch (error) {
+      console.error("❌ Error fetching file from Cloudflare R2, checking local fallback:", error);
+    }
   }
+
+  // Fallback: Read from local public/uploads directory if file was saved locally
+  try {
+    const uploadsDir = path.join(process.cwd(), "public", "uploads");
+    if (fs.existsSync(uploadsDir)) {
+      const safeKeyName = key.replace(/[^a-zA-Z0-9_.-]/g, "_");
+      const files = fs.readdirSync(uploadsDir);
+      const matchedFile = files.find(
+        (f) => f.endsWith(safeKeyName) || f.includes(safeKeyName) || f.endsWith(key) || f === key
+      );
+      if (matchedFile) {
+        const filePath = path.join(uploadsDir, matchedFile);
+        if (fs.existsSync(filePath)) {
+          const buffer = fs.readFileSync(filePath);
+          const ext = matchedFile.split(".").pop()?.toLowerCase() || "";
+          const contentType =
+            ext === "jpg" || ext === "jpeg"
+              ? "image/jpeg"
+              : ext === "png"
+              ? "image/png"
+              : ext === "webp"
+              ? "image/webp"
+              : "application/octet-stream";
+          return { body: buffer, contentType };
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error("⚠️ Error reading local fallback asset:", err.message);
+  }
+
+  return null;
 }
 
 /**
