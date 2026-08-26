@@ -425,20 +425,20 @@ interface StudioCanvasProps {
 function createFabricCurvePath(
   containerWidth: number,
   containerHeight: number,
-  curveAngleDeg: number
+  curveAngleDeg: number,
+  fontSize: number = 36
 ): fabric.Path | null {
   if (!curveAngleDeg || Math.abs(curveAngleDeg) < 2) return null;
 
   const angleDeg = Math.max(-360, Math.min(360, curveAngleDeg));
-  const isSmile = angleDeg > 0;
+  const isSmile = angleDeg < 0;
   const halfW = Math.max(20, containerWidth / 2);
   
-  // Calculate Sagitta H (dip height), allowing rich intense curvature up to 1.2x container height or halfW
-  const maxSagitta = Math.max(containerHeight * 1.2, halfW * 1.0);
-  const sagitta = (Math.abs(angleDeg) / 360) * maxSagitta;
+  // Calculate maximum allowable Sagitta so the curve + font height stay 100% inside containerHeight
+  const effectiveFontHeight = Math.min(fontSize * 0.85, containerHeight * 0.7);
+  const maxSagitta = Math.max(10, containerHeight - effectiveFontHeight);
+  const sagitta = (Math.min(180, Math.abs(angleDeg)) / 180) * maxSagitta;
 
-  // Smile: endpoints at -sagitta/2, control point at +sagitta/2 (minY = -sagitta/2, maxY = +sagitta/2 -> pathOffset.y = 0)
-  // Arch: endpoints at +sagitta/2, control point at -sagitta/2 (minY = -sagitta/2, maxY = +sagitta/2 -> pathOffset.y = 0)
   const yStartEnd = isSmile ? -sagitta / 2 : sagitta / 2;
   const yControl = isSmile ? sagitta / 2 : -sagitta / 2;
 
@@ -1170,6 +1170,7 @@ export default function StudioCanvas({
                   textChild.set({
                     fontFamily: font,
                     fontSize: freshFontSize,
+                    textAlign: curvePath ? "left" : hAlign,
                     dirty: true,
                   });
                   textChild.initDimensions();
@@ -1188,6 +1189,12 @@ export default function StudioCanvas({
                     if (vAlign === "top") textY = -layer.height / 2 + measuredH / 2;
                     else if (vAlign === "bottom") textY = layer.height / 2 - measuredH / 2;
                     else textY = 0;
+                  } else {
+                    const angleDeg = Math.max(-360, Math.min(360, curveAngle));
+                    const isSmile = angleDeg < 0;
+                    const effectiveFontHeight = Math.min(freshFontSize * 0.85, layer.height * 0.7);
+                    textX = 0;
+                    textY = isSmile ? -effectiveFontHeight * 0.25 : effectiveFontHeight * 0.25;
                   }
 
                   textChild.set({
@@ -1229,7 +1236,7 @@ export default function StudioCanvas({
           });
         }
 
-        const curvePath = createFabricCurvePath(layer.width, layer.height, curveAngle);
+        const curvePath = createFabricCurvePath(layer.width, layer.height, curveAngle, fontSize);
         let pathStartOffset = 0;
 
         if (curvePath && textStr) {
@@ -1293,6 +1300,13 @@ export default function StudioCanvas({
           if (vAlign === "top") textY = -layer.height / 2 + measuredH / 2;
           else if (vAlign === "bottom") textY = layer.height / 2 - measuredH / 2;
           else textY = 0;
+        } else {
+          const angleDeg = Math.max(-360, Math.min(360, curveAngle));
+          const isSmile = angleDeg < 0;
+          const effectiveFontHeight = Math.min(fontSize * 0.85, layer.height * 0.7);
+          textX = 0;
+          // Apply explicit vertical matrix offset to center character caps/descenders inside frame box
+          textY = isSmile ? -effectiveFontHeight * 0.25 : effectiveFontHeight * 0.25;
         }
 
         const isMultilineTextbox = Boolean(props.allowMultiline && !curvePath);
@@ -1306,7 +1320,7 @@ export default function StudioCanvas({
           fontWeight: fontWeight,
           fontSize: fontSize,
           fill: fillStyle,
-          textAlign: hAlign,
+          textAlign: curvePath ? "left" : hAlign,
           stroke: strokeWidth > 0 ? (props.strokeColor || "#000000") : undefined,
           strokeWidth: strokeWidth,
           opacity: opacity,
