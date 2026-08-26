@@ -546,6 +546,17 @@ export default function StudioCanvas({
     setInternalZoom(action);
   }, []);
 
+  // Preload all fonts used in TEXT layers as soon as layers load
+  useEffect(() => {
+    const textLayers = layers.filter((l) => l.layerType === "TEXT");
+    textLayers.forEach((l) => {
+      const font = l.properties?.fontFamily;
+      if (font) {
+        ensureFontLoaded(font, fonts).catch(() => {});
+      }
+    });
+  }, [layers, fonts]);
+
   // Global Event Listener when ANY font finishes downloading in browser
   useEffect(() => {
     const handleFontLoaded = (e: any) => {
@@ -553,17 +564,38 @@ export default function StudioCanvas({
       if (!fc) return;
 
       const loadedFamily = e.detail?.fontFamily;
-      fc.getObjects().forEach((obj) => {
-        if (obj instanceof fabric.Group) {
-          obj.set({ dirty: true });
-          const textChild = obj.getObjects()[1] as fabric.Text;
-          if (textChild && (!loadedFamily || textChild.fontFamily === loadedFamily)) {
-            textChild.set({ dirty: true, objectCaching: false });
-            textChild.initDimensions();
+
+      fc.getObjects().forEach((obj: any) => {
+        if (obj.layerId) {
+          const layer = layersRef.current.find((item) => item.id === obj.layerId);
+          if (layer && layer.layerType === "TEXT") {
+            const props = layer.properties || {};
+            const font = props.fontFamily || "Roboto";
+
+            if (!loadedFamily || font.toLowerCase() === loadedFamily.toLowerCase()) {
+              const rawTextStr = props.text !== undefined ? props.text : layer.name;
+              const textStr = applyTextCase(rawTextStr, props.textCase);
+              const fontWeight = props.fontWeight || "normal";
+              const baseFontSize = Number(props.fontSize) || 36;
+              const isAutoFit = Boolean((props.autoFit !== false) && !props.allowMultiline);
+              const freshFontSize = getFitFontSize(textStr, font, baseFontSize, layer.width, isAutoFit, fontWeight);
+              const hAlign = props.align || "center";
+              const vAlign = props.verticalAlign || "middle";
+
+              if (obj instanceof fabric.Text || obj instanceof fabric.Textbox) {
+                obj.set({
+                  fontFamily: font,
+                  fontSize: freshFontSize,
+                  textAlign: hAlign,
+                  dirty: true,
+                });
+                obj.initDimensions();
+              }
+            }
           }
         }
       });
-      fc.renderAll();
+      fc.requestRenderAll();
     };
 
     window.addEventListener("studio:font-loaded", handleFontLoaded);
@@ -1119,24 +1151,54 @@ export default function StudioCanvas({
         const hAlign = props.align || "center";
         const vAlign = props.verticalAlign || "middle";
 
-        // Ensure font is loaded into browser memory and trigger instant redraw with accurate fitted font size and centered bounds
+        // Ensure font is loaded into browser memory and update font and alignment in-place
         ensureFontLoaded(font, fonts).then((loaded) => {
           if (loaded && fc) {
             document.fonts.ready.then(() => {
               const freshFontSize = getFitFontSize(textStr, font, baseFontSize, layer.width, isAutoFit, fontWeight);
               const groupObj = fc.getObjects().find((o: any) => o.layerId === layer.id);
               if (groupObj && groupObj instanceof fabric.Group) {
-                const textChild = groupObj.getObjects()[1] as fabric.Text;
-                if (textChild) {
-                  textChild.set({ fontFamily: font, fontSize: freshFontSize, dirty: true });
-                  textChild.initDimensions();
+                groupObj.pathOffset = new fabric.Point(0, 0);
+                groupObj.width = layer.width;
+                groupObj.height = layer.height;
+
+                const [frameRect, textChild] = groupObj.getObjects() as [fabric.Rect, fabric.Text];
+                if (frameRect) {
+                  frameRect.set({ left: 0, top: 0, originX: "center", originY: "center" });
                 }
-                (groupObj as any)._calcBounds?.();
-                (groupObj as any)._updateObjectsCoords?.();
+                if (textChild) {
+                  textChild.set({
+                    fontFamily: font,
+                    fontSize: freshFontSize,
+                    dirty: true,
+                  });
+                  textChild.initDimensions();
+
+                  const measuredW = textChild.width || 0;
+                  const measuredH = textChild.height || 0;
+
+                  let textX = 0;
+                  let textY = 0;
+
+                  if (!curvePath) {
+                    if (hAlign === "left") textX = -layer.width / 2 + measuredW / 2;
+                    else if (hAlign === "right") textX = layer.width / 2 - measuredW / 2;
+                    else textX = 0;
+
+                    if (vAlign === "top") textY = -layer.height / 2 + measuredH / 2;
+                    else if (vAlign === "bottom") textY = layer.height / 2 - measuredH / 2;
+                    else textY = 0;
+                  }
+
+                  textChild.set({
+                    left: textX,
+                    top: textY,
+                    originX: "center",
+                    originY: "center",
+                    dirty: true,
+                  });
+                }
                 groupObj.set({ dirty: true });
-              } else if (groupObj instanceof fabric.Text || groupObj instanceof fabric.Textbox) {
-                groupObj.set({ fontFamily: font, fontSize: freshFontSize, dirty: true });
-                groupObj.initDimensions();
               }
               fc.requestRenderAll();
             });
@@ -1196,7 +1258,10 @@ export default function StudioCanvas({
         }
 
         const isTextSelected = selectedLayerIds.includes(layer.id) || selectedLayerId === layer.id;
+
         const frameRect = new fabric.Rect({
+          left: 0,
+          top: 0,
           width: layer.width,
           height: layer.height,
           fill: "rgba(0, 0, 0, 0.001)",
@@ -1207,26 +1272,27 @@ export default function StudioCanvas({
           originY: "center",
         });
 
-        // Calculate alignment coordinates inside frame container
+        // Measure actual text bounding box for exact alignment math inside group
+        const tempTextObj = new fabric.Text(textStr, {
+          fontFamily: font,
+          fontSize: fontSize,
+          fontWeight: fontWeight,
+          strokeWidth: strokeWidth,
+        });
+        const measuredW = tempTextObj.width || 0;
+        const measuredH = tempTextObj.height || 0;
+
         let textX = 0;
         let textY = 0;
-        let fabricOriginX: any = "center";
-        let fabricOriginY: any = "center";
 
         if (!curvePath) {
-          if (props.allowMultiline) {
-            textX = 0;
-            fabricOriginX = "center";
-          } else {
-            if (hAlign === "left") textX = -layer.width / 2;
-            else if (hAlign === "right") textX = layer.width / 2;
-            fabricOriginX = hAlign === "left" ? "left" : hAlign === "right" ? "right" : "center";
-          }
+          if (hAlign === "left") textX = -layer.width / 2 + measuredW / 2;
+          else if (hAlign === "right") textX = layer.width / 2 - measuredW / 2;
+          else textX = 0;
 
-          if (vAlign === "top") textY = -layer.height / 2;
-          else if (vAlign === "bottom") textY = layer.height / 2;
-
-          fabricOriginY = vAlign === "top" ? "top" : vAlign === "bottom" ? "bottom" : "center";
+          if (vAlign === "top") textY = -layer.height / 2 + measuredH / 2;
+          else if (vAlign === "bottom") textY = layer.height / 2 - measuredH / 2;
+          else textY = 0;
         }
 
         const isMultilineTextbox = Boolean(props.allowMultiline && !curvePath);
@@ -1234,8 +1300,8 @@ export default function StudioCanvas({
         const textOptions: any = {
           left: textX,
           top: textY,
-          originX: fabricOriginX,
-          originY: fabricOriginY,
+          originX: "center",
+          originY: "center",
           fontFamily: font,
           fontWeight: fontWeight,
           fontSize: fontSize,
@@ -1256,30 +1322,38 @@ export default function StudioCanvas({
           ? new fabric.Textbox(textStr, { ...textOptions, width: layer.width })
           : new fabric.Text(textStr, textOptions);
 
-        // Recreate text group on each property change to ensure Fabric.js group bounds & alignment are 100% pixel-perfect
         if (obj) {
           fc.remove(obj);
           obj = undefined;
         }
 
-        if (!obj) {
-          obj = new fabric.Group([frameRect, textObj], {
-            left: centerX,
-            top: centerY,
-            originX: "center",
-            originY: "center",
-            angle: layer.rotation,
-            width: layer.width,
-            height: layer.height,
-            selectable: !layer.isLocked,
-            evented: !layer.isLocked,
-            subTargetCheck: false,
-            objectCaching: false,
-            dirty: true,
-          });
-          (obj as any).layerId = layer.id;
-          fc.add(obj);
-        }
+        frameRect.set({ left: 0, top: 0, originX: "center", originY: "center" });
+        textObj.set({ left: textX, top: textY, originX: "center", originY: "center" });
+
+        obj = new fabric.Group([frameRect, textObj], {
+          left: centerX,
+          top: centerY,
+          originX: "center",
+          originY: "center",
+          angle: layer.rotation,
+          width: layer.width,
+          height: layer.height,
+          selectable: !layer.isLocked,
+          evented: !layer.isLocked,
+          subTargetCheck: false,
+          objectCaching: false,
+          dirty: true,
+        });
+
+        obj.pathOffset = new fabric.Point(0, 0);
+        obj.width = layer.width;
+        obj.height = layer.height;
+
+        frameRect.set({ left: 0, top: 0, originX: "center", originY: "center" });
+        textObj.set({ left: textX, top: textY, originX: "center", originY: "center" });
+
+        (obj as any).layerId = layer.id;
+        fc.add(obj);
       } else if (layer.layerType === "MASK") {
         const maskShape = props.maskShape || "RECTANGLE";
         const isMaskSelected =
@@ -1849,18 +1923,6 @@ export default function StudioCanvas({
           />
         )}
 
-        {/* ALIGNMENT GRID OVERLAY (Suppressed in Preview Mode!) */}
-        {showGrid && !isPreviewMode && (
-          <div
-            className="absolute inset-0 pointer-events-none z-10 opacity-30"
-            style={{
-              backgroundImage:
-                "linear-gradient(to right, #3b82f6 1px, transparent 1px), linear-gradient(to bottom, #3b82f6 1px, transparent 1px)",
-              backgroundSize: "50px 50px",
-            }}
-          />
-        )}
-
         {/* FABRIC.JS HTML5 CANVAS STAGE */}
         <div
           className="relative z-20 origin-top-left"
@@ -1871,6 +1933,18 @@ export default function StudioCanvas({
           }}
         >
           <canvas ref={canvasElRef} />
+
+          {/* ALIGNMENT GRID OVERLAY ON TOP OF LAYERS (Suppressed in Preview Mode!) */}
+          {showGrid && !isPreviewMode && (
+            <div
+              className="absolute inset-0 pointer-events-none z-30 opacity-30"
+              style={{
+                backgroundImage:
+                  "linear-gradient(to right, #3b82f6 1px, transparent 1px), linear-gradient(to bottom, #3b82f6 1px, transparent 1px)",
+                backgroundSize: "50px 50px",
+              }}
+            />
+          )}
         </div>
       </div>
     </div>

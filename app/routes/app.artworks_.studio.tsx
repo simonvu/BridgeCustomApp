@@ -1620,8 +1620,10 @@ function detectCleanNameFromFileName(fileName: string): string {
           <div className="flex-1 h-full flex flex-col overflow-hidden bg-slate-200/60 relative">
             <StudioTopToolbar
               selectedLayer={selectedLayer}
+              fields={fields}
               fonts={fonts}
               onUpdateLayer={handleUpdateLayer}
+              onUpdateField={handleUpdateField}
               onOpenMediaPickerForLayer={handleOpenMediaPickerForLayer}
             />
             <div className="flex-1 relative overflow-auto">

@@ -19,6 +19,7 @@ import {
   Scissors,
   ListFilter,
   Images,
+  RotateCcw,
 } from "lucide-react";
 
 import { StudioFieldItem } from "./StudioFieldPanel";
@@ -62,10 +63,14 @@ export default function StudioLayerPanel({
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [collapsedLayerIds, setCollapsedLayerIds] = useState<Record<string, boolean>>({});
 
+  const isLayerCollapsed = (layerId: string) => {
+    return collapsedLayerIds[layerId] !== false;
+  };
+
   const toggleCollapseLayer = (layerId: string) => {
     setCollapsedLayerIds((prev) => ({
       ...prev,
-      [layerId]: !prev[layerId],
+      [layerId]: prev[layerId] === false ? true : false,
     }));
   };
 
@@ -118,6 +123,34 @@ export default function StudioLayerPanel({
       onUpdateLayer(id, { name: trimmed });
     }
     setEditingLayerId(null);
+  };
+
+  // Double Click Inline Item Rename State
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+  const [editingItemLabel, setEditingItemLabel] = useState<string>("");
+
+  const handleStartRenameItem = (id: string, currentLabel: string) => {
+    setEditingItemId(id);
+    setEditingItemLabel(currentLabel);
+  };
+
+  const handleSaveRenameItem = (field: StudioFieldItem, optIdx: number) => {
+    if (!editingItemId) return;
+    const config = field.config || {};
+    const options = [...(config.options || [])];
+    if (options[optIdx]) {
+      const trimmed = editingItemLabel.trim();
+      options[optIdx] = {
+        ...options[optIdx],
+        label: trimmed || options[optIdx].label || `Item ${optIdx + 1}`,
+      };
+      if (onUpdateField) {
+        onUpdateField(field.id, {
+          config: { ...config, options },
+        });
+      }
+    }
+    setEditingItemId(null);
   };
 
   const getLayerIcon = (type: string) => {
@@ -350,9 +383,9 @@ export default function StudioLayerPanel({
                           toggleCollapseLayer(layer.id);
                         }}
                         className="p-0.5 text-indigo-500 hover:text-indigo-700 hover:bg-indigo-100 rounded transition cursor-pointer shrink-0"
-                        title={collapsedLayerIds[layer.id] ? "Expand List Items" : "Collapse List Items"}
+                        title={isLayerCollapsed(layer.id) ? "Expand List Items" : "Collapse List Items"}
                       >
-                        {collapsedLayerIds[layer.id] ? (
+                        {isLayerCollapsed(layer.id) ? (
                           <ChevronRight className="w-3.5 h-3.5" />
                         ) : (
                           <ChevronDown className="w-3.5 h-3.5" />
@@ -414,6 +447,46 @@ export default function StudioLayerPanel({
 
                   {/* Parent Layer Control Buttons */}
                   <div className="flex items-center gap-0.5 shrink-0">
+                    {Boolean(layer.linkedFieldId) && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const linkedField = fields.find((f) => f.id === layer.linkedFieldId);
+                          if (linkedField && onUpdateField) {
+                            const config = linkedField.config || {};
+                            const options: any[] = config.options || [];
+                            if (options.length > 1) {
+                              const item1 = options[0];
+                              const firstPosX = item1?.posX !== undefined ? item1.posX : layer.posX;
+                              const firstPosY = item1?.posY !== undefined ? item1.posY : layer.posY;
+                              const firstRotation = item1?.rotation !== undefined ? item1.rotation : layer.rotation || 0;
+                              const firstOpacity = item1?.opacity !== undefined ? item1.opacity : layer.properties?.opacity ?? 1;
+
+                              const updatedOpts = options.map((opt: any, idx: number) => {
+                                if (idx === 0) return opt;
+                                return {
+                                  ...opt,
+                                  posX: firstPosX,
+                                  posY: firstPosY,
+                                  rotation: firstRotation,
+                                  opacity: firstOpacity,
+                                };
+                              });
+
+                              onUpdateField(linkedField.id, {
+                                config: { ...config, options: updatedOpts },
+                              });
+                            }
+                          }
+                        }}
+                        className="p-1 text-indigo-500 hover:text-indigo-700 hover:bg-indigo-100/70 rounded transition cursor-pointer"
+                        title="Reset position of all Items (#2 onwards) to match Item #1"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+
                     <button
                       type="button"
                       onClick={(e) => {
@@ -588,7 +661,7 @@ export default function StudioLayerPanel({
                 {/* NESTED DEPENDENT LIST / ITEM LAYERS (Bound to Parent List/Item Layer) */}
                 {(() => {
                   const linkedField = fields.find((f) => f.id === layer.linkedFieldId);
-                  if (!collapsedLayerIds[layer.id] && linkedField && (linkedField.fieldType === "SELECT" || linkedField.fieldType === "DROPDOWN" || linkedField.fieldType === "RADIO")) {
+                  if (!isLayerCollapsed(layer.id) && linkedField && (linkedField.fieldType === "SELECT" || linkedField.fieldType === "DROPDOWN" || linkedField.fieldType === "RADIO")) {
                     const options = linkedField.config?.options || [];
                     return (
                       <div className="ml-3 mt-1 space-y-1 pl-1.5 border-l-2 border-indigo-300/80">
@@ -622,7 +695,6 @@ export default function StudioLayerPanel({
                             >
                               <div className="flex items-center gap-1.5 min-w-0 flex-1">
                                 <GripVertical className="w-3.5 h-3.5 text-indigo-400 hover:text-indigo-700 cursor-grab active:cursor-grabbing shrink-0" title="Drag to reorder Item" />
-                                <span className="text-indigo-400 text-[11px] font-mono select-none">└─</span>
                                 <div className="w-5 h-5 rounded border border-indigo-300 bg-white flex items-center justify-center shrink-0 overflow-hidden">
                                   {opt.swatchImageUrl ? (
                                     <img src={opt.swatchImageUrl} alt="" className="w-full h-full object-cover" />
@@ -633,9 +705,32 @@ export default function StudioLayerPanel({
                                   )}
                                 </div>
 
-                                <span className="truncate text-xs select-none">
-                                  {opt.label || `Item ${optIdx + 1}`}
-                                </span>
+                                {editingItemId === opt.id ? (
+                                  <input
+                                    type="text"
+                                    autoFocus
+                                    value={editingItemLabel}
+                                    onChange={(e) => setEditingItemLabel(e.target.value)}
+                                    onBlur={() => handleSaveRenameItem(linkedField, optIdx)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") handleSaveRenameItem(linkedField, optIdx);
+                                      if (e.key === "Escape") setEditingItemId(null);
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    className="text-xs font-semibold text-indigo-950 bg-white border border-indigo-500 rounded px-1.5 py-0.5 focus:outline-none w-full shadow-2xs min-w-[80px]"
+                                  />
+                                ) : (
+                                  <span
+                                    onDoubleClick={(e) => {
+                                      e.stopPropagation();
+                                      handleStartRenameItem(opt.id, opt.label || `Item ${optIdx + 1}`);
+                                    }}
+                                    className="truncate text-xs select-none hover:text-indigo-700 rounded px-0.5 py-0.2 transition cursor-pointer"
+                                    title="Double click to rename Item"
+                                  >
+                                    {opt.label || `Item ${optIdx + 1}`}
+                                  </span>
+                                )}
                               </div>
 
                               <div className="flex items-center gap-1.5 shrink-0">

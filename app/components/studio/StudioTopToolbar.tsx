@@ -23,17 +23,23 @@ import {
   ListFilter,
 } from "lucide-react";
 
+import { StudioFieldItem } from "./StudioFieldPanel";
+
 interface StudioTopToolbarProps {
   selectedLayer: CanvasLayerItem | null;
+  fields?: StudioFieldItem[];
   fonts?: FontItem[];
   onUpdateLayer: (layerId: string, updatedProps: Partial<CanvasLayerItem>) => void;
+  onUpdateField?: (fieldId: string, updatedProps: Partial<StudioFieldItem>) => void;
   onOpenMediaPickerForLayer?: (layerId: string) => void;
 }
 
 export default function StudioTopToolbar({
   selectedLayer,
+  fields = [],
   fonts = [],
   onUpdateLayer,
+  onUpdateField,
   onOpenMediaPickerForLayer,
 }: StudioTopToolbarProps) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -50,12 +56,144 @@ export default function StudioTopToolbar({
   }
 
   if (selectedLayer.linkedFieldId) {
+    const linkedField = fields.find((f) => f.id === selectedLayer.linkedFieldId);
+    const config = linkedField?.config || {};
+    const options: any[] = config.options || [];
+    const activeOptId = linkedField?.activeOptionId || options[0]?.id;
+    const activeOptIdx = activeOptId ? options.findIndex((o: any) => o.id === activeOptId) : -1;
+    const activeOpt = activeOptIdx >= 0 ? options[activeOptIdx] : options[0];
+
+    const currentPosX = activeOpt?.posX !== undefined ? activeOpt.posX : selectedLayer.posX;
+    const currentPosY = activeOpt?.posY !== undefined ? activeOpt.posY : selectedLayer.posY;
+    const currentW = activeOpt?.width !== undefined ? activeOpt.width : selectedLayer.width;
+    const currentH = activeOpt?.height !== undefined ? activeOpt.height : selectedLayer.height;
+    const currentRotation = activeOpt?.rotation !== undefined ? activeOpt.rotation : selectedLayer.rotation || 0;
+    const currentOpacity = activeOpt?.opacity !== undefined ? Number(activeOpt.opacity) : selectedLayer.properties?.opacity ?? 1;
+
+    const handleOptionPropChange = (key: string, value: any) => {
+      if (linkedField && onUpdateField && activeOptIdx >= 0) {
+        const updatedOpts = [...options];
+        updatedOpts[activeOptIdx] = {
+          ...updatedOpts[activeOptIdx],
+          [key]: value,
+        };
+        onUpdateField(linkedField.id, {
+          config: { ...config, options: updatedOpts },
+          activeOptionId: activeOptId,
+        });
+      }
+      if (["posX", "posY", "width", "height", "rotation"].includes(key)) {
+        onUpdateLayer(selectedLayer.id, { [key]: value });
+      }
+    };
+
     return (
-      <div className="h-11 bg-white border-b border-slate-200 px-3 flex items-center justify-between text-xs text-slate-500 select-none shrink-0 shadow-2xs w-full">
-        <span className="flex items-center gap-2 text-indigo-700 font-semibold">
-          <ListFilter className="w-4 h-4 text-indigo-600" />
-          List / Item Layer ({selectedLayer.name}) - Configure field settings & items in the right panel
-        </span>
+      <div className="relative h-11 bg-white border-b border-slate-200 px-3 flex items-center justify-between select-none shrink-0 shadow-2xs z-30 w-full">
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1 min-w-0 flex-1">
+          {/* Layer Badge */}
+          <div className="w-8 h-8 rounded-lg bg-indigo-50 border border-indigo-200 flex items-center justify-center shrink-0" title={selectedLayer.name}>
+            <ListFilter className="w-4 h-4 text-indigo-600" />
+          </div>
+
+          <div className="h-5 w-px bg-slate-200 my-auto shrink-0" />
+
+          {/* Opacity Control Slider & Input */}
+          <div className="flex items-center gap-1.5 shrink-0 bg-slate-100 border border-slate-300 rounded-md h-7 px-1.5">
+            <Eye className="w-3 h-3 text-slate-500 shrink-0" />
+            <span className="text-[10px] font-bold text-slate-500">Opacity:</span>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              value={currentOpacity}
+              onChange={(e) => handleOptionPropChange("opacity", Number(e.target.value))}
+              className="w-12 accent-indigo-600 cursor-pointer h-1.5 bg-slate-200 rounded-lg"
+            />
+            <span className="font-mono text-[10px] font-bold text-indigo-700 w-7 text-right">
+              {Math.round(currentOpacity * 100)}%
+            </span>
+          </div>
+
+          <div className="h-4 w-px bg-slate-200 my-auto shrink-0" />
+
+          {/* POSITION (X, Y) BADGE */}
+          <div className="flex items-center gap-1 shrink-0 bg-slate-100 border border-slate-300 rounded-md h-7 px-1.5">
+            <Move className="w-3 h-3 text-slate-500 shrink-0" />
+            <div className="flex items-center gap-0.5 bg-white border border-slate-200 rounded px-1 h-5">
+              <span className="text-[9px] font-bold text-slate-400">X:</span>
+              <input
+                type="number"
+                value={currentPosX}
+                onChange={(e) => handleOptionPropChange("posX", Number(e.target.value))}
+                className="w-8 font-mono text-[10px] font-bold text-slate-800 bg-transparent border-none text-center outline-none p-0 h-4 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                title="X Position (px)"
+              />
+            </div>
+            <div className="flex items-center gap-0.5 bg-white border border-slate-200 rounded px-1 h-5">
+              <span className="text-[9px] font-bold text-slate-400">Y:</span>
+              <input
+                type="number"
+                value={currentPosY}
+                onChange={(e) => handleOptionPropChange("posY", Number(e.target.value))}
+                className="w-8 font-mono text-[10px] font-bold text-slate-800 bg-transparent border-none text-center outline-none p-0 h-4 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                title="Y Position (px)"
+              />
+            </div>
+          </div>
+
+          {/* FRAME DIMENSIONS (W x H) WITH ASPECT RATIO LOCK */}
+          <div className="flex items-center gap-1 shrink-0 bg-slate-100 border border-slate-300 rounded-md h-7 px-1.5">
+            <div className="flex items-center gap-0.5 bg-white border border-slate-200 rounded px-1 h-5">
+              <span className="text-[9px] font-bold text-slate-400">W:</span>
+              <input
+                type="number"
+                value={currentW}
+                onChange={(e) => {
+                  const newW = Number(e.target.value);
+                  const ratio = (currentW / currentH) || 1;
+                  const newH = Math.max(1, Math.round(newW / ratio));
+                  handleOptionPropChange("width", newW);
+                  handleOptionPropChange("height", newH);
+                }}
+                className="w-8 font-mono text-[10px] font-bold text-slate-800 bg-transparent border-none text-center outline-none p-0 h-4 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                title="Width (px)"
+              />
+            </div>
+            <span className="text-slate-400 font-bold text-[10px]">×</span>
+            <div className="flex items-center gap-0.5 bg-white border border-slate-200 rounded px-1 h-5">
+              <span className="text-[9px] font-bold text-slate-400">H:</span>
+              <input
+                type="number"
+                value={currentH}
+                onChange={(e) => {
+                  const newH = Number(e.target.value);
+                  const ratio = (currentW / currentH) || 1;
+                  const newW = Math.max(1, Math.round(newH * ratio));
+                  handleOptionPropChange("height", newH);
+                  handleOptionPropChange("width", newW);
+                }}
+                className="w-8 font-mono text-[10px] font-bold text-slate-800 bg-transparent border-none text-center outline-none p-0 h-4 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                title="Height (px)"
+              />
+            </div>
+          </div>
+
+          {/* ROTATION ° */}
+          <div className="flex items-center gap-1 shrink-0 bg-slate-100 border border-slate-300 rounded-md h-7 px-1.5">
+            <RotateCw className="w-3 h-3 text-slate-500 shrink-0" />
+            <div className="flex items-center gap-0.5 bg-white border border-slate-200 rounded px-1 h-5">
+              <input
+                type="number"
+                value={currentRotation}
+                onChange={(e) => handleOptionPropChange("rotation", Number(e.target.value))}
+                className="w-7 font-mono text-[10px] font-bold text-slate-800 bg-transparent border-none text-center outline-none p-0 h-4 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                title="Rotation Angle (°)"
+              />
+              <span className="text-[9px] font-bold text-slate-400 pointer-events-none">°</span>
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
