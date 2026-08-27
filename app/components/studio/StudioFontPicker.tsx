@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
-import { Search, Upload, Check, ChevronDown, Sparkles, X, Type, Loader2, Plus, Globe } from "lucide-react";
+import { createPortal } from "react-dom";
+import { Search, Upload, Check, ChevronDown, Sparkles, X, Type, Loader2, Plus, Globe, CheckCircle2, AlertCircle } from "lucide-react";
 import { FontItem, loadSingleFontOnDemand } from "../../utils/fontLoader";
 
 interface StudioFontPickerProps {
@@ -23,6 +24,12 @@ export default function StudioFontPicker({
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const [visibleCount, setVisibleCount] = useState(30);
 
+  // Portal mount state for body portal rendering
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
   // Floating coordinates for breaking out of parent overflow-x-auto clipping containers
   const [popoverCoords, setPopoverCoords] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
 
@@ -34,6 +41,55 @@ export default function StudioFontPicker({
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
+
+  // Google Font Live Verification state
+  const [isVerifyingGoogleFont, setIsVerifyingGoogleFont] = useState(false);
+  const [googleFontValidation, setGoogleFontValidation] = useState<{
+    status: "idle" | "valid" | "invalid";
+    message?: string;
+    fontFamily?: string;
+  }>({ status: "idle" });
+
+  // Debounced Google Font live verification against Google Fonts CSS API
+  useEffect(() => {
+    if (activeAddTab !== "GOOGLE" || !googleFontFamily.trim()) {
+      setGoogleFontValidation({ status: "idle" });
+      setIsVerifyingGoogleFont(false);
+      return;
+    }
+
+    setIsVerifyingGoogleFont(true);
+    setGoogleFontValidation({ status: "idle" });
+
+    const timer = setTimeout(async () => {
+      const query = googleFontFamily.trim();
+      try {
+        const encoded = encodeURIComponent(query);
+        const res = await fetch(`https://fonts.googleapis.com/css2?family=${encoded}:wght@400;700&display=swap`);
+        if (res.ok) {
+          setGoogleFontValidation({
+            status: "valid",
+            message: `Font "${query}" was found on Google Fonts!`,
+            fontFamily: query,
+          });
+        } else {
+          setGoogleFontValidation({
+            status: "invalid",
+            message: `Font "${query}" not found on Google Fonts. Please check spelling or search fonts.google.com`,
+          });
+        }
+      } catch (err) {
+        setGoogleFontValidation({
+          status: "invalid",
+          message: "Unable to connect to Google Fonts API. Please check your internet connection.",
+        });
+      } finally {
+        setIsVerifyingGoogleFont(false);
+      }
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [googleFontFamily, activeAddTab]);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -49,10 +105,14 @@ export default function StudioFontPicker({
     );
   }, [fonts, selectedFont]);
 
+  // Search Query state (independent of input value display)
+  const [searchQuery, setSearchQuery] = useState("");
+
   // Sync input value with selected font when not actively focused
   useEffect(() => {
     if (!isFocused) {
       setInputValue(selectedFontObj.name);
+      setSearchQuery("");
     }
   }, [selectedFontObj, isFocused]);
 
@@ -85,6 +145,7 @@ export default function StudioFontPicker({
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         setIsOpen(false);
         setIsFocused(false);
+        setSearchQuery("");
         setInputValue(selectedFontObj.name);
       }
     };
@@ -92,22 +153,61 @@ export default function StudioFontPicker({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [selectedFontObj]);
 
-  // Filter fonts by search input value
+  // Pinned Selected Font at Top + Search Filtered Library Fonts
   const filteredFonts = useMemo(() => {
-    if (!isFocused || !inputValue.trim() || inputValue.trim().toLowerCase() === selectedFontObj.name.toLowerCase()) {
-      return fonts;
-    }
-    const q = inputValue.toLowerCase().trim();
-    return fonts.filter(
-      (f) => f.name.toLowerCase().includes(q) || f.family.toLowerCase().includes(q)
+    const q = searchQuery.trim().toLowerCase();
+    const activeFont = selectedFontObj;
+
+    // 1. All fonts except the active selected one
+    const otherFonts = fonts.filter(
+      (f) => f.family.toLowerCase() !== activeFont.family.toLowerCase()
     );
-  }, [fonts, inputValue, isFocused, selectedFontObj]);
+
+    // 2. Filter & rank other fonts if user typed a search query
+    let matchingOther = otherFonts;
+    if (q) {
+      matchingOther = otherFonts.filter(
+        (f) => f.name.toLowerCase().includes(q) || f.family.toLowerCase().includes(q)
+      );
+      matchingOther.sort((a, b) => {
+        const aStarts = a.name.toLowerCase().startsWith(q) || a.family.toLowerCase().startsWith(q);
+        const bStarts = b.name.toLowerCase().startsWith(q) || b.family.toLowerCase().startsWith(q);
+        if (aStarts && !bStarts) return -1;
+        if (!aStarts && bStarts) return 1;
+        return 0;
+      });
+    }
+
+    // 3. Active selected font is ALWAYS pinned at index 0!
+    return [activeFont, ...matchingOther];
+  }, [fonts, searchQuery, selectedFontObj]);
 
   // Reset pagination count & highlight when search changes
   useEffect(() => {
     setVisibleCount(30);
     setHighlightedIndex(0);
-  }, [inputValue]);
+  }, [searchQuery]);
+
+  // Auto-scroll dropdown list to currently selected / highlighted font
+  useEffect(() => {
+    if (isOpen && listRef.current) {
+      const selectedIdx = filteredFonts.findIndex(
+        (f) => f.family.toLowerCase() === selectedFontObj.family.toLowerCase()
+      );
+      if (selectedIdx >= 0) {
+        setHighlightedIndex(selectedIdx);
+        if (selectedIdx >= visibleCount) {
+          setVisibleCount(selectedIdx + 15);
+        }
+        setTimeout(() => {
+          const itemEl = listRef.current?.children[selectedIdx] as HTMLElement;
+          if (itemEl) {
+            itemEl.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          }
+        }, 60);
+      }
+    }
+  }, [isOpen]);
 
   // Infinite scroll lazy loading
   const handleScroll = () => {
@@ -212,6 +312,14 @@ export default function StudioFontPicker({
         if (!family) {
           throw new Error("Please enter a Google Font family name");
         }
+
+        // Strict verification check before adding
+        const encoded = encodeURIComponent(family);
+        const checkRes = await fetch(`https://fonts.googleapis.com/css2?family=${encoded}:wght@400;700&display=swap`);
+        if (!checkRes.ok) {
+          throw new Error(`Google Font "${family}" was not found. Please verify exact spelling at fonts.google.com`);
+        }
+
         const name = fontNameInput.trim() || family;
 
         const fontRes = await fetch("/api/fonts", {
@@ -250,7 +358,7 @@ export default function StudioFontPicker({
   return (
     <div className="flex items-center gap-1 shrink-0" ref={containerRef}>
       {/* DIRECT INLINE COMBOBOX SEARCH INPUT TRIGGER */}
-      <div className="relative flex items-center w-[130px] shrink-0">
+      <div className="relative flex items-center w-[160px] shrink-0">
         <input
           ref={inputRef}
           type="text"
@@ -263,14 +371,15 @@ export default function StudioFontPicker({
           }}
           onChange={(e) => {
             setInputValue(e.target.value);
+            setSearchQuery(e.target.value);
             if (!isOpen) {
               setIsOpen(true);
               updateCoords();
             }
           }}
           onKeyDown={handleKeyDown}
-          className="h-7 w-full border border-slate-300 rounded-md pl-2 pr-6 bg-white text-[11px] font-semibold text-slate-800 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 hover:border-slate-400 truncate shadow-2xs transition"
-          style={{ fontFamily: selectedFontObj.family }}
+          className="h-7.5 w-full border border-slate-300 rounded-md pl-2.5 pr-6 bg-white text-xs font-semibold text-slate-900 focus:outline-none focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 hover:border-slate-400 truncate shadow-2xs transition"
+          style={{ fontFamily: selectedFontObj.family, fontSize: "13px" }}
           title="Type to search font family by name..."
           placeholder="Search font..."
         />
@@ -294,16 +403,6 @@ export default function StudioFontPicker({
         )}
       </div>
 
-      {/* QUICK "+ ADD FONT" BUTTON ON TOP TOOLBAR */}
-      <button
-        type="button"
-        onClick={() => setAddModalOpen(true)}
-        className="h-7 px-2 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 rounded-md text-[11px] font-bold flex items-center gap-1 transition cursor-pointer shrink-0"
-        title="Add custom font file or Google Font"
-      >
-        <Plus className="w-3 h-3 text-indigo-600" />
-        <span>Font</span>
-      </button>
 
       {/* DROPDOWN POPUP MENU (FIXED POSITIONING BREAKS OUT OF TOOLBAR OVERFLOW CLIPPING) */}
       {isOpen && (
@@ -352,6 +451,7 @@ export default function StudioFontPicker({
                       onSelectFont(font.family);
                       setIsOpen(false);
                       setIsFocused(false);
+                      setSearchQuery("");
                     }}
                     className={`w-full px-2.5 py-2 text-left rounded-lg transition flex items-center justify-between group cursor-pointer ${
                       isSelected
@@ -397,9 +497,9 @@ export default function StudioFontPicker({
         </div>
       )}
 
-      {/* ADD FONT MODAL (FILE UPLOAD OR GOOGLE FONT) */}
-      {addModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-[10000] animate-in fade-in duration-150">
+      {/* ADD FONT MODAL (FILE UPLOAD OR GOOGLE FONT) - Portal to document.body to cover all header/stacking contexts */}
+      {addModalOpen && mounted && createPortal(
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-[99999] animate-in fade-in duration-150">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 space-y-4 animate-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center gap-2">
@@ -519,9 +619,38 @@ export default function StudioFontPicker({
                         setGoogleFontFamily(e.target.value);
                         if (!fontNameInput) setFontNameInput(e.target.value);
                       }}
-                      className="w-full h-9 border border-slate-300 rounded-lg px-3 text-xs font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                      className={`w-full h-9 border rounded-lg px-3 text-xs font-medium focus:ring-2 focus:outline-none ${
+                        googleFontValidation.status === "invalid"
+                          ? "border-rose-400 focus:ring-rose-500 bg-rose-50/40"
+                          : googleFontValidation.status === "valid"
+                          ? "border-emerald-400 focus:ring-emerald-500 bg-emerald-50/30"
+                          : "border-slate-300 focus:ring-indigo-500"
+                      }`}
                     />
-                    <span className="text-[10px] text-slate-400 block">
+
+                    {/* Live Verification Status Feedback */}
+                    {isVerifyingGoogleFont && (
+                      <div className="flex items-center gap-1.5 text-xs text-amber-600 font-semibold mt-1 animate-pulse">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Verifying font on Google Fonts...</span>
+                      </div>
+                    )}
+
+                    {!isVerifyingGoogleFont && googleFontValidation.status === "valid" && (
+                      <div className="flex items-center gap-1.5 text-xs text-emerald-600 font-semibold mt-1">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>Font "{googleFontValidation.fontFamily}" found on Google Fonts!</span>
+                      </div>
+                    )}
+
+                    {!isVerifyingGoogleFont && googleFontValidation.status === "invalid" && (
+                      <div className="flex items-center gap-1.5 text-xs text-rose-600 font-semibold mt-1">
+                        <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                        <span>{googleFontValidation.message}</span>
+                      </div>
+                    )}
+
+                    <span className="text-[10px] text-slate-400 block pt-0.5">
                       Enter exact family name from fonts.google.com
                     </span>
                   </div>
@@ -552,8 +681,9 @@ export default function StudioFontPicker({
                   type="submit"
                   disabled={
                     isUploading ||
+                    isVerifyingGoogleFont ||
                     (activeAddTab === "FILE" && !selectedFile) ||
-                    (activeAddTab === "GOOGLE" && !googleFontFamily.trim())
+                    (activeAddTab === "GOOGLE" && (!googleFontFamily.trim() || googleFontValidation.status === "invalid"))
                   }
                   className="flex-1 py-2 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-sm flex items-center justify-center gap-1.5 transition cursor-pointer disabled:opacity-50"
                 >
@@ -570,7 +700,8 @@ export default function StudioFontPicker({
               </div>
             </form>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
