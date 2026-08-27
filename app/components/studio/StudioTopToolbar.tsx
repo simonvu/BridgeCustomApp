@@ -200,9 +200,10 @@ export default function StudioTopToolbar({
 
   const props = selectedLayer.properties || {};
 
-  const handlePropChange = (key: string, value: any) => {
+  const handlePropChange = (keyOrPatch: string | Record<string, any>, value?: any) => {
+    const patch = typeof keyOrPatch === "string" ? { [keyOrPatch]: value } : keyOrPatch;
     onUpdateLayer(selectedLayer.id, {
-      properties: { ...props, [key]: value },
+      properties: { ...props, ...patch },
     });
   };
 
@@ -218,7 +219,13 @@ export default function StudioTopToolbar({
     } finally {
       setIsFontLoading(false);
       onUpdateLayer(selectedLayer.id, {
-        properties: { ...props, fontFamily: family, fontWeight: "normal" },
+        fontFamily: family,
+        properties: {
+          ...props,
+          fontFamily: family,
+          gridFontFamily: family,
+          fontWeight: "normal",
+        },
       });
     }
   };
@@ -447,6 +454,93 @@ export default function StudioTopToolbar({
                   <rect x="7" y="4" width="10" height="12" rx="1"/>
                 </svg>
               </button>
+            </div>
+          </>
+        )}
+
+        {/* WORD SEARCH PUZZLE LAYER CORE CONTROLS */}
+        {selectedLayer.layerType === "WORD_SEARCH_PUZZLE" && (
+          <>
+            {/* 1. Regenerate Layout Seed Button */}
+            <button
+              type="button"
+              onClick={() => handlePropChange("seed", (props.seed || 12345) + 1)}
+              className="h-7 px-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-[11px] font-bold flex items-center gap-1.5 transition cursor-pointer shrink-0 shadow-2xs"
+              title="Regenerate random layout seed"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Regenerate Layout</span>
+            </button>
+
+            {/* 2. Synced Grid Cols & Rows Select Dropdowns (8-16) */}
+            <div className="flex items-center gap-1.5 bg-slate-100 border border-slate-300 rounded-md h-7 px-2 shrink-0">
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] font-bold text-slate-500">Cols:</span>
+                <select
+                  value={props.gridWidth || 10}
+                  onChange={(e) => handlePropChange("gridWidth", Number(e.target.value))}
+                  className="bg-transparent text-[11px] font-bold text-slate-800 outline-none cursor-pointer"
+                >
+                  {[8, 9, 10, 11, 12, 13, 14, 15, 16].map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+              </div>
+              <span className="text-[10px] font-bold text-slate-400">×</span>
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] font-bold text-slate-500">Rows:</span>
+                <select
+                  value={props.gridHeight || 10}
+                  onChange={(e) => handlePropChange("gridHeight", Number(e.target.value))}
+                  className="bg-transparent text-[11px] font-bold text-slate-800 outline-none cursor-pointer"
+                >
+                  {[8, 9, 10, 11, 12, 13, 14, 15, 16].map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* 3. Font Family Selector */}
+            <StudioFontPicker
+              selectedFont={props.gridFontFamily || props.fontFamily || selectedLayer.fontFamily || "Roboto"}
+              fonts={fonts}
+              onSelectFont={(family) => {
+                handlePropChange({ fontFamily: family, gridFontFamily: family });
+                onUpdateLayer(selectedLayer.id, {
+                  fontFamily: family,
+                  properties: {
+                    ...props,
+                    fontFamily: family,
+                    gridFontFamily: family,
+                  },
+                });
+                handleFontSelect(family);
+              }}
+              isFontLoading={isFontLoading}
+            />
+
+            {/* 4. Font Size (px) Input */}
+            <div className="flex items-center bg-slate-100 border border-slate-300 rounded-md h-7 px-1 shrink-0">
+              <input
+                type="number"
+                min="1"
+                max="200"
+                value={props.gridFontSize ?? props.fontSize ?? 22}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === "") {
+                    handlePropChange({ gridFontSize: "", fontSize: "" });
+                  } else {
+                    const v = Number(val);
+                    if (!isNaN(v)) {
+                      handlePropChange({ gridFontSize: v, fontSize: v });
+                    }
+                  }
+                }}
+                className="w-9 text-center font-mono font-bold bg-transparent border-none text-[11px] focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                title="Grid Font Size (pt)"
+              />
             </div>
           </>
         )}

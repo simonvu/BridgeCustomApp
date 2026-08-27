@@ -20,6 +20,7 @@ import {
   ListFilter,
   Images,
   RotateCcw,
+  Grid,
 } from "lucide-react";
 
 import { StudioFieldItem } from "./StudioFieldPanel";
@@ -32,7 +33,7 @@ interface StudioLayerPanelProps {
   onSelectLayer: (layerId: string | null, isMultiKey?: boolean) => void;
   onUpdateLayer: (layerId: string, updatedProps: Partial<CanvasLayerItem>) => void;
   onUpdateField?: (fieldId: string, updatedProps: Partial<StudioFieldItem>) => void;
-  onAddLayer: (layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY" | "DROPDOWN") => void;
+  onAddLayer: (layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY" | "DROPDOWN" | "WORD_SEARCH_PUZZLE") => void;
   onAddMaskLayer?: (photoLayerId: string) => void;
   onOpenMediaPickerForOption?: (fieldId: string, optionIndex: number, targetType: "SWATCH" | "ASSET") => void;
   onOpenMediaPickerForBatchOptions?: (fieldId: string) => void;
@@ -157,6 +158,8 @@ export default function StudioLayerPanel({
     switch (type) {
       case "TEXT":
         return <Type className="w-4 h-4 text-indigo-600 shrink-0" />;
+      case "WORD_SEARCH_PUZZLE":
+        return <Grid className="w-4 h-4 text-blue-600 shrink-0" />;
       case "ASSET":
         return <ImageIcon className="w-4 h-4 text-emerald-600 shrink-0" />;
       case "PHOTO_UPLOAD":
@@ -275,6 +278,21 @@ export default function StudioLayerPanel({
                   <div>
                     <p className="font-bold text-xs text-slate-900">Text Layer</p>
                     <p className="text-[10px] text-slate-500">Custom text & typography</p>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    onAddLayer("WORD_SEARCH_PUZZLE");
+                    setShowAddMenu(false);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-blue-50 flex items-center gap-2.5 text-slate-800 transition cursor-pointer"
+                >
+                  <Grid className="w-4 h-4 text-blue-600 shrink-0" />
+                  <div>
+                    <p className="font-bold text-xs text-slate-900">Word Search Puzzle</p>
+                    <p className="text-[10px] text-slate-500">Name grid with oval highlights</p>
                   </div>
                 </button>
 

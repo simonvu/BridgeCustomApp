@@ -18,6 +18,8 @@ import {
   Settings,
   LogOut,
   Trash2,
+  ChevronDown,
+  X,
 } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import prisma from "../db.server";
@@ -297,6 +299,19 @@ export default function ArtworkStudioRoute() {
   const [storefrontPreviewOpen, setStorefrontPreviewOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [showGrid, setShowGrid] = useState(true);
+  const [workspaceBgColor, setWorkspaceBgColor] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("studio_workspace_bg_color") || "#ffffff";
+    }
+    return "#ffffff";
+  });
+  const [showWorkspaceBgMenu, setShowWorkspaceBgMenu] = useState(false);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("studio_workspace_bg_color", workspaceBgColor);
+    }
+  }, [workspaceBgColor]);
   const [niche, setNiche] = useState<string>(artworkData?.niche || "General");
   const [category, setCategory] = useState<string>(artworkData?.category || "General");
   const [settingsModalOpen, setSettingsModalOpen] = useState(false);
@@ -675,6 +690,8 @@ export default function ArtworkStudioRoute() {
   // Save Artwork Handler
   const handleSaveArtwork = async () => {
     setIsSaving(true);
+    const savedLayerId = selectedLayerId;
+    const savedScreenId = activeScreenId;
     try {
       const sanitizeLayerList = (list: CanvasLayerItem[]) => {
         return list.map((l) => ({
@@ -751,6 +768,11 @@ export default function ArtworkStudioRoute() {
         window.history.replaceState(null, "", `/app/artworks/studio?id=${resData.artwork.id}`);
         setSaveToast(true);
         setIsDirty(false); // Reset unsaved changes state!
+
+        // Restore focus on the active screen & selected layer!
+        if (savedScreenId) setActiveScreenId(savedScreenId);
+        if (savedLayerId) setSelectedLayerId(savedLayerId);
+
         setTimeout(() => setSaveToast(false), 3000);
         return true;
       } else {
@@ -861,6 +883,22 @@ export default function ArtworkStudioRoute() {
             enableRotate: true,
             enableFlip: true,
             enableFilters: true,
+          }
+        : type === "WORD_SEARCH_PUZZLE"
+        ? {
+            words: ["SIMON", "LISA", "JANE", "HAPPY", "URI", "RONALDO", "MESSI"],
+            gridWidth: 10,
+            gridHeight: 10,
+            allowDiagonal: true,
+            allowReverse: false,
+            seed: 12345,
+            showHighlights: true,
+            highlightColor: "#3B82F6",
+            highlightStyle: "PILL_OUTLINE",
+            highlightLineWidth: 3,
+            gridFontFamily: "Roboto",
+            gridFontSize: 22,
+            gridTextColor: "#FFFFFF",
           }
         : {},
     };
@@ -1544,7 +1582,76 @@ function detectCleanNameFromFileName(fileName: string): string {
                 <span>{showGrid ? "ON" : "OFF"}</span>
               </button>
 
-              <div className="w-[1px] h-3.5 bg-slate-300 mx-0.5" />
+              {/* Studio Workspace Canvas Preview Backdrop Color Picker */}
+              <div className="relative flex items-center">
+                <button
+                  type="button"
+                  onClick={() => setShowWorkspaceBgMenu((v) => !v)}
+                  className="h-6 px-1.5 rounded flex items-center gap-1 transition cursor-pointer text-[11px] font-bold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 shadow-2xs"
+                  title="Studio Workspace Backdrop Fill Color (Preview Only - Not saved to Artwork)"
+                >
+                  <div
+                    className="w-3 h-3 rounded-full border border-slate-400 shadow-2xs shrink-0"
+                    style={{ backgroundColor: workspaceBgColor || "#ffffff" }}
+                  />
+                  <ChevronDown className="w-2.5 h-2.5 text-slate-400" />
+                </button>
+
+                {showWorkspaceBgMenu && (
+                  <div className="absolute right-0 top-full mt-1.5 bg-white border border-slate-200 rounded-lg shadow-xl p-2.5 z-50 min-w-[200px] space-y-2 select-none">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold text-slate-700 uppercase tracking-wider">Workspace Backdrop</span>
+                      <button
+                        type="button"
+                        onClick={() => setShowWorkspaceBgMenu(false)}
+                        className="text-slate-400 hover:text-slate-600 p-0.5 rounded cursor-pointer"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+
+                    <div className="text-[10px] text-slate-500 leading-tight">
+                      Editor preview backdrop for editing white/transparent text layers (Not saved to artwork).
+                    </div>
+
+                    <div className="grid grid-cols-5 gap-1.5 pt-1">
+                      {[
+                        { name: "White", color: "#ffffff" },
+                        { name: "Light Grey", color: "#f1f5f9" },
+                        { name: "Dark Slate", color: "#1e293b" },
+                        { name: "Pitch Black", color: "#000000" },
+                        { name: "Royal Blue", color: "#2563eb" },
+                      ].map((item) => (
+                        <button
+                          key={item.color}
+                          type="button"
+                          onClick={() => {
+                            setWorkspaceBgColor(item.color);
+                            setShowWorkspaceBgMenu(false);
+                          }}
+                          className={`w-7 h-7 rounded-md border flex items-center justify-center transition cursor-pointer ${
+                            workspaceBgColor.toLowerCase() === item.color.toLowerCase()
+                              ? "border-blue-600 ring-2 ring-blue-500/30 scale-105"
+                              : "border-slate-300 hover:scale-105"
+                          }`}
+                          style={{ backgroundColor: item.color }}
+                          title={item.name}
+                        />
+                      ))}
+                    </div>
+
+                    <div className="flex items-center justify-between pt-1.5 border-t border-slate-100">
+                      <span className="text-[10px] font-semibold text-slate-600">Custom Color:</span>
+                      <input
+                        type="color"
+                        value={workspaceBgColor}
+                        onChange={(e) => setWorkspaceBgColor(e.target.value)}
+                        className="w-6 h-6 rounded cursor-pointer border-none bg-transparent p-0"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
 
               <button
                 type="button"
@@ -1640,6 +1747,7 @@ function detectCleanNameFromFileName(fileName: string): string {
                 bgUrl={activeScreen?.bgUrl}
                 zoom={zoom}
                 showGrid={showGrid}
+                workspaceBgColor={workspaceBgColor}
                 isPreviewMode={isPreviewMode}
                 fonts={fonts}
               />

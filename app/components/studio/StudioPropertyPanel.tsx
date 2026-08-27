@@ -25,8 +25,11 @@ import {
   LayoutGrid,
   Images,
   Copy,
+  Grid,
+  X,
 } from "lucide-react";
 import { autoGenerateSquareThumbnail } from "../../utils/thumbnailGenerator";
+import StudioFontPicker from "./StudioFontPicker";
 
 export interface BackgroundOptionItem {
   id: string;
@@ -99,9 +102,10 @@ export default function StudioPropertyPanel({
 
   const props = selectedLayer.properties || {};
 
-  const handlePropChange = (key: string, value: any) => {
+  const handlePropChange = (keyOrObject: string | Record<string, any>, value?: any) => {
+    const patch = typeof keyOrObject === "string" ? { [keyOrObject]: value } : keyOrObject;
     onUpdateLayer(selectedLayer.id, {
-      properties: { ...props, [key]: value },
+      properties: { ...(selectedLayer.properties || {}), ...patch },
     });
   };
 
@@ -175,6 +179,358 @@ export default function StudioPropertyPanel({
               onChange={(e) => onUpdateLayer(selectedLayer.id, { name: e.target.value })}
               className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none font-semibold text-slate-800"
             />
+          </div>
+        )}
+
+        {/* WORD SEARCH PUZZLE EDITOR */}
+        {selectedLayer.layerType === "WORD_SEARCH_PUZZLE" && (
+          <div className="space-y-4 pt-3 border-t border-slate-200">
+            {/* 1. Header & Regenerate Seed */}
+            <div className="flex items-center justify-between bg-slate-50 p-2 rounded-lg border border-slate-200">
+              <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5 uppercase tracking-wider">
+                <Grid className="w-4 h-4 text-blue-600" /> Word Search Puzzle ({((props.words && Array.isArray(props.words) ? props.words : ["SIMON", "LISA", "JANE", "HAPPY", "URI", "RONALDO", "MESSI"]) as string[]).length} words)
+              </h4>
+              <button
+                type="button"
+                onClick={() => handlePropChange("seed", (props.seed || 12345) + 1)}
+                className="text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-200 px-2 py-1 rounded hover:bg-indigo-100 transition cursor-pointer flex items-center gap-1 shrink-0"
+              >
+                <Sparkles className="w-3 h-3" />
+                <span>Regenerate</span>
+              </button>
+            </div>
+
+            {/* 2. Hidden Words Manager */}
+            <div className="space-y-2 bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+              <label className="text-[11px] font-bold text-slate-700 block uppercase tracking-wider">
+                Hidden Words List
+              </label>
+              <div className="border border-slate-300 rounded-lg p-2.5 bg-white min-h-[85px] space-y-2">
+                <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto">
+                  {((props.words && Array.isArray(props.words) ? props.words : ["SIMON", "LISA", "JANE", "HAPPY", "URI", "RONALDO", "MESSI"]) as string[]).map((w: string, idx: number) => (
+                    <span key={idx} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-xs font-bold text-slate-800 shadow-2xs">
+                      <span>{w}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const currentWords = props.words || ["SIMON", "LISA", "JANE", "HAPPY", "URI", "RONALDO", "MESSI"];
+                          const nextWords = currentWords.filter((_: any, i: number) => i !== idx);
+                          handlePropChange("words", nextWords);
+                        }}
+                        className="text-slate-400 hover:text-rose-600 cursor-pointer"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+                <input
+                  type="text"
+                  placeholder="Type name and press Enter..."
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === ",") {
+                      e.preventDefault();
+                      const inputEl = e.currentTarget;
+                      const val = inputEl.value.trim();
+                      if (val) {
+                        const currentWords = props.words || ["SIMON", "LISA", "JANE", "HAPPY", "URI", "RONALDO", "MESSI"];
+                        const nextWords = Array.from(new Set([...currentWords, val.toUpperCase()]));
+                        handlePropChange("words", nextWords);
+                        inputEl.value = "";
+                      }
+                    }
+                  }}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-md px-2 py-1 text-xs font-semibold text-slate-800 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                />
+              </div>
+              <span className="text-[10px] text-slate-400 block">
+                Type names (e.g. Ashley, Simon) and press Enter or comma.
+              </span>
+            </div>
+
+            {/* 3. Grid Dimensions & Placement Rules */}
+            <div className="space-y-2 bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+              <label className="text-[10px] font-bold text-slate-700 block uppercase tracking-wider">Grid & Placement Rules</label>
+              
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-600 block mb-1">Columns (Cols)</label>
+                  <select
+                    value={props.gridWidth || 10}
+                    onChange={(e) => handlePropChange("gridWidth", Number(e.target.value))}
+                    className="w-full bg-white border border-slate-300 rounded-md px-2 py-1 text-xs font-bold text-slate-800 outline-none cursor-pointer"
+                  >
+                    {[8, 9, 10, 11, 12, 13, 14, 15, 16].map((n) => (
+                      <option key={n} value={n}>{n} Cols</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold text-slate-600 block mb-1">Rows (Rows)</label>
+                  <select
+                    value={props.gridHeight || 10}
+                    onChange={(e) => handlePropChange("gridHeight", Number(e.target.value))}
+                    className="w-full bg-white border border-slate-300 rounded-md px-2 py-1 text-xs font-bold text-slate-800 outline-none cursor-pointer"
+                  >
+                    {[8, 9, 10, 11, 12, 13, 14, 15, 16].map((n) => (
+                      <option key={n} value={n}>{n} Rows</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-slate-600 block mb-1">Word Intersections (Overlaps)</label>
+                <select
+                  value={props.overlapDensity || "BALANCED"}
+                  onChange={(e) => handlePropChange("overlapDensity", e.target.value)}
+                  className="w-full bg-white border border-slate-300 rounded-md px-2 py-1 text-xs font-bold text-slate-800 outline-none cursor-pointer"
+                >
+                  <option value="BALANCED">✨ Harmony (1-2 Light Intersections - Recommended)</option>
+                  <option value="MINIMAL">🍃 Minimal (Spread Out / 0 Intersections)</option>
+                  <option value="HIGH">🔗 Dense (Many Intersections)</option>
+                </select>
+              </div>
+
+              <div className="pt-1 space-y-1.5">
+                <label className="flex items-center justify-between text-xs font-semibold text-slate-700 cursor-pointer">
+                  <span>Allow Diagonal Words</span>
+                  <input
+                    type="checkbox"
+                    checked={props.allowDiagonal !== false}
+                    onChange={(e) => handlePropChange("allowDiagonal", e.target.checked)}
+                    className="w-4 h-4 text-indigo-600 rounded cursor-pointer"
+                  />
+                </label>
+
+                <label className="flex items-center justify-between text-xs font-semibold text-slate-700 cursor-pointer">
+                  <span>Allow Backward Words (Reverse)</span>
+                  <input
+                    type="checkbox"
+                    checked={props.allowReverse === true && props.explicitReverse === true}
+                    onChange={(e) => handlePropChange({ allowReverse: e.target.checked, explicitReverse: e.target.checked })}
+                    className="w-4 h-4 text-indigo-600 rounded cursor-pointer"
+                  />
+                </label>
+              </div>
+            </div>
+
+            {/* 4. Typography & Text Style */}
+            <div className="space-y-2 bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+              <label className="text-[10px] font-bold text-slate-700 block uppercase tracking-wider">Typography & Text Style</label>
+              
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Font Family</label>
+                  <StudioFontPicker
+                    selectedFont={props.fontFamily || props.gridFontFamily || selectedLayer.fontFamily || "Roboto"}
+                    fonts={fonts}
+                    onSelectFont={(family) => {
+                      handlePropChange({ fontFamily: family, gridFontFamily: family });
+                      onUpdateLayer(selectedLayer.id, { fontFamily: family });
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Font Size (pt)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    max="200"
+                    value={props.fontSize ?? props.gridFontSize ?? 22}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === "") {
+                        handlePropChange({ fontSize: "", gridFontSize: "" });
+                      } else {
+                        const v = Number(val);
+                        if (!isNaN(v)) {
+                          handlePropChange({ fontSize: v, gridFontSize: v });
+                        }
+                      }
+                    }}
+                    className="w-full bg-white border border-slate-300 rounded-md px-2 py-1 text-xs font-bold text-slate-800 text-center outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Word Case</label>
+                  <select
+                    value={props.textTransform || props.wordStyle || "UPPERCASE"}
+                    onChange={(e) => {
+                      handlePropChange({ textTransform: e.target.value, wordStyle: e.target.value });
+                    }}
+                    className="w-full bg-white border border-slate-300 rounded-md px-2 py-1 text-xs font-bold text-slate-800 outline-none cursor-pointer"
+                  >
+                    <option value="UPPERCASE">UPPERCASE (A B C)</option>
+                    <option value="LOWERCASE">lowercase (a b c)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Font Weight</label>
+                  <select
+                    value={props.fontWeight || "bold"}
+                    onChange={(e) => handlePropChange("fontWeight", e.target.value)}
+                    className="w-full bg-white border border-slate-300 rounded-md px-2 py-1 text-xs font-bold text-slate-800 outline-none cursor-pointer"
+                  >
+                    <option value="bold">Bold</option>
+                    <option value="normal">Normal</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            {/* 5. Colors Palette & Oval Highlight Tuning */}
+            <div className="space-y-3 bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+              <label className="text-[10px] font-bold text-slate-700 block uppercase tracking-wider">Letter Text Colors</label>
+              
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[10px] font-semibold text-slate-600 block mb-1">Grid Filler Color</label>
+                  <div className="flex items-center gap-1.5 bg-white border border-slate-300 p-1 rounded-md shadow-2xs">
+                    <input
+                      type="color"
+                      value={props.gridTextColor || props.color || props.fill || "#1E293B"}
+                      onChange={(e) => {
+                        handlePropChange({ gridTextColor: e.target.value, color: e.target.value, fill: e.target.value });
+                      }}
+                      className="w-5 h-5 rounded cursor-pointer border-none bg-transparent p-0"
+                      title="Color of random background filler letters"
+                    />
+                    <span className="font-mono text-[10px] font-bold text-slate-700 uppercase truncate">
+                      {props.gridTextColor || props.color || props.fill || "#1E293B"}
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-semibold text-slate-600 block mb-1">Target Word Color</label>
+                  <div className="flex items-center gap-1.5 bg-white border border-slate-300 p-1 rounded-md shadow-2xs">
+                    <input
+                      type="color"
+                      value={props.wordTextColor || props.gridTextColor || props.color || "#1E293B"}
+                      onChange={(e) => {
+                        handlePropChange({ wordTextColor: e.target.value, highlightTextColor: e.target.value });
+                      }}
+                      className="w-5 h-5 rounded cursor-pointer border-none bg-transparent p-0"
+                      title="Color of target hidden word letters"
+                    />
+                    <span className="font-mono text-[10px] font-bold text-slate-700 uppercase truncate">
+                      {props.wordTextColor || props.gridTextColor || props.color || "#1E293B"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Oval Capsule Highlights Settings */}
+              <div className="pt-2 border-t border-slate-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-slate-800">Show Oval Highlights</span>
+                  <input
+                    type="checkbox"
+                    checked={props.showHighlights !== false}
+                    onChange={(e) => handlePropChange("showHighlights", e.target.checked)}
+                    className="w-4 h-4 text-indigo-600 rounded cursor-pointer"
+                  />
+                </div>
+
+                {props.showHighlights !== false && (
+                  <div className="space-y-2.5 pt-1">
+                    {/* Border Controls */}
+                    <div className="grid grid-cols-2 gap-2 bg-white p-2 rounded-md border border-slate-200">
+                      <div>
+                        <label className="text-[10px] font-semibold text-slate-600 block mb-1">Oval Border Color</label>
+                        <div className="flex items-center gap-1 bg-slate-50 border border-slate-300 p-1 rounded-md">
+                          <input
+                            type="color"
+                            value={props.highlightColor || "#FD005D"}
+                            onChange={(e) => handlePropChange("highlightColor", e.target.value)}
+                            className="w-4 h-4 rounded cursor-pointer border-none bg-transparent p-0"
+                            title="Color of oval capsule highlight loops"
+                          />
+                          <span className="font-mono text-[9px] font-bold text-slate-700 uppercase truncate">
+                            {props.highlightColor || "#FD005D"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="text-[10px] font-semibold text-slate-600 block mb-1">
+                          Border Width ({props.highlightLineWidth || 4}px)
+                        </label>
+                        <input
+                          type="range"
+                          min="1"
+                          max="10"
+                          step="0.5"
+                          value={props.highlightLineWidth || 4}
+                          onChange={(e) => handlePropChange("highlightLineWidth", Number(e.target.value))}
+                          className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600 mt-1.5"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Capsule Fill Controls */}
+                    <div className="bg-white p-2 rounded-md border border-slate-200 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-slate-700 uppercase tracking-wider">Capsule Background Fill</span>
+                        <label className="flex items-center gap-1 text-[10px] font-bold text-slate-700 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={props.transparentHighlightFill === true}
+                            onChange={(e) => handlePropChange("transparentHighlightFill", e.target.checked)}
+                            className="w-3.5 h-3.5 text-indigo-600 rounded cursor-pointer"
+                          />
+                          <span>Transparent Fill</span>
+                        </label>
+                      </div>
+
+                      {!props.transparentHighlightFill ? (
+                        <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-100">
+                          <div>
+                            <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Fill Color</label>
+                            <div className="flex items-center gap-1 bg-slate-50 border border-slate-300 p-1 rounded-md">
+                              <input
+                                type="color"
+                                value={props.highlightFillColor || props.highlightColor || "#FD005D"}
+                                onChange={(e) => handlePropChange("highlightFillColor", e.target.value)}
+                                className="w-4 h-4 rounded cursor-pointer border-none bg-transparent p-0"
+                              />
+                              <span className="font-mono text-[9px] font-bold text-slate-700 uppercase truncate">
+                                {props.highlightFillColor || props.highlightColor || "#FD005D"}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">
+                              Fill Opacity ({Math.round((props.highlightFillOpacity !== undefined ? Number(props.highlightFillOpacity) : 0.22) * 100)}%)
+                            </label>
+                            <input
+                              type="range"
+                              min="0.05"
+                              max="1"
+                              step="0.05"
+                              value={props.highlightFillOpacity !== undefined ? Number(props.highlightFillOpacity) : 0.22}
+                              onChange={(e) => handlePropChange("highlightFillOpacity", Number(e.target.value))}
+                              className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600 mt-1.5"
+                            />
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="text-[10px] italic text-slate-400 bg-slate-50 p-1.5 rounded text-center">
+                          ✨ Capsule background is transparent (border line only)
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         )}
 

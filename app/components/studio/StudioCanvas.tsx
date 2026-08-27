@@ -2,11 +2,12 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import * as fabric from "fabric";
 import { ZoomIn, ZoomOut, RotateCcw, Grid, Eye } from "lucide-react";
 import { ensureFontLoaded, FontItem } from "../../utils/fontLoader";
+import { generateWordSearchPuzzle } from "../../utils/wordSearchEngine";
 
 export interface CanvasLayerItem {
   id: string;
   name: string;
-  layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY" | "MASK";
+  layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY" | "MASK" | "WORD_SEARCH_PUZZLE";
   zIndex: number;
   posX: number;
   posY: number;
@@ -413,6 +414,7 @@ interface StudioCanvasProps {
   onZoomOut?: () => void;
   onResetZoom?: () => void;
   showGrid?: boolean;
+  workspaceBgColor?: string;
   isPreviewMode?: boolean;
   onToggleGrid?: () => void;
   fonts?: FontItem[];
@@ -515,6 +517,7 @@ export default function StudioCanvas({
   onZoomOut,
   onResetZoom,
   showGrid: propShowGrid,
+  workspaceBgColor = "#ffffff",
   isPreviewMode = false,
   onToggleGrid,
   fonts = [],
@@ -546,11 +549,11 @@ export default function StudioCanvas({
     setInternalZoom(action);
   }, []);
 
-  // Preload all fonts used in TEXT layers as soon as layers load
+  // Preload all fonts used in TEXT and WORD_SEARCH_PUZZLE layers as soon as layers load
   useEffect(() => {
-    const textLayers = layers.filter((l) => l.layerType === "TEXT");
+    const textLayers = layers.filter((l) => l.layerType === "TEXT" || l.layerType === "WORD_SEARCH_PUZZLE");
     textLayers.forEach((l) => {
-      const font = l.properties?.fontFamily;
+      const font = l.properties?.fontFamily || l.properties?.gridFontFamily;
       if (font) {
         ensureFontLoaded(font, fonts).catch(() => {});
       }
@@ -668,7 +671,9 @@ export default function StudioCanvas({
       const newWidth = Math.round((target.width || 100) * scaleX);
       const newHeight = Math.round((target.height || 100) * scaleY);
 
-      if (target instanceof fabric.Group) {
+      const targetLayer = layersRef.current.find((l) => l.id === target.layerId);
+
+      if (target instanceof fabric.Group && targetLayer?.layerType === "TEXT") {
         target.set({
           width: newWidth,
           height: newHeight,
@@ -690,12 +695,11 @@ export default function StudioCanvas({
         }
 
         if (textObj) {
-          const layerItem = layers.find((l) => l.id === target.layerId);
-          const props = layerItem?.properties || {};
+          const props = targetLayer?.properties || {};
           const isAutoFit = props.autoFit !== false;
           const baseFontSize = Number(props.fontSize) || 36;
           const fontFamily = props.fontFamily || "Roboto";
-          const textStr = textObj.text || layerItem?.name || "";
+          const textStr = textObj.text || targetLayer?.name || "";
           const hAlign = props.align || "center";
           const vAlign = props.verticalAlign || "middle";
 
@@ -783,6 +787,13 @@ export default function StudioCanvas({
         const newPosX = Math.round((target.left || 0) - newWidth / 2);
         const newPosY = Math.round((target.top || 0) - newHeight / 2);
         const newRotation = Math.round(target.angle || 0);
+
+        // Reset object scale back to 1.0 so scale does not accumulate on top of width/height
+        target.set({
+          scaleX: 1,
+          scaleY: 1,
+        });
+        target.setCoords();
 
         const targetLayer = layersRef.current.find((l) => l.id === layerId);
         let hasActiveOption = false;
@@ -1368,6 +1379,241 @@ export default function StudioCanvas({
 
         (obj as any).layerId = layer.id;
         fc.add(obj);
+      } else if (layer.layerType === "WORD_SEARCH_PUZZLE") {
+        // Generate word search matrix using wordSearchEngine
+        const rawWords: string[] = props.words && Array.isArray(props.words) && props.words.length > 0
+          ? props.words
+          : ["SIMON", "LISA", "JANE", "HAPPY", "URI", "RONALDO", "MESSI"];
+
+        const gridW = props.gridWidth || 10;
+        const gridH = props.gridHeight || 10;
+        const seed = props.seed || 12345;
+        const allowDiag = props.allowDiagonal !== false;
+        const allowRev = props.allowReverse === true && props.explicitReverse === true; // Enforce strict default FALSE for all layers
+        const highlightColor = props.highlightColor || props.ovalColor || "#FD005D";
+        const fontFam =
+          props.gridFontFamily ||
+          props.fontFamily ||
+          (layer as any).fontFamily ||
+          "Roboto";
+
+        // Asynchronously load custom font file if needed
+        ensureFontLoaded(fontFam, fonts).then(() => {
+          if (fc) fc.requestRenderAll();
+        }).catch(() => {});
+
+        const textColor =
+          props.gridTextColor ||
+          props.color ||
+          props.fill ||
+          (layer as any).color ||
+          (layer as any).fill ||
+          "#1E293B";
+
+        const fontWeight = props.fontWeight || (layer as any).fontWeight || "bold";
+        const fontStyle = props.fontStyle || (layer as any).fontStyle || "normal";
+        const textTransform = props.textTransform || props.wordStyle || "UPPERCASE";
+
+        const density = props.overlapDensity || "BALANCED";
+
+        const puzzleResult = generateWordSearchPuzzle({
+          words: rawWords,
+          gridWidth: gridW,
+          gridHeight: gridH,
+          allowDiagonal: allowDiag,
+          allowReverse: allowRev,
+          seed: seed,
+          overlapDensity: density as any,
+        });
+
+        const { grid, placedWords } = puzzleResult;
+
+        // Auto-fit cell dimensions to fill layer frame bounds (width x height)
+        const cellW = layer.width / gridW;
+        const cellH = layer.height / gridH;
+        const autoFontSize = Math.min(cellW, cellH) * 0.55;
+        const rawFontSize = Number(props.fontSize || props.gridFontSize || (layer as any).fontSize);
+        const actualFontSize = rawFontSize && rawFontSize > 0 ? rawFontSize : Math.max(10, Math.round(autoFontSize));
+
+        const puzzleTotalW = layer.width;
+        const puzzleTotalH = layer.height;
+
+        const startGridX = -puzzleTotalW / 2 + cellW / 2;
+        const startGridY = -puzzleTotalH / 2 + cellH / 2;
+
+        const groupObjects: fabric.Object[] = [];
+
+        // 1. Selection Frame Dashed Rect
+        const isSelected = selectedLayerIds.includes(layer.id) || selectedLayerId === layer.id;
+        const frameRect = new fabric.Rect({
+          left: 0,
+          top: 0,
+          width: layer.width,
+          height: layer.height,
+          fill: "transparent",
+          stroke: isSelected ? "#3b82f6" : "transparent",
+          strokeWidth: isSelected ? 1 : 0,
+          strokeDashArray: isSelected ? [4, 4] : undefined,
+          originX: "center",
+          originY: "center",
+          selectable: false,
+          evented: false,
+        });
+        groupObjects.push(frameRect);
+
+        function hexToRgba(hex: string, alpha: number): string {
+          if (alpha === 0) return "rgba(0, 0, 0, 0)";
+          let c = (hex || "#FD005D").replace("#", "");
+          if (c.length === 3) c = c.split("").map((char) => char + char).join("");
+          const num = parseInt(c, 16);
+          if (isNaN(num)) return `rgba(253, 0, 93, ${alpha})`;
+          const r = (num >> 16) & 255;
+          const g = (num >> 8) & 255;
+          const b = num & 255;
+          return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        }
+
+        const showHighlights = props.showHighlights === undefined ? true : Boolean(props.showHighlights);
+        const activeHighlightColor = props.highlightColor || props.ovalColor || "#FD005D";
+        const strokeWidth = Number(props.highlightLineWidth) || 4;
+
+        const isTransparentFill = props.transparentHighlightFill === true;
+        const rawFillColor = props.highlightFillColor || activeHighlightColor;
+        const fillOpacity = isTransparentFill ? 0 : props.highlightFillOpacity !== undefined ? Number(props.highlightFillOpacity) : 0.22;
+        const capsuleFill = hexToRgba(rawFillColor, fillOpacity);
+
+        if (showHighlights && placedWords.length > 0) {
+          placedWords.forEach((pw) => {
+            const x1 = startGridX + pw.startX * cellW;
+            const y1 = startGridY + pw.startY * cellH;
+            const x2 = startGridX + pw.endX * cellW;
+            const y2 = startGridY + pw.endY * cellH;
+
+            const dx = x2 - x1;
+            const dy = y2 - y1;
+            const len = Math.hypot(dx, dy);
+            const angleRad = Math.atan2(dy, dx);
+            const angleDeg = (angleRad * 180) / Math.PI;
+
+            const capsuleCenterX = (x1 + x2) / 2;
+            const capsuleCenterY = (y1 + y2) / 2;
+
+            const pillLength = Math.max(len + cellW * 0.85, cellW * 1.2);
+            const pillHeight = Math.max(Math.min(cellW, cellH) * 0.85, 20);
+
+            const capsuleObj = new fabric.Rect({
+              left: capsuleCenterX,
+              top: capsuleCenterY,
+              width: pillLength,
+              height: pillHeight,
+              rx: pillHeight / 2,
+              ry: pillHeight / 2,
+              fill: capsuleFill,
+              stroke: activeHighlightColor,
+              strokeWidth: strokeWidth,
+              opacity: 1,
+              originX: "center",
+              originY: "center",
+              angle: angleDeg,
+              selectable: false,
+              evented: false,
+            });
+            groupObjects.push(capsuleObj);
+          });
+        }
+
+        // Build target cell coordinates set for custom word text color
+        const targetCellSet = new Set<string>();
+        if (placedWords && placedWords.length > 0) {
+          placedWords.forEach((pw) => {
+            const dx = pw.endX === pw.startX ? 0 : pw.endX > pw.startX ? 1 : -1;
+            const dy = pw.endY === pw.startY ? 0 : pw.endY > pw.startY ? 1 : -1;
+            const steps = Math.max(Math.abs(pw.endX - pw.startX), Math.abs(pw.endY - pw.startY)) + 1;
+
+            for (let s = 0; s < steps; s++) {
+              const rx = pw.startX + s * dx;
+              const ry = pw.startY + s * dy;
+              targetCellSet.add(`${ry}_${rx}`);
+            }
+          });
+        }
+
+        const fillerTextColor =
+          props.gridTextColor ||
+          props.color ||
+          props.fill ||
+          (layer as any).color ||
+          (layer as any).fill ||
+          "#1E293B";
+
+        const wordTextColor =
+          props.wordTextColor ||
+          props.highlightTextColor ||
+          fillerTextColor;
+
+        // 3. Render Letter Matrix ON TOP of Highlights
+        for (let r = 0; r < grid.length; r++) {
+          for (let c = 0; c < grid[r].length; c++) {
+            let letter = grid[r][c];
+            if (textTransform === "LOWERCASE") {
+              letter = letter.toLowerCase();
+            } else if (textTransform === "UPPERCASE") {
+              letter = letter.toUpperCase();
+            }
+
+            const isTargetLetter = targetCellSet.has(`${r}_${c}`);
+            const letterColor = isTargetLetter ? wordTextColor : fillerTextColor;
+            const isWhiteText = letterColor.toUpperCase() === "#FFFFFF" || letterColor.toUpperCase() === "FFF";
+
+            const cx = startGridX + c * cellW;
+            const cy = startGridY + r * cellH;
+
+            const letterText = new fabric.Text(letter, {
+              left: cx,
+              top: cy,
+              originX: "center",
+              originY: "center",
+              fontFamily: fontFam,
+              fontSize: actualFontSize,
+              fontWeight: fontWeight as any,
+              fontStyle: fontStyle as any,
+              fill: letterColor,
+              stroke: isWhiteText ? "#1E293B" : undefined,
+              strokeWidth: isWhiteText ? 0.8 : 0,
+              selectable: false,
+              evented: false,
+            });
+            groupObjects.push(letterText);
+          }
+        }
+
+        let puzzleGroup = fc.getObjects().find((o: any) => o.layerId === layer.id) as fabric.Group;
+        if (puzzleGroup) {
+          fc.remove(puzzleGroup);
+        }
+
+        puzzleGroup = new fabric.Group(groupObjects, {
+          left: centerX,
+          top: centerY,
+          originX: "center",
+          originY: "center",
+          angle: layer.rotation,
+          width: layer.width,
+          height: layer.height,
+          selectable: !layer.isLocked,
+          evented: !layer.isLocked,
+          subTargetCheck: false,
+          objectCaching: false,
+          dirty: true,
+        });
+
+        puzzleGroup.pathOffset = new fabric.Point(0, 0);
+        puzzleGroup.width = layer.width;
+        puzzleGroup.height = layer.height;
+        (puzzleGroup as any).layerId = layer.id;
+
+        fc.add(puzzleGroup);
+        obj = puzzleGroup;
       } else if (layer.layerType === "MASK") {
         const maskShape = props.maskShape || "RECTANGLE";
         const isMaskSelected =
@@ -1911,20 +2157,18 @@ export default function StudioCanvas({
       {/* CANVAS CONTAINER CAROUSEL WRAPPER */}
       <div
         ref={containerRef}
-        className="relative bg-white shadow-2xl rounded-lg overflow-hidden border border-slate-300 transition-transform duration-100 ease-out m-auto shrink-0"
+        className="relative shadow-2xl rounded-lg overflow-hidden border border-slate-300 transition-all duration-150 ease-out m-auto shrink-0"
         style={{
           width: widthPx * zoom,
           height: heightPx * zoom,
+          backgroundColor: workspaceBgColor || "#ffffff",
         }}
       >
-        {/* CHECKERBOARD TRANSPARENT BACKGROUND */}
+        {/* CANVAS STAGE SOLID BACKDROP BACKGROUND */}
         <div
           className="absolute inset-0 pointer-events-none"
           style={{
-            backgroundImage:
-              "radial-gradient(#cbd5e1 1px, transparent 1px), radial-gradient(#cbd5e1 1px, #ffffff 1px)",
-            backgroundSize: "20px 20px",
-            backgroundPosition: "0 0, 10px 10px",
+            backgroundColor: workspaceBgColor || "#ffffff",
           }}
         />
 
@@ -2002,7 +2246,8 @@ export async function generateScreenThumbnailDataUrl(
 
   if (fc) {
     try {
-      // 1. Temporarily deselect object & hide blue dashed frame borders for thumbnail export
+      // 1. Temporarily remember active object & hide frame borders for thumbnail export
+      const activeObjBeforeExport = fc.getActiveObject();
       fc.discardActiveObject();
       fc.getObjects().forEach((obj) => {
         if (obj instanceof fabric.Group) {
@@ -2018,13 +2263,16 @@ export async function generateScreenThumbnailDataUrl(
         multiplier: scaleMultiplier,
       });
 
-      // 3. Restore blue dashed frame borders
+      // 3. Restore blue dashed frame borders & active object selection
       fc.getObjects().forEach((obj) => {
         if (obj instanceof fabric.Group) {
           const frameRect = obj.getObjects()[0];
           if (frameRect) frameRect.set({ stroke: "rgba(79, 70, 229, 0.35)" });
         }
       });
+      if (activeObjBeforeExport) {
+        fc.setActiveObject(activeObjBeforeExport);
+      }
       fc.renderAll();
     } catch (e) {
       console.warn("Fabric toDataURL thumbnail export warning:", e);
