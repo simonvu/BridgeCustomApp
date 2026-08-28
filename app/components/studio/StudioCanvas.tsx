@@ -538,6 +538,11 @@ export default function StudioCanvas({
     fieldsRef.current = fields;
   }, [fields]);
 
+  const onUpdateLayerRef = useRef(onUpdateLayer);
+  useEffect(() => {
+    onUpdateLayerRef.current = onUpdateLayer;
+  }, [onUpdateLayer]);
+
   const [internalZoom, setInternalZoom] = useState(1);
   const [internalShowGrid, setInternalShowGrid] = useState(true);
   const [maskCacheVersion, setMaskCacheVersion] = useState(0);
@@ -795,43 +800,15 @@ export default function StudioCanvas({
         });
         target.setCoords();
 
-        const targetLayer = layersRef.current.find((l) => l.id === layerId);
-        let hasActiveOption = false;
-
-        if (targetLayer && targetLayer.linkedFieldId && onUpdateField) {
-          const currentFields = fieldsRef.current || fields || [];
-          const linkedF = currentFields.find((f) => f.id === targetLayer.linkedFieldId);
-          if (linkedF) {
-            const config = linkedF.config || {};
-            const opts: any[] = config.options || [];
-            const activeOptId = linkedF.activeOptionId || opts[0]?.id;
-            const activeOptIdx = activeOptId ? opts.findIndex((o) => o.id === activeOptId) : -1;
-
-            if (activeOptIdx >= 0) {
-              hasActiveOption = true;
-              const updatedOpts = [...opts];
-              updatedOpts[activeOptIdx] = {
-                ...updatedOpts[activeOptIdx],
-                posX: newPosX,
-                posY: newPosY,
-                width: newWidth,
-                height: newHeight,
-                rotation: newRotation,
-              };
-              onUpdateField(linkedF.id, {
-                config: { ...config, options: updatedOpts },
-              });
-            }
-          }
+        if (onUpdateLayerRef.current) {
+          onUpdateLayerRef.current(layerId, {
+            posX: newPosX,
+            posY: newPosY,
+            width: newWidth,
+            height: newHeight,
+            rotation: newRotation,
+          });
         }
-
-        onUpdateLayer(layerId, {
-          posX: newPosX,
-          posY: newPosY,
-          width: newWidth,
-          height: newHeight,
-          rotation: newRotation,
-        });
 
         setTimeout(() => {
           isUpdatingFromFabricRef.current = false;
@@ -1112,8 +1089,30 @@ export default function StudioCanvas({
       let obj = existingObjs.get(layer.id);
       const props = layer.properties || {};
 
-      const centerX = layer.posX + layer.width / 2;
-      const centerY = layer.posY + layer.height / 2;
+      let renderPosX = layer.posX;
+      let renderPosY = layer.posY;
+      let renderWidth = layer.width;
+      let renderHeight = layer.height;
+      let renderRotation = layer.rotation || 0;
+
+      if (layer.linkedFieldId) {
+        const linkedF = (fields || []).find((f) => f.id === layer.linkedFieldId);
+        if (linkedF) {
+          const config = linkedF.config || {};
+          const opts = config.options || [];
+          const activeOpt = opts.find((o: any) => o.id === linkedF.activeOptionId) || opts[0];
+          if (activeOpt && activeOpt.isVisible !== false) {
+            if (activeOpt.posX !== undefined) renderPosX = activeOpt.posX;
+            if (activeOpt.posY !== undefined) renderPosY = activeOpt.posY;
+            if (activeOpt.width !== undefined) renderWidth = activeOpt.width;
+            if (activeOpt.height !== undefined) renderHeight = activeOpt.height;
+            if (activeOpt.rotation !== undefined) renderRotation = activeOpt.rotation;
+          }
+        }
+      }
+
+      const centerX = renderPosX + renderWidth / 2;
+      const centerY = renderPosY + renderHeight / 2;
 
       if (layer.layerType === "TEXT") {
         const rawTextStr = props.text !== undefined ? props.text : layer.name;
@@ -1123,7 +1122,7 @@ export default function StudioCanvas({
         const fontWeight = props.fontWeight || "normal";
         const baseFontSize = Number(props.fontSize) || 36;
         const isAutoFit = Boolean((props.autoFit !== false) && !props.allowMultiline);
-        const fontSize = getFitFontSize(textStr, font, baseFontSize, layer.width, isAutoFit, fontWeight);
+        const fontSize = getFitFontSize(textStr, font, baseFontSize, renderWidth, isAutoFit, fontWeight);
 
         const maxLinesLimit = props.allowMultiline && props.maxLines && Number(props.maxLines) > 0 ? Number(props.maxLines) : 0;
         if (maxLinesLimit > 0) {
@@ -1280,8 +1279,8 @@ export default function StudioCanvas({
         const frameRect = new fabric.Rect({
           left: 0,
           top: 0,
-          width: layer.width,
-          height: layer.height,
+          width: renderWidth,
+          height: renderHeight,
           fill: "rgba(0, 0, 0, 0.001)",
           stroke: isTextSelected ? "rgba(79, 70, 229, 0.45)" : "transparent",
           strokeWidth: isTextSelected ? 1 : 0,
@@ -1304,17 +1303,17 @@ export default function StudioCanvas({
         let textY = 0;
 
         if (!curvePath) {
-          if (hAlign === "left") textX = -layer.width / 2 + measuredW / 2;
-          else if (hAlign === "right") textX = layer.width / 2 - measuredW / 2;
+          if (hAlign === "left") textX = -renderWidth / 2 + measuredW / 2;
+          else if (hAlign === "right") textX = renderWidth / 2 - measuredW / 2;
           else textX = 0;
 
-          if (vAlign === "top") textY = -layer.height / 2 + measuredH / 2;
-          else if (vAlign === "bottom") textY = layer.height / 2 - measuredH / 2;
+          if (vAlign === "top") textY = -renderHeight / 2 + measuredH / 2;
+          else if (vAlign === "bottom") textY = renderHeight / 2 - measuredH / 2;
           else textY = 0;
         } else {
           const angleDeg = Math.max(-360, Math.min(360, curveAngle));
           const isSmile = angleDeg < 0;
-          const effectiveFontHeight = Math.min(fontSize * 0.85, layer.height * 0.7);
+          const effectiveFontHeight = Math.min(fontSize * 0.85, renderHeight * 0.7);
           textX = 0;
           // Apply explicit vertical matrix offset to center character caps/descenders inside frame box
           textY = isSmile ? -effectiveFontHeight * 0.25 : effectiveFontHeight * 0.25;
@@ -1344,7 +1343,7 @@ export default function StudioCanvas({
         };
 
         const textObj = isMultilineTextbox
-          ? new fabric.Textbox(textStr, { ...textOptions, width: layer.width })
+          ? new fabric.Textbox(textStr, { ...textOptions, width: renderWidth })
           : new fabric.Text(textStr, textOptions);
 
         if (obj) {
@@ -1360,9 +1359,9 @@ export default function StudioCanvas({
           top: centerY,
           originX: "center",
           originY: "center",
-          angle: layer.rotation,
-          width: layer.width,
-          height: layer.height,
+          angle: renderRotation,
+          width: renderWidth,
+          height: renderHeight,
           selectable: !layer.isLocked,
           evented: !layer.isLocked,
           subTargetCheck: false,
@@ -1371,8 +1370,8 @@ export default function StudioCanvas({
         });
 
         obj.pathOffset = new fabric.Point(0, 0);
-        obj.width = layer.width;
-        obj.height = layer.height;
+        obj.width = renderWidth;
+        obj.height = renderHeight;
 
         frameRect.set({ left: 0, top: 0, originX: "center", originY: "center" });
         textObj.set({ left: textX, top: textY, originX: "center", originY: "center" });
@@ -1429,14 +1428,14 @@ export default function StudioCanvas({
         const { grid, placedWords } = puzzleResult;
 
         // Auto-fit cell dimensions to fill layer frame bounds (width x height)
-        const cellW = layer.width / gridW;
-        const cellH = layer.height / gridH;
+        const cellW = renderWidth / gridW;
+        const cellH = renderHeight / gridH;
         const autoFontSize = Math.min(cellW, cellH) * 0.55;
         const rawFontSize = Number(props.fontSize || props.gridFontSize || (layer as any).fontSize);
         const actualFontSize = rawFontSize && rawFontSize > 0 ? rawFontSize : Math.max(10, Math.round(autoFontSize));
 
-        const puzzleTotalW = layer.width;
-        const puzzleTotalH = layer.height;
+        const puzzleTotalW = renderWidth;
+        const puzzleTotalH = renderHeight;
 
         const startGridX = -puzzleTotalW / 2 + cellW / 2;
         const startGridY = -puzzleTotalH / 2 + cellH / 2;
@@ -1448,8 +1447,8 @@ export default function StudioCanvas({
         const frameRect = new fabric.Rect({
           left: 0,
           top: 0,
-          width: layer.width,
-          height: layer.height,
+          width: renderWidth,
+          height: renderHeight,
           fill: "transparent",
           stroke: isSelected ? "#3b82f6" : "transparent",
           strokeWidth: isSelected ? 1 : 0,

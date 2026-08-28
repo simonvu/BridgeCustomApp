@@ -612,20 +612,30 @@ export default function ArtworkStudioRoute() {
     const targetScreen = screens.find((s) => s.id === screenId);
     if (!targetScreen) return;
 
+    const fieldIdMap = new Map<string, string>();
+    const duplicatedFields = (targetScreen.fields || []).map((f) => {
+      const newFieldId = `field_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
+      fieldIdMap.set(f.id, newFieldId);
+      return {
+        ...f,
+        id: newFieldId,
+      };
+    });
+
+    const duplicatedLayers = (targetScreen.layers || []).map((l) => ({
+      ...l,
+      id: `layer_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      linkedFieldId: l.linkedFieldId ? (fieldIdMap.get(l.linkedFieldId) || l.linkedFieldId) : undefined,
+    }));
+
     const duplicatedScreenId = `screen_${Date.now()}`;
     const duplicatedScreen: StudioScreenItem = {
       ...targetScreen,
       id: duplicatedScreenId,
       name: `${targetScreen.name} (Copy)`,
       sortOrder: screens.length,
-      layers: (targetScreen.layers || []).map((l) => ({
-        ...l,
-        id: `layer_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-      })),
-      fields: (targetScreen.fields || []).map((f) => ({
-        ...f,
-        id: `field_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-      })),
+      layers: duplicatedLayers,
+      fields: duplicatedFields,
     };
 
     const nextScreens = [...screens, duplicatedScreen];
@@ -1005,9 +1015,62 @@ export default function ArtworkStudioRoute() {
   };
 
   const handleUpdateLayer = (layerId: string, updatedProps: Partial<CanvasLayerItem>) => {
-    setLayers((prev) =>
-      prev.map((l) => (l.id === layerId ? { ...l, ...updatedProps } : l))
-    );
+    setScreens((prevScreens) => {
+      const nextScreens = prevScreens.map((scr) => {
+        const currentLayers = scr.layers || [];
+        const targetLayer = currentLayers.find((l) => l.id === layerId);
+        if (!targetLayer) return scr;
+
+        const currentFields = scr.fields || [];
+
+        const nextLayers = currentLayers.map((l) => (l.id === layerId ? { ...l, ...updatedProps } : l));
+        let nextFields = currentFields;
+
+        // Atomic Sync: If linked to a field and position/size properties change, update option atomically!
+        if (
+          targetLayer.linkedFieldId &&
+          (updatedProps.posX !== undefined ||
+            updatedProps.posY !== undefined ||
+            updatedProps.width !== undefined ||
+            updatedProps.height !== undefined ||
+            updatedProps.rotation !== undefined)
+        ) {
+          nextFields = currentFields.map((f) => {
+            if (f.id !== targetLayer.linkedFieldId) return f;
+
+            const config = f.config || {};
+            const opts: any[] = config.options || [];
+            const activeOptId = f.activeOptionId;
+            let activeOptIdx = activeOptId ? opts.findIndex((o) => o.id === activeOptId) : -1;
+            if (activeOptIdx < 0 && opts.length > 0) activeOptIdx = 0;
+
+            if (activeOptIdx >= 0) {
+              const updatedOpts = [...opts];
+              const curOpt = updatedOpts[activeOptIdx];
+              updatedOpts[activeOptIdx] = {
+                ...curOpt,
+                posX: updatedProps.posX !== undefined ? updatedProps.posX : (curOpt.posX ?? targetLayer.posX),
+                posY: updatedProps.posY !== undefined ? updatedProps.posY : (curOpt.posY ?? targetLayer.posY),
+                width: updatedProps.width !== undefined ? updatedProps.width : (curOpt.width ?? targetLayer.width),
+                height: updatedProps.height !== undefined ? updatedProps.height : (curOpt.height ?? targetLayer.height),
+                rotation: updatedProps.rotation !== undefined ? updatedProps.rotation : (curOpt.rotation ?? targetLayer.rotation ?? 0),
+              };
+              return { ...f, config: { ...config, options: updatedOpts } };
+            }
+            return f;
+          });
+        }
+
+        return {
+          ...scr,
+          layers: nextLayers,
+          fields: nextFields,
+        };
+      });
+
+      pushHistorySnapshot(nextScreens);
+      return nextScreens;
+    });
   };
 
   const handleAddMaskLayer = (photoLayerId: string) => {

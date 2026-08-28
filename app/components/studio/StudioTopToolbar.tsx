@@ -55,8 +55,11 @@ export default function StudioTopToolbar({
     );
   }
 
-  if (selectedLayer.linkedFieldId) {
-    const linkedField = fields.find((f) => f.id === selectedLayer.linkedFieldId);
+  const linkedField = selectedLayer.linkedFieldId
+    ? fields.find((f) => f.id === selectedLayer.linkedFieldId)
+    : undefined;
+
+  if (linkedField) {
     const config = linkedField?.config || {};
     const options: any[] = config.options || [];
     const activeOptId = linkedField?.activeOptionId || options[0]?.id;
