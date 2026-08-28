@@ -285,3 +285,50 @@ model Font {
 
   @@map("fonts")
 }
+
+// ==========================================
+// DOODLE ALPHABET PACK MANAGEMENT MODELS
+// ==========================================
+
+model DoodlePack {
+  id              String        @id @default(uuid())
+  name            String        // VD: "Christmas Candy Cane Alphabet"
+  code            String        @unique // VD: "christmas_candy_cane_alphabet"
+  description     String?
+  thumbnailUrl    String?
+  isActive        Boolean       @default(true)
+  createdByName   String?       @default("Super Admin")
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  styles          DoodleStyle[]
+
+  @@map("doodle_packs")
+}
+
+model DoodleStyle {
+  id              String         @id @default(uuid())
+  packId          String
+  pack            DoodlePack     @relation(fields: [packId], references: [id], onDelete: Cascade)
+  name            String         // VD: "Candy Stripe", "Leopard Print"
+  sortOrder       Int            @default(0)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  letters         DoodleLetter[]
+
+  @@map("doodle_styles")
+}
+
+model DoodleLetter {
+  id              String       @id @default(uuid())
+  styleId         String
+  style           DoodleStyle  @relation(fields: [styleId], references: [id], onDelete: Cascade)
+  char            String       // VD: "A", "B", "1", "9"
+  imageUrl        String       // Cloudflare R2 or local asset URL
+  width           Int?
+  height          Int?
+
+  @@unique([styleId, char])
+  @@map("doodle_letters")
+}

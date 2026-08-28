@@ -76,6 +76,19 @@ export async function loader({ request }: LoaderFunctionArgs) {
     ? await fontModel.findMany({ orderBy: [{ isDefault: "desc" }, { name: "asc" }] })
     : [];
 
+  // Fetch all doodle packs for Doodle Alphabet Layer customization
+  const doodlePacks = await prisma.doodlePack.findMany({
+    orderBy: { createdAt: "desc" },
+    include: {
+      styles: {
+        orderBy: { sortOrder: "asc" },
+        include: {
+          letters: true,
+        },
+      },
+    },
+  });
+
   return json({
     currentUser: {
       email: currentUser?.email || "admin@bridgecustom.com",
@@ -87,11 +100,12 @@ export async function loader({ request }: LoaderFunctionArgs) {
     dbNiches,
     dbCategories,
     fonts,
+    doodlePacks,
   });
 }
 
 export default function ArtworkStudioRoute() {
-  const { currentUser, artworkData, dbNiches, dbCategories, fonts } = useLoaderData<typeof loader>();
+  const { currentUser, artworkData, dbNiches, dbCategories, fonts, doodlePacks } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const artworkIdFromUrl = searchParams.get("id");
@@ -869,13 +883,20 @@ export default function ArtworkStudioRoute() {
 
     const newLayer: CanvasLayerItem = {
       id: `layer_${nowStamp}`,
-      name: type === "ASSET" ? "Image Layer" : type === "PHOTO_UPLOAD" ? "Photo Upload Area" : `New ${type.toLowerCase()} layer`,
+      name:
+        type === "ASSET"
+          ? "Image Layer"
+          : type === "PHOTO_UPLOAD"
+          ? "Photo Upload Area"
+          : type === "DOODLE_ALPHABET"
+          ? "Doodle Alphabet Layer"
+          : `New ${type.toLowerCase()} layer`,
       layerType: type as CanvasLayerItem["layerType"],
       zIndex: newZ,
       posX: Math.round(widthPx / 4),
       posY: Math.round(heightPx / 4),
-      width: 300,
-      height: 300,
+      width: type === "DOODLE_ALPHABET" ? 450 : 300,
+      height: type === "DOODLE_ALPHABET" ? 150 : 300,
       rotation: 0,
       isVisible: true,
       isLocked: false,
@@ -893,6 +914,21 @@ export default function ArtworkStudioRoute() {
             enableRotate: true,
             enableFlip: true,
             enableFilters: true,
+          }
+        : type === "DOODLE_ALPHABET"
+        ? {
+            text: "AUNTIE",
+            doodlePackId: doodlePacks?.[0]?.id || "",
+            styleSelectionRule: "RANDOM_SHUFFLE",
+            fixedStyleId: "",
+            seed: 12345,
+            letterSpacing: 4,
+            maxLetterHeight: 120,
+            autoFitContainer: true,
+            align: "center",
+            allowPersonalized: true,
+            fieldLabel: "Custom Doodle Text",
+            helpText: "Type text to render custom doodle font art",
           }
         : type === "WORD_SEARCH_PUZZLE"
         ? {
@@ -1813,6 +1849,7 @@ function detectCleanNameFromFileName(fileName: string): string {
                 workspaceBgColor={workspaceBgColor}
                 isPreviewMode={isPreviewMode}
                 fonts={fonts}
+                doodlePacks={doodlePacks}
               />
             </div>
           </div>
@@ -1904,6 +1941,7 @@ function detectCleanNameFromFileName(fileName: string): string {
                   selectedLayerIds={selectedLayerIds}
                   fields={fields}
                   fonts={fonts}
+                  doodlePacks={doodlePacks}
                   onUpdateLayer={handleUpdateLayer}
                   onUpdateField={handleUpdateField}
                   onAddField={handleAddField}

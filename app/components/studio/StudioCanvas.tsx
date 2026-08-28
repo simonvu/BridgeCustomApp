@@ -3,11 +3,12 @@ import * as fabric from "fabric";
 import { ZoomIn, ZoomOut, RotateCcw, Grid, Eye } from "lucide-react";
 import { ensureFontLoaded, FontItem } from "../../utils/fontLoader";
 import { generateWordSearchPuzzle } from "../../utils/wordSearchEngine";
+import { resolveDoodleStyleAssignments, loadAndTrimImage } from "../../utils/doodleAlphabetEngine";
 
 export interface CanvasLayerItem {
   id: string;
   name: string;
-  layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY" | "MASK" | "WORD_SEARCH_PUZZLE";
+  layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY" | "MASK" | "WORD_SEARCH_PUZZLE" | "DOODLE_ALPHABET";
   zIndex: number;
   posX: number;
   posY: number;
@@ -418,6 +419,7 @@ interface StudioCanvasProps {
   isPreviewMode?: boolean;
   onToggleGrid?: () => void;
   fonts?: FontItem[];
+  doodlePacks?: any[];
 }
 
 /**
@@ -521,6 +523,7 @@ export default function StudioCanvas({
   isPreviewMode = false,
   onToggleGrid,
   fonts = [],
+  doodlePacks = [],
 }: StudioCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasElRef = useRef<HTMLCanvasElement>(null);
@@ -1613,6 +1616,196 @@ export default function StudioCanvas({
 
         fc.add(puzzleGroup);
         obj = puzzleGroup;
+      } else if (layer.layerType === "DOODLE_ALPHABET") {
+        const doodlePackId = props.doodlePackId;
+        const targetPack = doodlePacks?.find((p: any) => p.id === doodlePackId) || doodlePacks?.[0];
+        const inputText = (props.text || "AUNTIE").trim();
+        const rule = props.styleSelectionRule || "RANDOM_SHUFFLE";
+        const fixedStyleId = props.fixedStyleId || "";
+        const seed = Number(props.seed) || 12345;
+        const letterSpacing = Number(props.letterSpacing) || 4;
+        const maxLetterHeight = Number(props.maxLetterHeight) || 120;
+        const autoFitContainer = props.autoFitContainer !== false;
+        const align = props.align || "center";
+        const isSelected = selectedLayerIds.includes(layer.id) || selectedLayerId === layer.id;
+
+        const currentFingerprint = `${layer.id}_${doodlePackId}_${inputText}_${rule}_${fixedStyleId}_${seed}_${letterSpacing}_${maxLetterHeight}_${autoFitContainer}_${align}_${renderWidth}_${renderHeight}_${layer.rotation}_${isSelected}`;
+
+        let existingDoodleGroup = fc.getObjects().find((o: any) => o.layerId === layer.id) as any;
+
+        if (existingDoodleGroup && existingDoodleGroup._doodleFingerprint === currentFingerprint) {
+          // FINGERPRINT UNCHANGED: Just update coordinates without recreating objects! NO FLICKER!
+          existingDoodleGroup.set({
+            left: centerX,
+            top: centerY,
+            angle: layer.rotation,
+            selectable: !layer.isLocked,
+            evented: !layer.isLocked,
+          });
+          existingDoodleGroup.setCoords();
+          obj = existingDoodleGroup;
+        } else {
+          // Fingerprint changed or new layer: fetch images & build group
+          const assignments = targetPack
+            ? resolveDoodleStyleAssignments(inputText, targetPack, rule, fixedStyleId, seed)
+            : [];
+
+          const validLetters = assignments.filter((a) => a.imageUrl);
+
+          if (validLetters.length === 0) {
+            if (existingDoodleGroup) fc.remove(existingDoodleGroup);
+
+            const fallbackText = new fabric.Text(inputText || "DOODLE", {
+              left: centerX,
+              top: centerY,
+              originX: "center",
+              originY: "center",
+              fontSize: 42,
+              fontFamily: "Arial",
+              fontWeight: "bold",
+              fill: "#9333ea",
+              angle: layer.rotation,
+            });
+            (fallbackText as any).layerId = layer.id;
+            (fallbackText as any)._doodleFingerprint = currentFingerprint;
+            fc.add(fallbackText);
+            obj = fallbackText;
+          } else {
+            Promise.all(
+              assignments.map((item) => {
+                if (!item.imageUrl) return Promise.resolve(null);
+                return loadAndTrimImage(item.imageUrl).then((trimmedCanvas) => {
+                  if (!trimmedCanvas) return null;
+                  return new fabric.Image(trimmedCanvas);
+                });
+              })
+            ).then((imgObjs) => {
+              if (!fc) return;
+
+              isUpdatingFromFabricRef.current = true;
+
+              const groupObjects: fabric.Object[] = [];
+
+              const frameRect = new fabric.Rect({
+                left: 0,
+                top: 0,
+                width: renderWidth,
+                height: renderHeight,
+                fill: "transparent",
+                stroke: isSelected ? "#9333ea" : "transparent",
+                strokeWidth: isSelected ? 1 : 0,
+                strokeDashArray: isSelected ? [4, 4] : undefined,
+                originX: "center",
+                originY: "center",
+                selectable: false,
+                evented: false,
+              });
+              groupObjects.push(frameRect);
+
+              const baseMaxLetterH = renderHeight * 0.85;
+              const letterMeta: { img: fabric.Image; w: number; h: number }[] = [];
+              let rawTotalW = 0;
+
+              imgObjs.forEach((img) => {
+                if (!img) {
+                  rawTotalW += baseMaxLetterH * 0.5 + letterSpacing;
+                  return;
+                }
+                const origW = img.width || 100;
+                const origH = img.height || 100;
+                const scale = baseMaxLetterH / origH;
+                const letterW = origW * scale;
+
+                letterMeta.push({ img, w: letterW, h: baseMaxLetterH });
+                rawTotalW += letterW + letterSpacing;
+              });
+
+              if (letterMeta.length > 0) rawTotalW -= letterSpacing;
+
+              // Compute auto-fit scaling factor (Downscale ONLY when text overflows container width; NEVER upscale short words!)
+              let fitScale = 1;
+              if (autoFitContainer && rawTotalW > renderWidth) {
+                fitScale = renderWidth / Math.max(1, rawTotalW);
+              }
+
+              const finalLetterSpacing = letterSpacing * fitScale;
+              const finalMaxLetterH = baseMaxLetterH * fitScale;
+
+              let finalTotalW = 0;
+              imgObjs.forEach((img) => {
+                if (!img) {
+                  finalTotalW += finalMaxLetterH * 0.5 + finalLetterSpacing;
+                  return;
+                }
+                const meta = letterMeta.find((m) => m.img === img);
+                if (meta) {
+                  meta.w = meta.w * fitScale;
+                  meta.h = meta.h * fitScale;
+                  const origH = img.height || 100;
+                  img.scale(meta.h / origH);
+                  finalTotalW += meta.w + finalLetterSpacing;
+                }
+              });
+
+              if (letterMeta.length > 0) finalTotalW -= finalLetterSpacing;
+
+              let startX = -finalTotalW / 2;
+              if (align === "left") startX = -renderWidth / 2 + 10;
+              else if (align === "right") startX = renderWidth / 2 - finalTotalW - 10;
+
+              let currentX = startX;
+
+              imgObjs.forEach((img) => {
+                if (!img) {
+                  currentX += finalMaxLetterH * 0.5 + finalLetterSpacing;
+                  return;
+                }
+                const meta = letterMeta.find((m) => m.img === img);
+                const w = meta?.w || 50;
+
+                img.set({
+                  left: currentX + w / 2,
+                  top: 0,
+                  originX: "center",
+                  originY: "center",
+                });
+                groupObjects.push(img);
+                currentX += w + finalLetterSpacing;
+              });
+
+              const oldGroup = fc.getObjects().find((o: any) => o.layerId === layer.id);
+              if (oldGroup) fc.remove(oldGroup);
+
+              const doodleGroup = new fabric.Group(groupObjects, {
+                left: centerX,
+                top: centerY,
+                originX: "center",
+                originY: "center",
+                angle: layer.rotation,
+                width: renderWidth,
+                height: renderHeight,
+                selectable: !layer.isLocked,
+                evented: !layer.isLocked,
+              });
+
+              (doodleGroup as any).layerId = layer.id;
+              (doodleGroup as any).layerType = "DOODLE_ALPHABET";
+              (doodleGroup as any)._doodleFingerprint = currentFingerprint;
+
+              fc.add(doodleGroup);
+
+              if (isSelected) {
+                fc.setActiveObject(doodleGroup);
+              }
+
+              fc.requestRenderAll();
+
+              setTimeout(() => {
+                isUpdatingFromFabricRef.current = false;
+              }, 100);
+            });
+          }
+        }
       } else if (layer.layerType === "MASK") {
         const maskShape = props.maskShape || "RECTANGLE";
         const isMaskSelected =

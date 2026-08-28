@@ -16,6 +16,7 @@ import {
   Palette,
   FolderKanban,
   Type,
+  Sparkles,
 } from "lucide-react";
 
 interface DashboardLayoutProps {
@@ -245,6 +246,19 @@ export default function DashboardLayout({ children, currentUser, contentPaddingC
                       >
                         <Type className="w-3.5 h-3.5 text-[#616161] shrink-0" />
                         <span>Font Library</span>
+                      </Link>
+
+                      <Link
+                        to="/app/doodles"
+                        title="Doodle Alphabets"
+                        className={`flex items-center gap-2 px-3 py-1.5 rounded-lg transition text-xs font-medium ${
+                          isActive("/app/doodles")
+                            ? "bg-white text-[#303030] shadow-xs border border-gray-200/80 font-semibold text-[#005bd3]"
+                            : "text-[#616161] hover:bg-[#e3e3e3] hover:text-[#303030]"
+                        }`}
+                      >
+                        <Sparkles className="w-3.5 h-3.5 text-[#616161] shrink-0" />
+                        <span>Doodle Alphabets</span>
                       </Link>
                     </div>
                   )}

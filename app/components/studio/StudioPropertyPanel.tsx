@@ -43,6 +43,7 @@ interface StudioPropertyPanelProps {
   selectedLayerIds?: string[];
   fields: StudioFieldItem[];
   fonts?: { id: string; name: string; family: string; fontType: string }[] | any;
+  doodlePacks?: any[];
   onUpdateLayer: (layerId: string, updatedProps: Partial<CanvasLayerItem>) => void;
   onUpdateField?: (fieldId: string, updatedProps: Partial<StudioFieldItem>) => void;
   onAddField?: (fieldType: StudioFieldItem["fieldType"]) => void;
@@ -60,6 +61,7 @@ export default function StudioPropertyPanel({
   selectedLayerIds = [],
   fields,
   fonts = [],
+  doodlePacks = [],
   onUpdateLayer,
   onUpdateField,
   onAddField,
@@ -179,6 +181,196 @@ export default function StudioPropertyPanel({
               onChange={(e) => onUpdateLayer(selectedLayer.id, { name: e.target.value })}
               className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none font-semibold text-slate-800"
             />
+          </div>
+        )}
+
+        {/* DOODLE ALPHABET EDITOR */}
+        {selectedLayer.layerType === "DOODLE_ALPHABET" && (
+          <div className="space-y-4 pt-3 border-t border-slate-200">
+            {/* Header & Re-roll Seed Button */}
+            <div className="flex items-center justify-between bg-purple-50/60 p-2.5 rounded-xl border border-purple-100">
+              <div className="flex items-center gap-1.5 font-bold text-slate-800 text-xs uppercase tracking-wider">
+                <Sparkles className="w-4 h-4 text-purple-600" />
+                <span>Doodle Alphabet Controls</span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handlePropChange("seed", (props.seed || 12345) + 1)}
+                className="text-[10px] font-extrabold text-purple-700 bg-white border border-purple-200 px-2.5 py-1 rounded-lg hover:bg-purple-100 transition cursor-pointer flex items-center gap-1 shrink-0 shadow-2xs"
+                title="Re-roll / Reshuffle style variant assignments for each letter"
+              >
+                <Sparkles className="w-3 h-3 text-purple-600" />
+                <span>🔀 Re-roll Shuffle</span>
+              </button>
+            </div>
+
+            {/* 1. Input Text String */}
+            <div>
+              <label className="text-[11px] font-bold text-slate-700 block mb-1 uppercase tracking-wider">
+                Doodle Text Content
+              </label>
+              <input
+                type="text"
+                value={props.text ?? "AUNTIE"}
+                onChange={(e) => handlePropChange("text", e.target.value)}
+                placeholder="e.g. AUNTIE, MERRY, SANTA"
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-purple-500 focus:outline-none"
+              />
+            </div>
+
+            {/* 2. Select Doodle Pack */}
+            <div>
+              <label className="text-[11px] font-bold text-slate-700 block mb-1 uppercase tracking-wider">
+                Doodle Pack
+              </label>
+              <select
+                value={props.doodlePackId || doodlePacks?.[0]?.id || ""}
+                onChange={(e) => handlePropChange("doodlePackId", e.target.value)}
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-purple-500 focus:outline-none"
+              >
+                {doodlePacks && doodlePacks.length > 0 ? (
+                  doodlePacks.map((pack: any) => (
+                    <option key={pack.id} value={pack.id}>
+                      {pack.name} ({pack.styles?.length || 0} styles)
+                    </option>
+                  ))
+                ) : (
+                  <option value="">No Doodle Packs created yet</option>
+                )}
+              </select>
+            </div>
+
+            {/* 3. Style Selection Rule */}
+            <div>
+              <label className="text-[11px] font-bold text-slate-700 block mb-1 uppercase tracking-wider">
+                Smart Style Randomization Rule
+              </label>
+              <select
+                value={props.styleSelectionRule || "RANDOM_SHUFFLE"}
+                onChange={(e) => handlePropChange("styleSelectionRule", e.target.value)}
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 focus:ring-2 focus:ring-purple-500 focus:outline-none"
+              >
+                <option value="RANDOM_SHUFFLE">🔀 Random Shuffle (Mix styles per letter)</option>
+                <option value="CYCLE_PATTERN">🔄 Cycle Pattern (Style 1 ➔ Style 2 ➔ Style 3...)</option>
+                <option value="SEED_SHUFFLE">🎲 Seeded Shuffle (Deterministic per word)</option>
+                <option value="FIXED_STYLE">🎯 Fixed Style (Use 1 style for all letters)</option>
+              </select>
+            </div>
+
+            {/* 4. Fixed Style Selector if FIXED_STYLE rule is active */}
+            {props.styleSelectionRule === "FIXED_STYLE" && (
+              <div>
+                <label className="text-[11px] font-bold text-slate-700 block mb-1 uppercase tracking-wider">
+                  Select Fixed Style Variant
+                </label>
+                <select
+                  value={props.fixedStyleId || ""}
+                  onChange={(e) => handlePropChange("fixedStyleId", e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                >
+                  {(() => {
+                    const activePack = doodlePacks?.find((p: any) => p.id === (props.doodlePackId || doodlePacks?.[0]?.id));
+                    const styles = activePack?.styles || [];
+                    if (styles.length === 0) return <option value="">No styles found</option>;
+                    return styles.map((s: any) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ));
+                  })()}
+                </select>
+              </div>
+            )}
+
+            {/* 5. Letter Spacing & Max Height */}
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <div>
+                <label className="text-[10px] font-bold text-slate-600 block mb-1 uppercase tracking-wider">
+                  Letter Spacing ({props.letterSpacing ?? 4}px)
+                </label>
+                <input
+                  type="range"
+                  min="-10"
+                  max="40"
+                  value={props.letterSpacing ?? 4}
+                  onChange={(e) => handlePropChange("letterSpacing", Number(e.target.value))}
+                  className="w-full accent-purple-600"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold text-slate-600 block mb-1 uppercase tracking-wider">
+                  Max Height ({props.maxLetterHeight ?? 120}px)
+                </label>
+                <input
+                  type="range"
+                  min="40"
+                  max="300"
+                  value={props.maxLetterHeight ?? 120}
+                  onChange={(e) => handlePropChange("maxLetterHeight", Number(e.target.value))}
+                  className="w-full accent-purple-600"
+                />
+              </div>
+            </div>
+
+            {/* 6. Auto Fit to Container Toggle Option */}
+            <div className="pt-1">
+              <div className="bg-purple-50/50 p-2.5 rounded-xl border border-purple-100/90 flex items-center justify-between">
+                <div>
+                  <p className="font-extrabold text-xs text-slate-800">Auto Shrink to Fit Container</p>
+                  <p className="text-[10px] text-slate-500">Auto-downscale text when it overflows layer width</p>
+                </div>
+                <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={props.autoFitContainer !== false}
+                    onChange={(e) => handlePropChange("autoFitContainer", e.target.checked)}
+                    className="sr-only peer"
+                  />
+                  <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600"></div>
+                </label>
+              </div>
+            </div>
+
+            {/* 7. Alignment */}
+            <div>
+              <label className="text-[10px] font-bold text-slate-600 block mb-1 uppercase tracking-wider">
+                Letter Alignment
+              </label>
+              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => handlePropChange("align", "left")}
+                  className={`flex-1 py-1 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                    props.align === "left" ? "bg-white text-purple-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  <AlignLeft className="w-3.5 h-3.5" />
+                  <span>Left</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePropChange("align", "center")}
+                  className={`flex-1 py-1 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                    !props.align || props.align === "center" ? "bg-white text-purple-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  <AlignCenter className="w-3.5 h-3.5" />
+                  <span>Center</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handlePropChange("align", "right")}
+                  className={`flex-1 py-1 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
+                    props.align === "right" ? "bg-white text-purple-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
+                  }`}
+                >
+                  <AlignRight className="w-3.5 h-3.5" />
+                  <span>Right</span>
+                </button>
+              </div>
+            </div>
           </div>
         )}
 

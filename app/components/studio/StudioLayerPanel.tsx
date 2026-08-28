@@ -33,7 +33,7 @@ interface StudioLayerPanelProps {
   onSelectLayer: (layerId: string | null, isMultiKey?: boolean) => void;
   onUpdateLayer: (layerId: string, updatedProps: Partial<CanvasLayerItem>) => void;
   onUpdateField?: (fieldId: string, updatedProps: Partial<StudioFieldItem>) => void;
-  onAddLayer: (layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY" | "DROPDOWN" | "WORD_SEARCH_PUZZLE") => void;
+  onAddLayer: (layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY" | "DROPDOWN" | "WORD_SEARCH_PUZZLE" | "DOODLE_ALPHABET") => void;
   onAddMaskLayer?: (photoLayerId: string) => void;
   onOpenMediaPickerForOption?: (fieldId: string, optionIndex: number, targetType: "SWATCH" | "ASSET") => void;
   onOpenMediaPickerForBatchOptions?: (fieldId: string) => void;
@@ -158,6 +158,8 @@ export default function StudioLayerPanel({
     switch (type) {
       case "TEXT":
         return <Type className="w-4 h-4 text-indigo-600 shrink-0" />;
+      case "DOODLE_ALPHABET":
+        return <Sparkles className="w-4 h-4 text-purple-600 shrink-0" />;
       case "WORD_SEARCH_PUZZLE":
         return <Grid className="w-4 h-4 text-blue-600 shrink-0" />;
       case "ASSET":
@@ -278,6 +280,21 @@ export default function StudioLayerPanel({
                   <div>
                     <p className="font-bold text-xs text-slate-900">Text Layer</p>
                     <p className="text-[10px] text-slate-500">Custom text & typography</p>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    onAddLayer("DOODLE_ALPHABET");
+                    setShowAddMenu(false);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-purple-50 flex items-center gap-2.5 text-slate-800 transition cursor-pointer"
+                >
+                  <Sparkles className="w-4 h-4 text-purple-600 shrink-0" />
+                  <div>
+                    <p className="font-bold text-xs text-slate-900">Doodle Alphabet</p>
+                    <p className="text-[10px] text-slate-500">Multi-style letter PNG composite</p>
                   </div>
                 </button>
 
