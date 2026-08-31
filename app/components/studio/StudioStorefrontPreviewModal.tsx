@@ -88,9 +88,10 @@ export default function StudioStorefrontPreviewModal({
 
   const canvasElRef = useRef<HTMLCanvasElement>(null);
   const fabricCanvasRef = useRef<fabric.Canvas | null>(null);
+  const stageBoxRef = useRef<HTMLDivElement>(null);
 
   const activeScreen = screens[activeScreenIndex] || screens[0];
-  const activeLayers = activeScreen?.layers || [];
+  const activeLayers = useMemo(() => activeScreen?.layers || [], [activeScreen]);
   const activeFields = useMemo(() => {
     const source = activeScreen?.fields && activeScreen.fields.length > 0 ? activeScreen.fields : fields;
     return [...source].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
@@ -187,11 +188,44 @@ export default function StudioStorefrontPreviewModal({
       width: widthPx,
       height: heightPx,
       selection: false,
-      interactive: false,
+      preserveObjectStacking: true,
+      renderOnAddRemove: false,
+      skipTargetFind: true,
     });
     fabricCanvasRef.current = fc;
 
+    // Keep the Fabric canvas at its natural pixel size and scale the whole
+    // wrapper with a CSS transform to fit the stage box. Stretching the canvas
+    // element directly (object-contain) breaks Fabric's offscreen render
+    // pipeline for clipPath masks and groups, so mirror the editor approach.
+    const wrapper = (fc as any).wrapperEl as HTMLElement | undefined;
+    const applyStageScale = () => {
+      const box = stageBoxRef.current;
+      if (!box || !wrapper) return;
+      const boxW = box.clientWidth;
+      const boxH = box.clientHeight;
+      if (boxW <= 0 || boxH <= 0) return;
+      // Contain the full artwork within the stage box and center it so nothing
+      // is clipped when the box is not a perfect square.
+      const scale = Math.min(boxW / widthPx, boxH / heightPx);
+      const offsetX = (boxW - widthPx * scale) / 2;
+      const offsetY = (boxH - heightPx * scale) / 2;
+      wrapper.style.position = "absolute";
+      wrapper.style.top = "0";
+      wrapper.style.left = "0";
+      wrapper.style.transformOrigin = "top left";
+      wrapper.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${scale})`;
+    };
+    applyStageScale();
+
+    let ro: ResizeObserver | undefined;
+    if (typeof ResizeObserver !== "undefined" && stageBoxRef.current) {
+      ro = new ResizeObserver(applyStageScale);
+      ro.observe(stageBoxRef.current);
+    }
+
     return () => {
+      ro?.disconnect();
       fc.dispose();
       fabricCanvasRef.current = null;
     };
@@ -281,6 +315,7 @@ export default function StudioStorefrontPreviewModal({
             {/* LIVE PREVIEW CANVAS STAGE CONTAINER */}
             <div className="w-full flex-1 flex items-center justify-center relative min-h-[380px]">
               <div
+                ref={stageBoxRef}
                 className="relative bg-white rounded-xl shadow-lg border border-slate-200 overflow-hidden max-w-full"
                 style={{
                   aspectRatio: `${widthPx} / ${heightPx}`,
@@ -320,8 +355,8 @@ export default function StudioStorefrontPreviewModal({
                   </>
                 )}
 
-                {/* FABRIC LIVE CANVAS */}
-                <canvas ref={canvasElRef} className="w-full h-full object-contain pointer-events-none" />
+                {/* FABRIC LIVE CANVAS (natural size; wrapper is CSS-scaled to fit) */}
+                <canvas ref={canvasElRef} className="pointer-events-none" />
               </div>
             </div>
 
