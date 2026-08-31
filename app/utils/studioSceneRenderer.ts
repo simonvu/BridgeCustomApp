@@ -725,6 +725,58 @@ async function renderLayer(fc: fabric.Canvas, layer: CanvasLayerItem, ctx: Rende
   // MASK layers are never drawn directly; they only clip their linked photo/asset.
 }
 
+/**
+ * Warm the browser image/font cache for everything the scene will draw, without
+ * touching the canvas. Called before the canvas is cleared so the subsequent
+ * rebuild paints immediately (no flicker on customer input changes).
+ */
+async function preloadSceneImages(
+  bgUrl: string | null | undefined,
+  drawable: CanvasLayerItem[],
+  ctx: RenderContext
+): Promise<void> {
+  const urls = new Set<string>();
+  if (bgUrl) urls.add(bgUrl);
+
+  for (const layer of drawable) {
+    const props = layer.properties || {};
+    if (props.assetUrl) urls.add(props.assetUrl);
+
+    if (layer.layerType === "PHOTO_UPLOAD" && layer.linkedFieldId) {
+      const up = ctx.customerPhotoUploads[layer.linkedFieldId];
+      if (up) urls.add(up);
+    }
+
+    if (layer.linkedFieldId) {
+      const field = ctx.fields.find((f) => f.id === layer.linkedFieldId);
+      const opts = field?.config?.options || [];
+      for (const opt of opts) {
+        const u = getOptionAssetUrl(opt);
+        if (u) urls.add(u);
+      }
+    }
+  }
+
+  // Custom mask PNGs used by any linked mask layer.
+  const maskPreloads = (ctx.allLayers || [])
+    .filter((l) => l.layerType === "MASK" && l.properties?.maskShape === "CUSTOM" && l.properties?.maskAssetUrl)
+    .map((l) => ensureCustomMaskReady(l.properties.maskAssetUrl));
+
+  // Fonts used by text / word-search layers.
+  const fontPreloads = drawable
+    .filter((l) => l.layerType === "TEXT" || l.layerType === "WORD_SEARCH_PUZZLE")
+    .map((l) => {
+      const font = l.properties?.fontFamily || l.properties?.gridFontFamily || "Roboto";
+      return ensureFontLoaded(font, ctx.fonts).catch(() => false);
+    });
+
+  await Promise.all([
+    ...Array.from(urls).map((u) => loadImage(u)),
+    ...maskPreloads,
+    ...fontPreloads,
+  ]);
+}
+
 export async function renderStudioScene(params: RenderStudioSceneParams): Promise<void> {
   const {
     canvas: fc,
@@ -745,6 +797,28 @@ export async function renderStudioScene(params: RenderStudioSceneParams): Promis
 
   if (!fc) return;
   const isCancelled = () => Boolean(token?.cancelled);
+
+  const ctx: RenderContext = {
+    allLayers: layers || [],
+    fields: fields || [],
+    formValues,
+    customerPhotoUploads,
+    doodleTextValues,
+    fonts,
+    doodlePacks,
+    isCancelled,
+  };
+
+  // Draw in strict z-index order (awaiting each layer keeps stacking deterministic).
+  const drawable = (layers || [])
+    .filter((l) => l.isVisible && l.layerType !== "MASK" && isLayerVisibleByRules(l.id, rules, formValues))
+    .sort((a, b) => a.zIndex - b.zIndex);
+
+  // Warm the browser image cache BEFORE clearing the canvas so the rebuild is
+  // near-instant. This prevents a visible flash/flicker of a half-built scene
+  // every time a customer input changes.
+  await preloadSceneImages(bgUrl, drawable, ctx);
+  if (isCancelled()) return;
 
   fc.clear();
   fc.setDimensions({ width: widthPx, height: heightPx });
@@ -768,22 +842,6 @@ export async function renderStudioScene(params: RenderStudioSceneParams): Promis
       fc.add(fabricBg);
     }
   }
-
-  const ctx: RenderContext = {
-    allLayers: layers || [],
-    fields: fields || [],
-    formValues,
-    customerPhotoUploads,
-    doodleTextValues,
-    fonts,
-    doodlePacks,
-    isCancelled,
-  };
-
-  // Draw in strict z-index order (awaiting each layer keeps stacking deterministic).
-  const drawable = (layers || [])
-    .filter((l) => l.isVisible && l.layerType !== "MASK" && isLayerVisibleByRules(l.id, rules, formValues))
-    .sort((a, b) => a.zIndex - b.zIndex);
 
   for (const layer of drawable) {
     if (isCancelled()) return;
