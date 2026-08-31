@@ -332,3 +332,33 @@ model DoodleLetter {
   @@unique([styleId, char])
   @@map("doodle_letters")
 }
+
+// ==========================================
+// CLIP ART LIBRARY (LAYER-BASED COMPOSITE OBJECTS)
+// ==========================================
+// A ClipArt is a small, layer-based composition (like an artwork screen, but
+// with no customer fields/screens/rules). Its layers are stored as a JSON
+// snapshot and flattened into a single reusable object (compositeUrl) that
+// artwork Field Asset options can pull in as one object.
+
+model ClipArt {
+  id              String   @id @default(uuid())
+  name            String
+  category        String   @default("General")
+  tags            String?  // Comma separated search tags
+  widthPx         Int      @default(1000)
+  heightPx        Int      @default(1000)
+  bgColor         String?  // Optional solid background (usually transparent)
+  layers          String?  // JSON string: CanvasLayerItem[] source layers (editable)
+  compositeUrl    String?  // Flattened PNG of the whole object (used by artwork)
+  compositeKey    String?  // Storage key of the composite (overwritten on re-export)
+  thumbnailUrl    String?  // Square thumbnail for the library grid
+  layerCount      Int      @default(0)
+  status          String   @default("PUBLISHED") // "DRAFT" | "PUBLISHED" | "ARCHIVED"
+  createdByName   String?  @default("Super Admin")
+  createdByAvatar String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@map("clip_arts")
+}

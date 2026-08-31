@@ -17,6 +17,7 @@ import {
   FolderKanban,
   Type,
   Sparkles,
+  Package,
 } from "lucide-react";
 
 interface DashboardLayoutProps {
@@ -233,6 +234,19 @@ export default function DashboardLayout({ children, currentUser, contentPaddingC
                       >
                         <Palette className="w-3.5 h-3.5 text-[#616161] shrink-0" />
                         <span>Artworks</span>
+                      </Link>
+
+                      <Link
+                        to="/app/cliparts"
+                        title="Clip Art Library"
+                        className={`flex items-center gap-2 px-3 py-1.5 rounded-lg transition text-xs font-medium ${
+                          location.pathname.startsWith("/app/cliparts")
+                            ? "bg-white text-[#303030] shadow-xs border border-gray-200/80 font-semibold text-[#005bd3]"
+                            : "text-[#616161] hover:bg-[#e3e3e3] hover:text-[#303030]"
+                        }`}
+                      >
+                        <Package className="w-3.5 h-3.5 text-[#616161] shrink-0" />
+                        <span>Clip Art</span>
                       </Link>
 
                       <Link
