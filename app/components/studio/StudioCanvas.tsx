@@ -1,9 +1,28 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import * as fabric from "fabric";
+import { buildFabricGradientOptions } from "../../utils/textFill";
+import {
+  processCustomMaskImage,
+  preloadCustomMaskImage,
+  createFabricMaskObject,
+  applyPhotoMaskClipPath,
+  clearPhotoMaskClipPath,
+  findLinkedMaskLayer,
+  findLinkedPhotoLayer,
+  getMaskLiveGeometry,
+} from "../../utils/photoMask";
 import { ZoomIn, ZoomOut, RotateCcw, Grid, Eye } from "lucide-react";
 import { ensureFontLoaded, FontItem } from "../../utils/fontLoader";
+import {
+  applyTextCase,
+  getFitFontSize,
+  layoutTextInFrame,
+  quoteFontFamily,
+} from "../../utils/studioText";
 import { generateWordSearchPuzzle } from "../../utils/wordSearchEngine";
 import { resolveDoodleStyleAssignments, loadAndTrimImage } from "../../utils/doodleAlphabetEngine";
+
+export { processCustomMaskImage, preloadCustomMaskImage, createFabricMaskObject };
 
 export interface CanvasLayerItem {
   id: string;
@@ -25,98 +44,12 @@ export interface CanvasLayerItem {
   parentPhotoUploadId?: string;
 }
 
-// Helper to process any custom uploaded mask image into a pure transparent alpha mask (using BFS flood-fill for line-art/outlines)
-export function processCustomMaskImage(img: HTMLImageElement): HTMLCanvasElement {
-  const canvas = document.createElement("canvas");
-  const w = img.naturalWidth || img.width || 100;
-  const h = img.naturalHeight || img.height || 100;
-  canvas.width = w;
-  canvas.height = h;
-
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return canvas;
-
-  ctx.drawImage(img, 0, 0, w, h);
-  const imgData = ctx.getImageData(0, 0, w, h);
-  const data = imgData.data;
-
-  // Check if image has existing alpha channel transparency
-  let hasAlphaTransparency = false;
-  for (let i = 3; i < data.length; i += 4) {
-    if (data[i] < 250) {
-      hasAlphaTransparency = true;
-      break;
-    }
+function restoreRawPhotoElement(photoObj: fabric.Image) {
+  const rawImgEl = (photoObj as any)._rawImageElement;
+  if (rawImgEl && (photoObj as any)._isClippedCanvas) {
+    photoObj.setElement(rawImgEl);
+    (photoObj as any)._isClippedCanvas = false;
   }
-
-  if (hasAlphaTransparency) {
-    // Transparent PNG: make all visible pixels solid black mask
-    for (let i = 0; i < data.length; i += 4) {
-      if (data[i + 3] > 20) {
-        data[i] = 0;
-        data[i + 1] = 0;
-        data[i + 2] = 0;
-        data[i + 3] = 255;
-      } else {
-        data[i + 3] = 0;
-      }
-    }
-  } else {
-    // Opaque image (black shape or outline on white background):
-    // Use BFS Flood-Fill from outer edges to separate exterior background from interior shape
-    const isExterior = new Uint8Array(w * h);
-    const queue: number[] = [];
-
-    // Add all 4 outer border pixels to the queue
-    for (let x = 0; x < w; x++) {
-      queue.push(x); // top row
-      queue.push((h - 1) * w + x); // bottom row
-    }
-    for (let y = 0; y < h; y++) {
-      queue.push(y * w); // left column
-      queue.push(y * w + (w - 1)); // right column
-    }
-
-    let head = 0;
-    while (head < queue.length) {
-      const idx = queue[head++];
-      if (isExterior[idx]) continue;
-
-      const pxOffset = idx * 4;
-      const r = data[pxOffset];
-      const g = data[pxOffset + 1];
-      const b = data[pxOffset + 2];
-      const brightness = (r + g + b) / 3;
-
-      // If this pixel is light/white (background pixel), mark as exterior and flood to neighbors
-      if (brightness >= 180) {
-        isExterior[idx] = 1;
-        const x = idx % w;
-        const y = Math.floor(idx / w);
-
-        if (x > 0 && !isExterior[idx - 1]) queue.push(idx - 1);
-        if (x < w - 1 && !isExterior[idx + 1]) queue.push(idx + 1);
-        if (y > 0 && !isExterior[idx - w]) queue.push(idx - w);
-        if (y < h - 1 && !isExterior[idx + w]) queue.push(idx + w);
-      }
-    }
-
-    // Convert pixels: exterior pixels -> transparent (a=0), non-exterior (stroke + interior) -> opaque black (a=255)
-    for (let idx = 0; idx < w * h; idx++) {
-      const pxOffset = idx * 4;
-      if (isExterior[idx]) {
-        data[pxOffset + 3] = 0; // Transparent background
-      } else {
-        data[pxOffset] = 0;       // R
-        data[pxOffset + 1] = 0;   // G
-        data[pxOffset + 2] = 0;   // B
-        data[pxOffset + 3] = 255; // Solid opaque mask interior & stroke
-      }
-    }
-  }
-
-  ctx.putImageData(imgData, 0, 0);
-  return canvas;
 }
 
 // Helper to strictly enforce Fabric canvas z-index stacking order (lowest zIndex at index 0, highest zIndex at top)
@@ -134,269 +67,6 @@ export function enforceZIndexOrder(fc: fabric.Canvas, visibleLayers: CanvasLayer
     }
   });
   fc.requestRenderAll();
-}
-
-// Helper to composite a photo image inside a custom mask canvas at relative position and bounds
-export function renderClippedPhotoCanvas(
-  photoImg: HTMLImageElement | HTMLCanvasElement,
-  maskCanvas: HTMLCanvasElement,
-  photoW: number,
-  photoH: number,
-  maskRelX: number,
-  maskRelY: number,
-  maskW: number,
-  maskH: number
-): HTMLCanvasElement {
-  const canvas = document.createElement("canvas");
-  const canvasW = Math.max(10, Math.round(photoW || 300));
-  const canvasH = Math.max(10, Math.round(photoH || 300));
-  canvas.width = canvasW;
-  canvas.height = canvasH;
-
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return canvas;
-
-  if (!maskCanvas) {
-    try {
-      ctx.drawImage(photoImg, 0, 0, canvasW, canvasH);
-    } catch (e) {
-      // ignore
-    }
-    return canvas;
-  }
-
-  try {
-    // 1. Draw full photo image inside photo layer bounds (0, 0, photoW, photoH)
-    ctx.drawImage(photoImg, 0, 0, canvasW, canvasH);
-
-    // 2. Prepare offscreen mask canvas scaled and positioned at relative mask bounds
-    const maskLayerCanvas = document.createElement("canvas");
-    maskLayerCanvas.width = canvasW;
-    maskLayerCanvas.height = canvasH;
-    const maskCtx = maskLayerCanvas.getContext("2d");
-    if (maskCtx) {
-      maskCtx.drawImage(
-        maskCanvas,
-        Math.round(maskRelX),
-        Math.round(maskRelY),
-        Math.max(1, Math.round(maskW)),
-        Math.max(1, Math.round(maskH))
-      );
-    }
-
-    // 3. Composite mask onto photo using destination-in (keeps photo pixels ONLY where mask is visible)
-    ctx.globalCompositeOperation = "destination-in";
-    ctx.drawImage(maskLayerCanvas, 0, 0);
-  } catch (err) {
-    console.warn("renderClippedPhotoCanvas error:", err);
-  }
-
-  return canvas;
-}
-
-// Cache memory for custom mask PNG/SVG processed canvases
-const customMaskCache = new Map<string, HTMLCanvasElement>();
-
-export function preloadCustomMaskImage(url: string, onLoaded?: () => void) {
-  if (!url) return;
-  if (customMaskCache.has(url)) {
-    if (onLoaded) onLoaded();
-    return;
-  }
-  const img = new Image();
-  img.crossOrigin = "anonymous";
-  img.onload = () => {
-    const processed = processCustomMaskImage(img);
-    customMaskCache.set(url, processed);
-    if (onLoaded) onLoaded();
-  };
-  img.src = url;
-}
-
-export function createFabricMaskObject(
-  shape: string,
-  width: number,
-  height: number,
-  left: number,
-  top: number,
-  options: any = {}
-): fabric.Object {
-  const rx = options.borderRadius || 16;
-  const originX = options.originX || "center";
-  const originY = options.originY || "center";
-  const maskAssetUrl = options.maskAssetUrl || options.assetUrl;
-
-  if (shape === "CUSTOM" && maskAssetUrl) {
-    if (!customMaskCache.has(maskAssetUrl)) {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        const processedCanvas = processCustomMaskImage(img);
-        customMaskCache.set(maskAssetUrl, processedCanvas);
-
-        const fc = globalActiveFabricCanvas;
-        if (fc) {
-          fc.getObjects().forEach((o: any) => {
-            if (o instanceof fabric.Image && (o as any)._rawImageElement) {
-              const rawImgEl = (o as any)._rawImageElement;
-              const photoLayerId = o.layerId;
-              const currentLayers = layersRef.current || [];
-              const photoLayer = currentLayers.find((l) => l.id === photoLayerId);
-              const linkedMask = currentLayers.find(
-                (l) => l.id === photoLayer?.maskLayerId || (l.layerType === "MASK" && l.parentPhotoUploadId === photoLayerId)
-              );
-
-              const activeMask =
-                linkedMask ||
-                currentLayers.find(
-                  (l) => l.layerType === "MASK" && l.properties?.maskShape === "CUSTOM" && l.properties?.maskAssetUrl === maskAssetUrl
-                );
-
-              if (activeMask && activeMask.properties?.maskAssetUrl === maskAssetUrl) {
-                const photoW = photoLayer ? photoLayer.width : o.width * (o.scaleX || 1);
-                const photoH = photoLayer ? photoLayer.height : o.height * (o.scaleY || 1);
-                const maskW = activeMask.width;
-                const maskH = activeMask.height;
-                const maskRelX = photoLayer ? activeMask.posX - photoLayer.posX : 0;
-                const maskRelY = photoLayer ? activeMask.posY - photoLayer.posY : 0;
-
-                const clippedCanvas = renderClippedPhotoCanvas(
-                  rawImgEl,
-                  processedCanvas,
-                  photoW,
-                  photoH,
-                  maskRelX,
-                  maskRelY,
-                  maskW,
-                  maskH
-                );
-                o.setElement(clippedCanvas);
-                o.set({
-                  scaleX: photoW / clippedCanvas.width,
-                  scaleY: photoH / clippedCanvas.height,
-                  clipPath: undefined,
-                });
-                (o as any)._isClippedCanvas = true;
-                o.setCoords();
-              }
-            }
-          });
-          fc.requestRenderAll();
-        }
-      };
-      img.src = maskAssetUrl;
-    }
-
-    // Always return a clean purple dashed guide rect for stage display
-    return new fabric.Rect({
-      left,
-      top,
-      width,
-      height,
-      rx: 8,
-      ry: 8,
-      originX,
-      originY,
-      absolutePositioned: options.absolutePositioned || false,
-      strokeUniform: true,
-      ...options,
-    });
-  }
-
-  if (shape === "RECTANGLE") {
-    const { borderRadius, rx: optRx, ry: optRy, ...restOptions } = options;
-    return new fabric.Rect({
-      left,
-      top,
-      width,
-      height,
-      originX,
-      originY,
-      absolutePositioned: options.absolutePositioned || false,
-      strokeUniform: true,
-      ...restOptions,
-      rx: 0,
-      ry: 0,
-    });
-  }
-
-  if (shape === "CIRCLE") {
-    return new fabric.Rect({
-      left,
-      top,
-      width,
-      height,
-      rx: width / 2,
-      ry: height / 2,
-      originX,
-      originY,
-      absolutePositioned: options.absolutePositioned || false,
-      strokeUniform: true,
-      ...options,
-    });
-  }
-
-  if (shape === "ROUNDED") {
-    return new fabric.Rect({
-      left,
-      top,
-      width,
-      height,
-      rx: Math.min(rx, width / 2, height / 2),
-      ry: Math.min(rx, width / 2, height / 2),
-      originX,
-      originY,
-      absolutePositioned: options.absolutePositioned || false,
-      strokeUniform: true,
-      ...options,
-    });
-  }
-
-  let pathStr = "";
-  if (shape === "HEART") {
-    pathStr =
-      "M 50 90 C 20 65 0 45 0 25 C 0 10 12 0 27 0 C 38 0 46 6 50 14 C 54 6 62 0 73 0 C 88 0 100 10 100 25 C 100 45 80 65 50 90 Z";
-  } else if (shape === "STAR") {
-    pathStr =
-      "M 50 0 L 63 35 L 100 38 L 72 63 L 80 100 L 50 80 L 20 100 L 28 63 L 0 38 L 37 35 Z";
-  } else if (shape === "HEXAGON") {
-    pathStr =
-      "M 50 0 L 100 25 L 100 75 L 50 100 L 0 75 L 0 25 Z";
-  }
-
-  if (pathStr) {
-    const rawPath = new fabric.Path(pathStr);
-    const pathW = rawPath.width || 100;
-    const pathH = rawPath.height || 100;
-
-    return new fabric.Path(pathStr, {
-      left,
-      top,
-      scaleX: width / pathW,
-      scaleY: height / pathH,
-      originX,
-      originY,
-      absolutePositioned: options.absolutePositioned || false,
-      strokeUniform: true,
-      ...options,
-    });
-  }
-
-  // Fallback RECTANGLE (100% sharp)
-  const { borderRadius, rx: optRx, ry: optRy, ...restOptions } = options;
-  return new fabric.Rect({
-    left,
-    top,
-    width,
-    height,
-    originX,
-    originY,
-    absolutePositioned: options.absolutePositioned || false,
-    strokeUniform: true,
-    ...restOptions,
-    rx: 0,
-    ry: 0,
-  });
 }
 
 interface StudioCanvasProps {
@@ -423,8 +93,8 @@ interface StudioCanvasProps {
 }
 
 /**
- * Creates Mathematically Symmetrical Bezier Curve Path for Fabric.js Text-on-Path
- * Guarantees pathOffset = (0, 0) for zero rendering matrix error and 100% horizontal symmetry
+ * Quadratic arc for Fabric text-on-path.
+ * Chord sits on y=0 so pathOffset centers the bulge; no extra Y hacks needed.
  */
 function createFabricCurvePath(
   containerWidth: number,
@@ -432,75 +102,72 @@ function createFabricCurvePath(
   curveAngleDeg: number,
   fontSize: number = 36
 ): fabric.Path | null {
-  if (!curveAngleDeg || Math.abs(curveAngleDeg) < 2) return null;
+  if (!curveAngleDeg || Math.abs(curveAngleDeg) < 1) return null;
 
-  const angleDeg = Math.max(-360, Math.min(360, curveAngleDeg));
-  const isSmile = angleDeg < 0;
+  const absDeg = Math.min(180, Math.abs(curveAngleDeg));
+  const isSmile = curveAngleDeg < 0;
   const halfW = Math.max(20, containerWidth / 2);
-  
-  // Calculate maximum allowable Sagitta so the curve + font height stay 100% inside containerHeight
-  const effectiveFontHeight = Math.min(fontSize * 0.85, containerHeight * 0.7);
-  const maxSagitta = Math.max(10, containerHeight - effectiveFontHeight);
-  const sagitta = (Math.min(180, Math.abs(angleDeg)) / 180) * maxSagitta;
+  const glyphPad = Math.max(4, fontSize * 0.35);
+  const maxSagitta = Math.max(6, containerHeight / 2 - glyphPad);
+  const t = absDeg / 180;
+  const sagitta = Math.max(3, Math.sin((t * Math.PI) / 2) * maxSagitta);
+  const signedS = isSmile ? sagitta : -sagitta;
+  const controlY = 2 * signedS;
 
-  const yStartEnd = isSmile ? -sagitta / 2 : sagitta / 2;
-  const yControl = isSmile ? sagitta / 2 : -sagitta / 2;
-
-  const pathStr = `M ${(-halfW).toFixed(2)} ${yStartEnd.toFixed(2)} Q 0 ${yControl.toFixed(2)} ${halfW.toFixed(2)} ${yStartEnd.toFixed(2)}`;
-  return new fabric.Path(pathStr, { fill: "", stroke: "" });
+  const pathStr = `M ${(-halfW).toFixed(3)} 0 Q 0 ${controlY.toFixed(3)} ${halfW.toFixed(3)} 0`;
+  return new fabric.Path(pathStr, {
+    fill: undefined,
+    stroke: undefined,
+    visible: false,
+    selectable: false,
+    evented: false,
+    objectCaching: false,
+  });
 }
 
-/**
- * Applies Text Case Transformations (UPPERCASE, LOWERCASE, TITLECASE)
- */
-function applyTextCase(text: string, textCase?: string): string {
-  if (!text) return "";
-  if (textCase === "UPPERCASE") return text.toUpperCase();
-  if (textCase === "LOWERCASE") return text.toLowerCase();
-  if (textCase === "TITLECASE") {
-    return text.replace(/\w\S*/g, (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
-  }
-  return text;
-}
-
-/**
- * Calculates font size so text fits 100% inside container width if autoFit is enabled
- */
-function getFitFontSize(
-  textStr: string,
-  fontFamily: string,
-  baseFontSize: number,
-  containerWidth: number,
-  isAutoFit: boolean = true,
-  fontWeight: string = "normal"
+function curvedTextOffsetY(
+  vAlign: string,
+  renderHeight: number,
+  pathHeight: number
 ): number {
-  if (!isAutoFit || !textStr || containerWidth <= 0) return baseFontSize;
-  try {
-    const targetWidth = Math.max(10, containerWidth - 6);
-    let currentFontSize = baseFontSize;
+  const slack = Math.max(0, (renderHeight - pathHeight) / 2);
+  if (vAlign === "top") return -slack;
+  if (vAlign === "bottom") return slack;
+  return 0;
+}
 
-    for (let pass = 0; pass < 15; pass++) {
-      const tempText = new fabric.Text(textStr, {
-        fontFamily: fontFamily,
-        fontSize: currentFontSize,
-        fontWeight: fontWeight,
-      });
-      const measuredWidth = tempText.width || 0;
-      if (measuredWidth <= targetWidth || currentFontSize <= 6) {
-        break;
-      }
-      const scaleFactor = targetWidth / measuredWidth;
-      const nextSize = Math.floor(currentFontSize * scaleFactor);
-      if (nextSize >= currentFontSize) {
-        currentFontSize -= 1;
-      } else {
-        currentFontSize = Math.max(6, nextSize);
-      }
-    }
-    return currentFontSize;
-  } catch (e) {
-    return baseFontSize;
+function positionTextInFrame(
+  textObj: fabric.Text | fabric.Textbox,
+  opts: {
+    isTextbox: boolean;
+    isCurved: boolean;
+    hAlign: string;
+    vAlign: string;
+    frameW: number;
+    frameH: number;
   }
+) {
+  if (typeof (textObj as any).initDimensions === "function") {
+    textObj.initDimensions();
+  }
+  const pos = layoutTextInFrame({
+    isTextbox: opts.isTextbox,
+    isCurved: opts.isCurved,
+    hAlign: opts.hAlign,
+    vAlign: opts.vAlign,
+    frameW: opts.frameW,
+    frameH: opts.frameH,
+    measuredW: textObj.width || 0,
+    measuredH: textObj.height || 0,
+    curveOffsetY: opts.isCurved ? curvedTextOffsetY(opts.vAlign, opts.frameH, textObj.height || 0) : 0,
+  });
+  textObj.set({
+    left: pos.left,
+    top: pos.top,
+    originX: "center",
+    originY: "center",
+    dirty: true,
+  });
 }
 
 export default function StudioCanvas({
@@ -587,20 +254,53 @@ export default function StudioCanvas({
               const rawTextStr = props.text !== undefined ? props.text : layer.name;
               const textStr = applyTextCase(rawTextStr, props.textCase);
               const fontWeight = props.fontWeight || "normal";
+              const fontStyle = props.fontStyle || "normal";
               const baseFontSize = Number(props.fontSize) || 36;
               const isAutoFit = Boolean((props.autoFit !== false) && !props.allowMultiline);
-              const freshFontSize = getFitFontSize(textStr, font, baseFontSize, layer.width, isAutoFit, fontWeight);
+              const freshFontSize = getFitFontSize(
+                textStr,
+                font,
+                baseFontSize,
+                layer.width,
+                isAutoFit,
+                fontWeight,
+                fontStyle
+              );
               const hAlign = props.align || "center";
               const vAlign = props.verticalAlign || "middle";
+              const curveAngle = Number(props.curveAngle) || 0;
+              const isCurved = Math.abs(curveAngle) >= 1;
+              const isTextbox = Boolean(props.allowMultiline && !isCurved);
+              const family = quoteFontFamily(font);
 
-              if (obj instanceof fabric.Text || obj instanceof fabric.Textbox) {
-                obj.set({
-                  fontFamily: font,
+              const applyToText = (textObj: fabric.Text | fabric.Textbox) => {
+                textObj.set({
+                  fontFamily: family,
                   fontSize: freshFontSize,
+                  fontWeight: fontWeight,
+                  fontStyle: fontStyle,
                   textAlign: hAlign,
                   dirty: true,
                 });
-                obj.initDimensions();
+                positionTextInFrame(textObj, {
+                  isTextbox,
+                  isCurved,
+                  hAlign,
+                  vAlign,
+                  frameW: layer.width,
+                  frameH: layer.height,
+                });
+              };
+
+              if (obj instanceof fabric.Group) {
+                obj.getObjects().forEach((child) => {
+                  if (child instanceof fabric.Text || child instanceof fabric.Textbox) {
+                    applyToText(child as fabric.Text);
+                  }
+                });
+                obj.set({ dirty: true });
+              } else if (obj instanceof fabric.Text || obj instanceof fabric.Textbox) {
+                applyToText(obj);
               }
             }
           }
@@ -704,33 +404,76 @@ export default function StudioCanvas({
 
         if (textObj) {
           const props = targetLayer?.properties || {};
-          const isAutoFit = props.autoFit !== false;
+          const isAutoFit = props.autoFit !== false && !props.allowMultiline;
           const baseFontSize = Number(props.fontSize) || 36;
           const fontFamily = props.fontFamily || "Roboto";
+          const fontWeight = props.fontWeight || "normal";
+          const fontStyle = props.fontStyle || "normal";
           const textStr = textObj.text || targetLayer?.name || "";
           const hAlign = props.align || "center";
           const vAlign = props.verticalAlign || "middle";
+          const curveAngle = Number(props.curveAngle) || 0;
+          const fitFontSize = getFitFontSize(
+            textStr,
+            fontFamily,
+            baseFontSize,
+            newWidth,
+            isAutoFit,
+            fontWeight,
+            fontStyle
+          );
+          const livePath = createFabricCurvePath(newWidth, newHeight, curveAngle, fitFontSize);
+          const isTextbox = textObj instanceof fabric.Textbox;
 
-          const fitFontSize = getFitFontSize(textStr, fontFamily, baseFontSize, newWidth, isAutoFit);
-
-          let textX = 0;
-          let textY = 0;
-
-          if (!textObj.path) {
-            if (hAlign === "left") textX = -newWidth / 2;
-            else if (hAlign === "right") textX = newWidth / 2;
-
-            if (vAlign === "top") textY = -newHeight / 2;
-            else if (vAlign === "bottom") textY = newHeight / 2;
+          if (livePath) {
+            textObj.set({
+              fontSize: fitFontSize,
+              fontFamily: quoteFontFamily(fontFamily),
+              fontWeight,
+              fontStyle,
+              path: livePath,
+              pathStartOffset: 0,
+              pathAlign: "center",
+              pathSide: "left",
+              textAlign: hAlign,
+              originX: "center",
+              originY: "center",
+              scaleX: 1,
+              scaleY: 1,
+            });
+            if (typeof (textObj as any).setPathInfo === "function") {
+              (textObj as any).setPathInfo();
+            }
+            positionTextInFrame(textObj, {
+              isTextbox: false,
+              isCurved: true,
+              hAlign,
+              vAlign,
+              frameW: newWidth,
+              frameH: newHeight,
+            });
+          } else {
+            const textPatch: any = {
+              path: undefined,
+              fontSize: fitFontSize,
+              fontFamily: quoteFontFamily(fontFamily),
+              fontWeight,
+              fontStyle,
+              textAlign: hAlign,
+              scaleX: 1,
+              scaleY: 1,
+            };
+            if (isTextbox) textPatch.width = newWidth;
+            textObj.set(textPatch);
+            positionTextInFrame(textObj, {
+              isTextbox,
+              isCurved: false,
+              hAlign,
+              vAlign,
+              frameW: newWidth,
+              frameH: newHeight,
+            });
           }
-
-          textObj.set({
-            left: textX,
-            top: textY,
-            fontSize: fitFontSize,
-            scaleX: 1,
-            scaleY: 1,
-          });
         }
 
         target.setCoords();
@@ -839,7 +582,7 @@ export default function StudioCanvas({
         onSelectLayer(null);
       };
 
-      // Handle Live Drag/Scale Transformations (Realtime 60fps Fabric rendering & dynamic clipPath sync)
+      // Keep the photo's clip window in stage space while mask/photo is dragged, scaled, or rotated.
       const handleLiveTransform = (e: any) => {
         const target = e.target;
         if (!target || !target.layerId) return;
@@ -848,165 +591,24 @@ export default function StudioCanvas({
         if (!targetLayer) return;
 
         if (targetLayer.layerType === "MASK") {
-          const scaleX = target.scaleX || 1;
-          const scaleY = target.scaleY || 1;
-
-          let newW = 0;
-          let newH = 0;
-
-          if (target instanceof fabric.Path) {
-            const pathW = target.width || 100;
-            const pathH = target.height || 100;
-            newW = Math.max(10, Math.round(pathW * scaleX));
-            newH = Math.max(10, Math.round(pathH * scaleY));
-          } else if (target instanceof fabric.Image) {
-            const nativeW = (target as any).getElement?.()?.width || target.width || 100;
-            const nativeH = (target as any).getElement?.()?.height || target.height || 100;
-            newW = Math.max(10, Math.round(nativeW * scaleX));
-            newH = Math.max(10, Math.round(nativeH * scaleY));
-          } else {
-            newW = Math.max(10, Math.round((target.width || 100) * scaleX));
-            newH = Math.max(10, Math.round((target.height || 100) * scaleY));
-          }
-
-          const newCenterX = Math.round(target.left || 0);
-          const newCenterY = Math.round(target.top || 0);
-
-          // Find linked Photo Upload object on canvas
-          const photoObj = fabricCanvas.getObjects().find((o: any) => {
-            if (!o.layerId) return false;
-            const l = layersRef.current.find((item) => item.id === o.layerId);
-            return l && (l.maskLayerId === targetLayer.id || l.id === targetLayer.parentPhotoUploadId);
-          });
-
+          const photoLayer = findLinkedPhotoLayer(layersRef.current, targetLayer);
+          const photoObj = photoLayer
+            ? fabricCanvas.getObjects().find((o: any) => o.layerId === photoLayer.id)
+            : undefined;
           if (photoObj) {
-            const mProps = targetLayer.properties || {};
-            const mShape = mProps.maskShape || "RECTANGLE";
-
-            if (mShape === "CUSTOM" && mProps.maskAssetUrl && customMaskCache.has(mProps.maskAssetUrl)) {
-              const maskCanvas = customMaskCache.get(mProps.maskAssetUrl)!;
-              const rawImgEl = (photoObj as any)._rawImageElement || (photoObj as any)._element;
-
-              if (rawImgEl) {
-                const photoW = photoObj.width * photoObj.scaleX;
-                const photoH = photoObj.height * photoObj.scaleY;
-                const photoLeft = photoObj.left || 0;
-                const photoTop = photoObj.top || 0;
-
-                const photoPosX = photoLeft - photoW / 2;
-                const photoPosY = photoTop - photoH / 2;
-
-                const maskPosX = newCenterX - newW / 2;
-                const maskPosY = newCenterY - newH / 2;
-
-                const maskRelX = maskPosX - photoPosX;
-                const maskRelY = maskPosY - photoPosY;
-
-                const clippedCanvas = renderClippedPhotoCanvas(rawImgEl, maskCanvas, photoW, photoH, maskRelX, maskRelY, newW, newH);
-                photoObj.setElement(clippedCanvas);
-                photoObj.set({
-                  scaleX: photoW / clippedCanvas.width,
-                  scaleY: photoH / clippedCanvas.height,
-                  clipPath: undefined,
-                });
-                (photoObj as any)._isClippedCanvas = true;
-                photoObj.setCoords();
-                fabricCanvas.requestRenderAll();
-              }
-            } else {
-              photoObj.clipPath = createFabricMaskObject(
-                mShape,
-                newW,
-                newH,
-                newCenterX,
-                newCenterY,
-                {
-                  borderRadius: mProps.borderRadius || 16,
-                  maskAssetUrl: mProps.maskAssetUrl,
-                  originX: "center",
-                  originY: "center",
-                  absolutePositioned: true,
-                  strokeWidth: 0,
-                  stroke: undefined,
-                  fill: "#000000",
-                }
-              );
-              photoObj.dirty = true;
-              fabricCanvas.requestRenderAll();
-            }
+            if (photoObj instanceof fabric.Image) restoreRawPhotoElement(photoObj);
+            applyPhotoMaskClipPath(photoObj, targetLayer, getMaskLiveGeometry(target, targetLayer));
+            fabricCanvas.requestRenderAll();
           }
         } else if (targetLayer.layerType === "PHOTO_UPLOAD") {
-          // USER IS DRAGGING / SCALING PHOTO UPLOAD LAYER: Keep Mask shape window stationary on stage!
-          const photoW = target.width * (target.scaleX || 1);
-          const photoH = target.height * (target.scaleY || 1);
-          const photoLeft = target.left || 0;
-          const photoTop = target.top || 0;
-
-          const photoPosX = photoLeft - photoW / 2;
-          const photoPosY = photoTop - photoH / 2;
-
-          const linkedMaskLayer = layersRef.current.find(
-            (l) => l.id === targetLayer.maskLayerId || (l.layerType === "MASK" && l.parentPhotoUploadId === targetLayer.id)
-          );
-
+          const linkedMaskLayer = findLinkedMaskLayer(layersRef.current, targetLayer);
           if (linkedMaskLayer && linkedMaskLayer.isVisible) {
-            const mProps = linkedMaskLayer.properties || {};
-            const mShape = mProps.maskShape || "RECTANGLE";
-
+            if (target instanceof fabric.Image) restoreRawPhotoElement(target);
             const maskObj = fabricCanvas.getObjects().find((o: any) => o.layerId === linkedMaskLayer.id);
-
-            const maskCenterX = maskObj ? maskObj.left || 0 : linkedMaskLayer.posX + linkedMaskLayer.width / 2;
-            const maskCenterY = maskObj ? maskObj.top || 0 : linkedMaskLayer.posY + linkedMaskLayer.height / 2;
-            const maskW = maskObj ? (maskObj.width || linkedMaskLayer.width) * (maskObj.scaleX || 1) : linkedMaskLayer.width;
-            const maskH = maskObj ? (maskObj.height || linkedMaskLayer.height) * (maskObj.scaleY || 1) : linkedMaskLayer.height;
-
-            const maskPosX = maskCenterX - maskW / 2;
-            const maskPosY = maskCenterY - maskH / 2;
-
-            const maskRelX = maskPosX - photoPosX;
-            const maskRelY = maskPosY - photoPosY;
-
-            if (mShape === "CUSTOM" && mProps.maskAssetUrl && customMaskCache.has(mProps.maskAssetUrl)) {
-              const maskCanvas = customMaskCache.get(mProps.maskAssetUrl)!;
-              const rawImgEl = (target as any)._rawImageElement || (target as any)._element;
-
-              if (rawImgEl) {
-                const clippedCanvas = renderClippedPhotoCanvas(rawImgEl, maskCanvas, photoW, photoH, maskRelX, maskRelY, maskW, maskH);
-                target.setElement(clippedCanvas);
-                target.set({
-                  scaleX: photoW / clippedCanvas.width,
-                  scaleY: photoH / clippedCanvas.height,
-                  clipPath: undefined,
-                });
-                (target as any)._isClippedCanvas = true;
-                target.setCoords();
-                fabricCanvas.requestRenderAll();
-              }
-            } else {
-              target.clipPath = createFabricMaskObject(
-                mShape,
-                maskW,
-                maskH,
-                maskCenterX,
-                maskCenterY,
-                {
-                  borderRadius: mProps.borderRadius || 16,
-                  maskAssetUrl: mProps.maskAssetUrl,
-                  originX: "center",
-                  originY: "center",
-                  absolutePositioned: true,
-                  strokeWidth: 0,
-                  stroke: undefined,
-                  fill: "#000000",
-                }
-              );
-              target.dirty = true;
-              fabricCanvas.requestRenderAll();
-            }
+            applyPhotoMaskClipPath(target, linkedMaskLayer, getMaskLiveGeometry(maskObj, linkedMaskLayer));
+            fabricCanvas.requestRenderAll();
           }
         }
-
-        handleObjectScaling(e);
       };
 
     fabricCanvas.on("object:moving", handleLiveTransform);
@@ -1014,6 +616,7 @@ export default function StudioCanvas({
       handleLiveTransform(e);
       handleObjectScaling(e);
     });
+    fabricCanvas.on("object:rotating", handleLiveTransform);
     fabricCanvas.on("object:modified", handleObjectModified);
     fabricCanvas.on("selection:created", handleSelectionCreated);
     fabricCanvas.on("selection:updated", handleSelectionCreated);
@@ -1030,21 +633,7 @@ export default function StudioCanvas({
     if (typeof document === "undefined" || !document.fonts) return;
 
     const handleFontReady = () => {
-      const fc = fabricCanvasRef.current;
-      if (fc) {
-        fc.getObjects().forEach((obj) => {
-          if (obj instanceof fabric.Group) {
-            obj.getObjects().forEach((child) => {
-              if (child instanceof fabric.Text) {
-                child.initDimensions();
-              }
-            });
-          } else if (obj instanceof fabric.Text) {
-            obj.initDimensions();
-          }
-        });
-        fc.requestRenderAll();
-      }
+      window.dispatchEvent(new CustomEvent("studio:font-loaded", { detail: {} }));
     };
 
     document.fonts.ready.then(handleFontReady).catch(() => {});
@@ -1064,12 +653,9 @@ export default function StudioCanvas({
     // Preload any custom mask images that are not yet in cache
     layers.forEach((l) => {
       if (l.isVisible && l.properties?.maskShape === "CUSTOM" && l.properties?.maskAssetUrl) {
-        const url = l.properties.maskAssetUrl;
-        if (!customMaskCache.has(url)) {
-          preloadCustomMaskImage(url, () => {
-            setMaskCacheVersion((v) => v + 1);
-          });
-        }
+        preloadCustomMaskImage(l.properties.maskAssetUrl, () => {
+          setMaskCacheVersion((v) => v + 1);
+        });
       }
     });
 
@@ -1122,110 +708,63 @@ export default function StudioCanvas({
         let textStr = applyTextCase(rawTextStr, props.textCase);
 
         const font = props.fontFamily || "Roboto";
+        const family = quoteFontFamily(font);
         const fontWeight = props.fontWeight || "normal";
+        const fontStyle = props.fontStyle || "normal";
         const baseFontSize = Number(props.fontSize) || 36;
         const isAutoFit = Boolean((props.autoFit !== false) && !props.allowMultiline);
-        const fontSize = getFitFontSize(textStr, font, baseFontSize, renderWidth, isAutoFit, fontWeight);
+        const fontSize = getFitFontSize(
+          textStr,
+          font,
+          baseFontSize,
+          renderWidth,
+          isAutoFit,
+          fontWeight,
+          fontStyle
+        );
 
-        const maxLinesLimit = props.allowMultiline && props.maxLines && Number(props.maxLines) > 0 ? Number(props.maxLines) : 0;
+        const maxLinesLimit =
+          props.allowMultiline && props.maxLines && Number(props.maxLines) > 0 ? Number(props.maxLines) : 0;
         if (maxLinesLimit > 0) {
-          // 1. Truncate hard line breaks if any
           const hardLines = textStr.split("\n");
           if (hardLines.length > maxLinesLimit) {
             textStr = hardLines.slice(0, maxLinesLimit).join("\n");
           }
-
-          // 2. Truncate soft word-wrapped lines inside layer width
           try {
             const tempTb = new fabric.Textbox(textStr, {
               width: layer.width,
-              fontFamily: font,
+              fontFamily: family,
               fontSize: fontSize,
               fontWeight: fontWeight,
+              fontStyle: fontStyle,
               splitByGrapheme: false,
             });
-            const softLines = tempTb._textLines || [];
+            const softLines = (tempTb as any)._textLines || [];
             if (softLines.length > maxLinesLimit) {
               const truncated: string[] = [];
               for (let i = 0; i < maxLinesLimit; i++) {
                 const lineData = softLines[i];
-                const lineStr = Array.isArray(lineData) ? lineData.join("") : String(lineData || "");
-                truncated.push(lineStr.trim());
+                truncated.push((Array.isArray(lineData) ? lineData.join("") : String(lineData || "")).trim());
               }
               textStr = truncated.join("\n");
             }
-          } catch (err) {
-            // Ignore error
+          } catch {
+            // ignore wrap measure errors
           }
         }
+
         const opacity = props.opacity !== undefined ? Number(props.opacity) : 1;
         const strokeWidth = Number(props.strokeWidth) || 0;
         const curveAngle = Number(props.curveAngle) || 0;
         const hAlign = props.align || "center";
         const vAlign = props.verticalAlign || "middle";
+        const curvePath = createFabricCurvePath(renderWidth, renderHeight, curveAngle, fontSize);
+        const isCurved = Boolean(curvePath);
+        const isMultilineTextbox = Boolean(props.allowMultiline && !isCurved);
+        const isTextSelected = selectedLayerIds.includes(layer.id) || selectedLayerId === layer.id;
 
-        // Ensure font is loaded into browser memory and update font and alignment in-place
-        ensureFontLoaded(font, fonts).then((loaded) => {
-          if (loaded && fc) {
-            document.fonts.ready.then(() => {
-              const freshFontSize = getFitFontSize(textStr, font, baseFontSize, layer.width, isAutoFit, fontWeight);
-              const groupObj = fc.getObjects().find((o: any) => o.layerId === layer.id);
-              if (groupObj && groupObj instanceof fabric.Group) {
-                groupObj.pathOffset = new fabric.Point(0, 0);
-                groupObj.width = layer.width;
-                groupObj.height = layer.height;
+        ensureFontLoaded(font, fonts).catch(() => {});
 
-                const [frameRect, textChild] = groupObj.getObjects() as [fabric.Rect, fabric.Text];
-                if (frameRect) {
-                  frameRect.set({ left: 0, top: 0, originX: "center", originY: "center" });
-                }
-                if (textChild) {
-                  textChild.set({
-                    fontFamily: font,
-                    fontSize: freshFontSize,
-                    textAlign: curvePath ? "left" : hAlign,
-                    dirty: true,
-                  });
-                  textChild.initDimensions();
-
-                  const measuredW = textChild.width || 0;
-                  const measuredH = textChild.height || 0;
-
-                  let textX = 0;
-                  let textY = 0;
-
-                  if (!curvePath) {
-                    if (hAlign === "left") textX = -layer.width / 2 + measuredW / 2;
-                    else if (hAlign === "right") textX = layer.width / 2 - measuredW / 2;
-                    else textX = 0;
-
-                    if (vAlign === "top") textY = -layer.height / 2 + measuredH / 2;
-                    else if (vAlign === "bottom") textY = layer.height / 2 - measuredH / 2;
-                    else textY = 0;
-                  } else {
-                    const angleDeg = Math.max(-360, Math.min(360, curveAngle));
-                    const isSmile = angleDeg < 0;
-                    const effectiveFontHeight = Math.min(freshFontSize * 0.85, layer.height * 0.7);
-                    textX = 0;
-                    textY = isSmile ? -effectiveFontHeight * 0.25 : effectiveFontHeight * 0.25;
-                  }
-
-                  textChild.set({
-                    left: textX,
-                    top: textY,
-                    originX: "center",
-                    originY: "center",
-                    dirty: true,
-                  });
-                }
-                groupObj.set({ dirty: true });
-              }
-              fc.requestRenderAll();
-            });
-          }
-        }).catch(() => {});
-
-        // Shadow configuration
         let shadowObj: fabric.Shadow | undefined = undefined;
         if ((props.shadowBlur || 0) > 0 || (props.shadowOffsetX || 0) !== 0 || (props.shadowOffsetY || 0) !== 0) {
           shadowObj = new fabric.Shadow({
@@ -1236,151 +775,145 @@ export default function StudioCanvas({
           });
         }
 
-        // Fill color or gradient
         let fillStyle: any = props.color || "#1e293b";
         if (props.colorMode === "GRADIENT") {
-          fillStyle = new fabric.Gradient({
-            type: "linear",
-            coords: { x1: 0, y1: 0, x2: layer.width, y2: 0 },
-            colorStops: [
-              { offset: 0, color: props.gradientColor1 || "#3b82f6" },
-              { offset: 1, color: props.gradientColor2 || "#ec4899" },
-            ],
-          });
+          fillStyle = new fabric.Gradient(buildFabricGradientOptions(props));
         }
 
-        const curvePath = createFabricCurvePath(layer.width, layer.height, curveAngle, fontSize);
-        let pathStartOffset = 0;
-
-        if (curvePath && textStr) {
-          try {
-            const segmentsInfo = fabric.util.getPathSegmentsInfo(curvePath.path);
-            const exactPathLength = segmentsInfo && segmentsInfo.length > 0
-              ? segmentsInfo[segmentsInfo.length - 1].length
-              : layer.width;
-
-            const textObjTemp = new fabric.Text(textStr, {
-              fontFamily: font,
-              fontSize: fontSize,
-            });
-            const actualTextWidth = textObjTemp.width || 0;
-
-            if (hAlign === "center") {
-              pathStartOffset = Math.max(0, (exactPathLength - actualTextWidth) / 2);
-            } else if (hAlign === "right") {
-              pathStartOffset = Math.max(0, exactPathLength - actualTextWidth);
-            } else {
-              pathStartOffset = 0;
-            }
-          } catch (e) {
-            pathStartOffset = 0;
-          }
-        }
-
-        const isTextSelected = selectedLayerIds.includes(layer.id) || selectedLayerId === layer.id;
-
-        const frameRect = new fabric.Rect({
-          left: 0,
-          top: 0,
-          width: renderWidth,
-          height: renderHeight,
-          fill: "rgba(0, 0, 0, 0.001)",
-          stroke: isTextSelected ? "rgba(79, 70, 229, 0.45)" : "transparent",
-          strokeWidth: isTextSelected ? 1 : 0,
-          strokeDashArray: isTextSelected ? [4, 4] : undefined,
+        const textStylePatch: any = {
+          text: textStr,
           originX: "center",
           originY: "center",
-        });
-
-        // Measure actual text bounding box for exact alignment math inside group
-        const tempTextObj = new fabric.Text(textStr, {
-          fontFamily: font,
-          fontSize: fontSize,
-          fontWeight: fontWeight,
-          strokeWidth: strokeWidth,
-        });
-        const measuredW = tempTextObj.width || 0;
-        const measuredH = tempTextObj.height || 0;
-
-        let textX = 0;
-        let textY = 0;
-
-        if (!curvePath) {
-          if (hAlign === "left") textX = -renderWidth / 2 + measuredW / 2;
-          else if (hAlign === "right") textX = renderWidth / 2 - measuredW / 2;
-          else textX = 0;
-
-          if (vAlign === "top") textY = -renderHeight / 2 + measuredH / 2;
-          else if (vAlign === "bottom") textY = renderHeight / 2 - measuredH / 2;
-          else textY = 0;
-        } else {
-          const angleDeg = Math.max(-360, Math.min(360, curveAngle));
-          const isSmile = angleDeg < 0;
-          const effectiveFontHeight = Math.min(fontSize * 0.85, renderHeight * 0.7);
-          textX = 0;
-          // Apply explicit vertical matrix offset to center character caps/descenders inside frame box
-          textY = isSmile ? -effectiveFontHeight * 0.25 : effectiveFontHeight * 0.25;
-        }
-
-        const isMultilineTextbox = Boolean(props.allowMultiline && !curvePath);
-
-        const textOptions: any = {
-          left: textX,
-          top: textY,
-          originX: "center",
-          originY: "center",
-          fontFamily: font,
-          fontWeight: fontWeight,
-          fontSize: fontSize,
+          fontFamily: family,
+          fontWeight,
+          fontStyle,
+          fontSize,
           fill: fillStyle,
-          textAlign: curvePath ? "left" : hAlign,
-          stroke: strokeWidth > 0 ? (props.strokeColor || "#000000") : undefined,
-          strokeWidth: strokeWidth,
-          opacity: opacity,
+          textAlign: hAlign,
+          stroke: strokeWidth > 0 ? props.strokeColor || "#000000" : undefined,
+          strokeWidth,
+          paintFirst: strokeWidth > 0 ? "stroke" : "fill",
+          opacity,
           shadow: shadowObj,
           path: curvePath || undefined,
-          pathStartOffset: curvePath ? pathStartOffset : 0,
+          pathStartOffset: 0,
+          pathAlign: "center",
+          pathSide: "left",
           splitByGrapheme: false,
           objectCaching: false,
           dirty: true,
         };
+        if (isMultilineTextbox) textStylePatch.width = renderWidth;
 
-        const textObj = isMultilineTextbox
-          ? new fabric.Textbox(textStr, { ...textOptions, width: renderWidth })
-          : new fabric.Text(textStr, textOptions);
+        const existingGroup =
+          obj instanceof fabric.Group && (obj as any).layerType === "TEXT" ? obj : undefined;
+        const existingText = existingGroup
+          ? (existingGroup.getObjects().find((c) => c instanceof fabric.Text || c instanceof fabric.Textbox) as
+              | fabric.Text
+              | fabric.Textbox
+              | undefined)
+          : undefined;
+        const typeMatches =
+          Boolean(existingText) &&
+          (isMultilineTextbox ? existingText instanceof fabric.Textbox : !(existingText instanceof fabric.Textbox));
 
-        if (obj) {
-          fc.remove(obj);
-          obj = undefined;
+        if (existingGroup && existingText && typeMatches) {
+          const frameRect = existingGroup.getObjects().find((c) => c instanceof fabric.Rect) as fabric.Rect | undefined;
+          existingText.set(textStylePatch);
+          if (isCurved && typeof (existingText as any).setPathInfo === "function") {
+            (existingText as any).setPathInfo();
+          }
+          positionTextInFrame(existingText, {
+            isTextbox: isMultilineTextbox,
+            isCurved,
+            hAlign,
+            vAlign,
+            frameW: renderWidth,
+            frameH: renderHeight,
+          });
+          if (frameRect) {
+            frameRect.set({
+              left: 0,
+              top: 0,
+              originX: "center",
+              originY: "center",
+              width: renderWidth,
+              height: renderHeight,
+              fill: "rgba(0, 0, 0, 0.001)",
+              stroke: isTextSelected ? "rgba(79, 70, 229, 0.45)" : "transparent",
+              strokeWidth: isTextSelected ? 1 : 0,
+              strokeDashArray: isTextSelected ? [4, 4] : undefined,
+            });
+          }
+          existingGroup.set({
+            left: centerX,
+            top: centerY,
+            originX: "center",
+            originY: "center",
+            angle: renderRotation,
+            width: renderWidth,
+            height: renderHeight,
+            scaleX: 1,
+            scaleY: 1,
+            selectable: !layer.isLocked,
+            evented: !layer.isLocked,
+            dirty: true,
+          });
+          existingGroup.setCoords();
+          obj = existingGroup;
+        } else {
+          if (obj) {
+            fc.remove(obj);
+            obj = undefined;
+          }
+
+          const frameRect = new fabric.Rect({
+            left: 0,
+            top: 0,
+            width: renderWidth,
+            height: renderHeight,
+            fill: "rgba(0, 0, 0, 0.001)",
+            stroke: isTextSelected ? "rgba(79, 70, 229, 0.45)" : "transparent",
+            strokeWidth: isTextSelected ? 1 : 0,
+            strokeDashArray: isTextSelected ? [4, 4] : undefined,
+            originX: "center",
+            originY: "center",
+          });
+
+          const textObj = isMultilineTextbox
+            ? new fabric.Textbox(textStr, textStylePatch)
+            : new fabric.Text(textStr, textStylePatch);
+
+          positionTextInFrame(textObj, {
+            isTextbox: isMultilineTextbox,
+            isCurved,
+            hAlign,
+            vAlign,
+            frameW: renderWidth,
+            frameH: renderHeight,
+          });
+
+          obj = new fabric.Group([frameRect, textObj], {
+            left: centerX,
+            top: centerY,
+            originX: "center",
+            originY: "center",
+            angle: renderRotation,
+            width: renderWidth,
+            height: renderHeight,
+            selectable: !layer.isLocked,
+            evented: !layer.isLocked,
+            subTargetCheck: false,
+            objectCaching: false,
+            dirty: true,
+          });
+          (obj as any).layerId = layer.id;
+          (obj as any).layerType = "TEXT";
+          fc.add(obj);
         }
 
-        frameRect.set({ left: 0, top: 0, originX: "center", originY: "center" });
-        textObj.set({ left: textX, top: textY, originX: "center", originY: "center" });
-
-        obj = new fabric.Group([frameRect, textObj], {
-          left: centerX,
-          top: centerY,
-          originX: "center",
-          originY: "center",
-          angle: renderRotation,
-          width: renderWidth,
-          height: renderHeight,
-          selectable: !layer.isLocked,
-          evented: !layer.isLocked,
-          subTargetCheck: false,
-          objectCaching: false,
-          dirty: true,
-        });
-
-        obj.pathOffset = new fabric.Point(0, 0);
-        obj.width = renderWidth;
-        obj.height = renderHeight;
-
-        frameRect.set({ left: 0, top: 0, originX: "center", originY: "center" });
-        textObj.set({ left: textX, top: textY, originX: "center", originY: "center" });
-
         (obj as any).layerId = layer.id;
-        fc.add(obj);
+        (obj as any).layerType = "TEXT";
       } else if (layer.layerType === "WORD_SEARCH_PUZZLE") {
         // Generate word search matrix using wordSearchEngine
         const rawWords: string[] = props.words && Array.isArray(props.words) && props.words.length > 0
@@ -1854,6 +1387,12 @@ export default function StudioCanvas({
               evented: !layer.isLocked,
             });
           } else {
+            const rx =
+              maskShape === "CIRCLE"
+                ? layer.width / 2
+                : maskShape === "ROUNDED"
+                  ? Math.min(props.borderRadius || 16, layer.width / 2, layer.height / 2)
+                  : 0;
             maskObj.set({
               left: centerX,
               top: centerY,
@@ -1862,6 +1401,8 @@ export default function StudioCanvas({
               scaleX: 1,
               scaleY: 1,
               angle: layer.rotation,
+              rx,
+              ry: rx,
               fill: isMaskSelected ? "rgba(168, 85, 247, 0.12)" : "transparent",
               stroke: isMaskSelected ? "#9333ea" : "transparent",
               strokeWidth: isMaskSelected ? 2 : 0,
@@ -1871,6 +1412,7 @@ export default function StudioCanvas({
               dirty: true,
             });
           }
+          (maskObj as any).layerType = "MASK";
           maskObj.setCoords();
           obj = maskObj;
         } else {
@@ -1896,8 +1438,10 @@ export default function StudioCanvas({
             }
           );
           (shapeObj as any).layerId = layer.id;
+          (shapeObj as any).layerType = "MASK";
           (shapeObj as any).currentMaskShape = maskShape;
           (shapeObj as any).currentMaskAssetUrl = props.maskAssetUrl;
+          shapeObj.set({ angle: layer.rotation });
 
           fc.add(shapeObj);
           obj = shapeObj;
@@ -1942,72 +1486,31 @@ export default function StudioCanvas({
         const centerX = renderPosX + renderWidth / 2;
         const centerY = renderPosY + renderHeight / 2;
 
-        // Check if this PHOTO_UPLOAD layer has a linked child MASK layer
-        const linkedMaskLayer = visibleLayers.find(
-          (l) => l.id === layer.maskLayerId || (l.layerType === "MASK" && l.parentPhotoUploadId === layer.id)
-        );
-
-        let clipMask: fabric.Object | undefined = undefined;
-        if (linkedMaskLayer && linkedMaskLayer.isVisible) {
-          const mProps = linkedMaskLayer.properties || {};
-          const mShape = mProps.maskShape || "RECTANGLE";
-
-          const maskCenterX = linkedMaskLayer.posX + linkedMaskLayer.width / 2;
-          const maskCenterY = linkedMaskLayer.posY + linkedMaskLayer.height / 2;
-
-          clipMask = createFabricMaskObject(
-            mShape,
-            linkedMaskLayer.width,
-            linkedMaskLayer.height,
-            maskCenterX,
-            maskCenterY,
-            {
-              borderRadius: mProps.borderRadius || 16,
-              maskAssetUrl: mProps.maskAssetUrl,
-              originX: "center",
-              originY: "center",
-              absolutePositioned: true,
-              strokeWidth: 0,
-              stroke: undefined,
-              fill: "#000000",
-            }
-          );
-        }
+        const linkedMaskLayer = findLinkedMaskLayer(visibleLayers, layer);
+        const maskFabObj = linkedMaskLayer
+          ? fc.getObjects().find((o: any) => o.layerId === linkedMaskLayer.id)
+          : undefined;
+        const applyLinkedMask = (photoObj: fabric.Object) => {
+          if (linkedMaskLayer && linkedMaskLayer.isVisible) {
+            applyPhotoMaskClipPath(
+              photoObj,
+              linkedMaskLayer,
+              getMaskLiveGeometry(maskFabObj, linkedMaskLayer)
+            );
+          } else {
+            clearPhotoMaskClipPath(photoObj);
+          }
+        };
 
         if (assetUrl) {
-          const mProps = linkedMaskLayer?.properties || {};
-          const isCustomMask = linkedMaskLayer && linkedMaskLayer.isVisible && mProps?.maskShape === "CUSTOM" && mProps?.maskAssetUrl;
-          const maskCanvas = isCustomMask && mProps.maskAssetUrl && customMaskCache.has(mProps.maskAssetUrl) ? customMaskCache.get(mProps.maskAssetUrl) : null;
-
-          const photoW = layer.width;
-          const photoH = layer.height;
-          const maskW = linkedMaskLayer ? linkedMaskLayer.width : photoW;
-          const maskH = linkedMaskLayer ? linkedMaskLayer.height : photoH;
-          const maskRelX = linkedMaskLayer ? linkedMaskLayer.posX - layer.posX : 0;
-          const maskRelY = linkedMaskLayer ? linkedMaskLayer.posY - layer.posY : 0;
-
           const existingImgObj = fc.getObjects().find(
             (o: any) => o.layerId === layer.id && o instanceof fabric.Image
           ) as fabric.Image | undefined;
 
           if (existingImgObj && (existingImgObj as any).assetUrl === assetUrl) {
-            const rawImgEl = (existingImgObj as any)._rawImageElement || (existingImgObj as any)._element;
-            let activeClipMask: fabric.Object | undefined = clipMask;
-            let currentW = (existingImgObj as any).nativeWidth || 100;
-            let currentH = (existingImgObj as any).nativeHeight || 100;
-
-            if (isCustomMask && maskCanvas && rawImgEl) {
-              const clippedCanvas = renderClippedPhotoCanvas(rawImgEl, maskCanvas, photoW, photoH, maskRelX, maskRelY, maskW, maskH);
-              existingImgObj.setElement(clippedCanvas);
-              (existingImgObj as any)._isClippedCanvas = true;
-              activeClipMask = undefined;
-              currentW = clippedCanvas.width || currentW;
-              currentH = clippedCanvas.height || currentH;
-            } else if (rawImgEl && (existingImgObj as any)._isClippedCanvas) {
-              existingImgObj.setElement(rawImgEl);
-              (existingImgObj as any)._isClippedCanvas = false;
-            }
-
+            restoreRawPhotoElement(existingImgObj);
+            const currentW = (existingImgObj as any).nativeWidth || existingImgObj.width || 100;
+            const currentH = (existingImgObj as any).nativeHeight || existingImgObj.height || 100;
             const baseScaleX = renderWidth / currentW;
             const baseScaleY = renderHeight / currentH;
 
@@ -2023,10 +1526,10 @@ export default function StudioCanvas({
               selectable: !layer.isLocked,
               evented: !layer.isLocked,
               lockUniScaling: true,
-              clipPath: activeClipMask,
               objectCaching: false,
               dirty: true,
             });
+            applyLinkedMask(existingImgObj);
             existingImgObj.setControlsVisibility({
               mt: false,
               mb: false,
@@ -2055,53 +1558,16 @@ export default function StudioCanvas({
               const oldObj = fc.getObjects().find((o: any) => o.layerId === layer.id);
               if (oldObj) fc.remove(oldObj);
 
-              // Fresh lookup at the exact MOMENT imgEl.onload executes (resolving async timing window)
               const currentLayers = layersRef.current || visibleLayers;
-              const freshLinkedMaskLayer = currentLayers.find(
-                (l) => l.id === layer.maskLayerId || (l.layerType === "MASK" && l.parentPhotoUploadId === layer.id)
-              );
-              const freshMProps = freshLinkedMaskLayer?.properties || {};
-              const freshIsCustomMask =
-                freshLinkedMaskLayer &&
-                freshLinkedMaskLayer.isVisible &&
-                freshMProps?.maskShape === "CUSTOM" &&
-                freshMProps?.maskAssetUrl;
-              const freshMaskCanvas =
-                freshIsCustomMask && freshMProps.maskAssetUrl ? customMaskCache.get(freshMProps.maskAssetUrl) : null;
+              const freshLinkedMaskLayer = findLinkedMaskLayer(currentLayers, layer);
+              const freshMaskFab = freshLinkedMaskLayer
+                ? fc.getObjects().find((o: any) => o.layerId === freshLinkedMaskLayer.id)
+                : undefined;
 
-              const freshPhotoW = renderWidth;
-              const freshPhotoH = renderHeight;
-              const freshMaskW = freshLinkedMaskLayer ? freshLinkedMaskLayer.width : freshPhotoW;
-              const freshMaskH = freshLinkedMaskLayer ? freshLinkedMaskLayer.height : freshPhotoH;
-              const freshMaskRelX = freshLinkedMaskLayer ? freshLinkedMaskLayer.posX - renderPosX : 0;
-              const freshMaskRelY = freshLinkedMaskLayer ? freshLinkedMaskLayer.posY - renderPosY : 0;
+              const baseScaleX = renderWidth / nativeW;
+              const baseScaleY = renderHeight / nativeH;
 
-              let finalImageSource: HTMLImageElement | HTMLCanvasElement = imgEl;
-              let activeClipMask: fabric.Object | undefined = clipMask;
-              let currentW = nativeW;
-              let currentH = nativeH;
-
-              if (freshIsCustomMask && freshMaskCanvas) {
-                const clippedCanvas = renderClippedPhotoCanvas(
-                  imgEl,
-                  freshMaskCanvas,
-                  freshPhotoW,
-                  freshPhotoH,
-                  freshMaskRelX,
-                  freshMaskRelY,
-                  freshMaskW,
-                  freshMaskH
-                );
-                finalImageSource = clippedCanvas;
-                activeClipMask = undefined;
-                currentW = clippedCanvas.width || nativeW;
-                currentH = clippedCanvas.height || nativeH;
-              }
-
-              const baseScaleX = renderWidth / currentW;
-              const baseScaleY = renderHeight / currentH;
-
-              const fabricImg = new fabric.Image(finalImageSource, {
+              const fabricImg = new fabric.Image(imgEl, {
                 left: centerX,
                 top: centerY,
                 originX: "center",
@@ -2113,7 +1579,6 @@ export default function StudioCanvas({
                 selectable: !layer.isLocked,
                 evented: !layer.isLocked,
                 lockUniScaling: true,
-                clipPath: activeClipMask,
                 objectCaching: false,
                 dirty: true,
               });
@@ -2133,9 +1598,17 @@ export default function StudioCanvas({
               (fabricImg as any).layerId = layer.id;
               (fabricImg as any).assetUrl = assetUrl;
               (fabricImg as any)._rawImageElement = imgEl;
-              (fabricImg as any)._isClippedCanvas = Boolean(freshIsCustomMask && freshMaskCanvas);
+              (fabricImg as any)._isClippedCanvas = false;
               (fabricImg as any).nativeWidth = nativeW;
               (fabricImg as any).nativeHeight = nativeH;
+
+              if (freshLinkedMaskLayer && freshLinkedMaskLayer.isVisible) {
+                applyPhotoMaskClipPath(
+                  fabricImg,
+                  freshLinkedMaskLayer,
+                  getMaskLiveGeometry(freshMaskFab, freshLinkedMaskLayer)
+                );
+              }
 
               fc.add(fabricImg);
               if (selectedLayerId === layer.id) fc.setActiveObject(fabricImg);
@@ -2186,12 +1659,12 @@ export default function StudioCanvas({
               ry,
               selectable: !layer.isLocked,
               lockUniScaling: false,
-              clipPath: clipMask,
               subTargetCheck: false,
               objectCaching: false,
               dirty: true,
             });
             (frameRect as any).layerId = layer.id;
+            applyLinkedMask(frameRect);
 
             fc.add(frameRect);
             obj = frameRect;
@@ -2419,6 +1892,27 @@ function loadImagePromise(url: string): Promise<HTMLImageElement> {
   });
 }
 
+function isMaskGuideObject(obj: any): boolean {
+  return obj?.layerType === "MASK" || Boolean(obj?.photoGuideForMaskId);
+}
+
+function hideMaskGuides(fc: fabric.Canvas): fabric.Object[] {
+  const hidden: fabric.Object[] = [];
+  fc.getObjects().forEach((obj: any) => {
+    if (isMaskGuideObject(obj) && obj.visible !== false) {
+      hidden.push(obj);
+      obj.visible = false;
+    }
+  });
+  return hidden;
+}
+
+function restoreMaskGuides(hidden: fabric.Object[]) {
+  hidden.forEach((obj) => {
+    obj.visible = true;
+  });
+}
+
 // Generate Full Composite PNG Snapshot Thumbnail of Screen 1
 export async function generateScreenThumbnailDataUrl(
   widthPx: number,
@@ -2441,21 +1935,23 @@ export async function generateScreenThumbnailDataUrl(
       // 1. Temporarily remember active object & hide frame borders for thumbnail export
       const activeObjBeforeExport = fc.getActiveObject();
       fc.discardActiveObject();
-      fc.getObjects().forEach((obj) => {
-        if (obj instanceof fabric.Group) {
-          const frameRect = obj.getObjects()[0];
-          if (frameRect) frameRect.set({ stroke: "transparent" });
-        }
-      });
-      fc.renderAll();
+      const hiddenGuides = hideMaskGuides(fc);
+      try {
+        fc.getObjects().forEach((obj) => {
+          if (obj instanceof fabric.Group) {
+            const frameRect = obj.getObjects()[0];
+            if (frameRect) frameRect.set({ stroke: "transparent" });
+          }
+        });
+        fc.renderAll();
 
-      // 2. Export Fabric layer objects to PNG Data URL
-      fabricDataUrl = fc.toDataURL({
-        format: "png",
-        multiplier: scaleMultiplier,
-      });
-
-      // 3. Restore blue dashed frame borders & active object selection
+        fabricDataUrl = fc.toDataURL({
+          format: "png",
+          multiplier: scaleMultiplier,
+        });
+      } finally {
+        restoreMaskGuides(hiddenGuides);
+      }
       fc.getObjects().forEach((obj) => {
         if (obj instanceof fabric.Group) {
           const frameRect = obj.getObjects()[0];
@@ -2498,4 +1994,102 @@ export async function generateScreenThumbnailDataUrl(
   }
 
   return canvas.toDataURL("image/png");
+}
+
+/**
+ * Export High-Resolution PNG for Active Screen and Trigger Save File Dialog
+ */
+export async function exportActiveScreenPNG(
+  widthPx: number,
+  heightPx: number,
+  layers: CanvasLayerItem[],
+  bgUrl?: string | null,
+  screenName: string = "Screen",
+  fabricCanvasInstance?: fabric.Canvas | null
+): Promise<void> {
+  if (typeof window === "undefined") return;
+
+  const fc = fabricCanvasInstance || globalActiveFabricCanvas;
+  let fabricDataUrl = "";
+
+  if (fc) {
+    try {
+      // 1. Temporarily remember active object & hide frame borders & set background to transparent for export
+      const activeObjBeforeExport = fc.getActiveObject();
+      const origBgColor = fc.backgroundColor;
+
+      fc.discardActiveObject();
+      fc.backgroundColor = "transparent";
+      const hiddenGuides = hideMaskGuides(fc);
+      try {
+        fc.getObjects().forEach((obj) => {
+          if (obj instanceof fabric.Group) {
+            const frameRect = obj.getObjects()[0];
+            if (frameRect) frameRect.set({ stroke: "transparent" });
+          }
+        });
+        fc.renderAll();
+
+        fabricDataUrl = fc.toDataURL({
+          format: "png",
+          multiplier: 1.0,
+        });
+      } finally {
+        restoreMaskGuides(hiddenGuides);
+        fc.backgroundColor = origBgColor;
+      }
+      fc.getObjects().forEach((obj) => {
+        if (obj instanceof fabric.Group) {
+          const frameRect = obj.getObjects()[0];
+          if (frameRect) {
+            frameRect.set({
+              stroke: (obj as any).layerType === "DOODLE_ALPHABET" ? "#9333ea" : "rgba(79, 70, 229, 0.35)",
+            });
+          }
+        }
+      });
+      if (activeObjBeforeExport) {
+        fc.setActiveObject(activeObjBeforeExport);
+      }
+      fc.renderAll();
+    } catch (e) {
+      console.warn("Fabric toDataURL export error:", e);
+    }
+  }
+
+  // Create composite canvas at 100% full original resolution (widthPx x heightPx)
+  const canvas = document.createElement("canvas");
+  canvas.width = widthPx;
+  canvas.height = heightPx;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  // Clear context to ensure 100% transparent alpha channel
+  ctx.clearRect(0, 0, widthPx, heightPx);
+
+  // Draw Background Image if present
+  if (bgUrl) {
+    try {
+      const bgImg = await loadImagePromise(bgUrl);
+      ctx.drawImage(bgImg, 0, 0, widthPx, heightPx);
+    } catch (e) {}
+  }
+
+  // Draw Fabric Objects PNG on top of background
+  if (fabricDataUrl) {
+    try {
+      const fabricImg = await loadImagePromise(fabricDataUrl);
+      ctx.drawImage(fabricImg, 0, 0, widthPx, heightPx);
+    } catch (e) {}
+  }
+
+  // Trigger Save File Download in browser
+  const dataUrl = canvas.toDataURL("image/png");
+  const link = document.createElement("a");
+  const sanitizeName = screenName.replace(/[^a-zA-Z0-9_-]/g, "_");
+  link.download = `${sanitizeName}_${Date.now()}.png`;
+  link.href = dataUrl;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
 }

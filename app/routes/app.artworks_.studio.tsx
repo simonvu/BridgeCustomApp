@@ -5,13 +5,9 @@ import {
   ArrowLeft,
   Save,
   Eye,
-  EyeOff,
-  Sliders,
-  GitBranch,
   Check,
   ZoomIn,
   ZoomOut,
-  RotateCcw,
   Undo2,
   Redo2,
   Grid,
@@ -20,16 +16,15 @@ import {
   Trash2,
   ChevronDown,
   X,
+  Download,
 } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import prisma from "../db.server";
 import { requireTeamUserId } from "../services/auth.server";
-import StudioCanvas, { CanvasLayerItem, generateScreenThumbnailDataUrl, getActiveFabricCanvas } from "../components/studio/StudioCanvas";
+import StudioCanvas, { CanvasLayerItem, generateScreenThumbnailDataUrl, exportActiveScreenPNG, getActiveFabricCanvas } from "../components/studio/StudioCanvas";
 import StudioPhotoUploadModal, { PhotoCustomizationData } from "../components/studio/StudioPhotoUploadModal";
 import StudioLayerPanel from "../components/studio/StudioLayerPanel";
-import StudioFieldPanel, { StudioFieldItem } from "../components/studio/StudioFieldPanel";
 import StudioPropertyPanel from "../components/studio/StudioPropertyPanel";
-import StudioConditionPanel, { StudioConditionRuleItem } from "../components/studio/StudioConditionPanel";
 import { autoGenerateSquareThumbnail } from "../utils/thumbnailGenerator";
 import StudioScreenBar, { StudioScreenItem } from "../components/studio/StudioScreenBar";
 import StudioTopToolbar from "../components/studio/StudioTopToolbar";
@@ -37,6 +32,13 @@ import StudioStorefrontPreviewModal from "../components/studio/StudioStorefrontP
 import MediaSelectModal from "../components/MediaSelectModal";
 
 import { injectFontStylesheets, type FontItem } from "../utils/fontLoader";
+import {
+  buildDefaultFieldConfig,
+  defaultDisplayType,
+  defaultFieldLabel,
+  type StudioFieldItem,
+  type StudioConditionRuleItem,
+} from "../utils/fieldHelpers";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const currentUserId = await requireTeamUserId(request);
@@ -304,7 +306,6 @@ export default function ArtworkStudioRoute() {
   };
 
   const [selectedFieldId, setSelectedFieldId] = useState<string | null>(fields[0]?.id || null);
-  const [activeTab, setActiveTab] = useState<"FIELDS" | "LAYERS" | "CONDITIONS">("FIELDS");
   const [isSaving, setIsSaving] = useState(false);
   const [saveToast, setSaveToast] = useState(false);
   const [isDirty, setIsDirty] = useState(false);
@@ -811,6 +812,26 @@ export default function ArtworkStudioRoute() {
     }
   };
 
+  const [isExportingPNG, setIsExportingPNG] = useState(false);
+
+  const handleDownloadActiveScreenPNG = async () => {
+    setIsExportingPNG(true);
+    try {
+      const activeScreen = screens.find((s) => s.id === activeScreenId) || screens[0];
+      await exportActiveScreenPNG(
+        widthPx,
+        heightPx,
+        layers,
+        activeScreen?.bgUrl,
+        activeScreen?.name || "Screen_Active"
+      );
+    } catch (err) {
+      console.error("Export PNG error:", err);
+    } finally {
+      setIsExportingPNG(false);
+    }
+  };
+
   // Studio Exit & Unsaved Changes Confirmation Handlers
   const handleCloseStudio = () => {
     if (!isDirty) {
@@ -901,7 +922,7 @@ export default function ArtworkStudioRoute() {
       isVisible: true,
       isLocked: false,
       properties: type === "TEXT"
-        ? { text: "Sample Text", fontSize: 36, color: "#1e293b", align: "center", minCharacters: 3, maxCharacters: 50, disallowSpecialChars: false }
+        ? { text: "Sample Text", fontFamily: "Roboto", fontSize: 36, fontWeight: "normal", fontStyle: "normal", color: "#1e293b", align: "center", verticalAlign: "middle", autoFit: true, minCharacters: 3, maxCharacters: 50, disallowSpecialChars: false }
         : type === "ASSET"
         ? { opacity: 1 }
         : type === "PHOTO_UPLOAD"
@@ -1220,33 +1241,22 @@ export default function ArtworkStudioRoute() {
   const handleAddField = (fieldType: StudioFieldItem["fieldType"]) => {
     const nowStamp = Date.now();
     const newFieldId = `field_${nowStamp}`;
-    const newFieldLabel = fieldType === "SELECT" ? "List / Item" : `New ${fieldType.toLowerCase()} field`;
+    const newFieldLabel = defaultFieldLabel(fieldType);
 
     const newField: StudioFieldItem = {
       id: newFieldId,
       label: newFieldLabel,
       fieldType,
-      displayType: fieldType === "SELECT" ? "DROPDOWN" : undefined,
+      displayType: defaultDisplayType(fieldType),
       sortOrder: fields.length,
       isRequired: false,
-      config:
-        fieldType === "RADIO" || fieldType === "SELECT" || fieldType === "FIELD_ASSET"
-          ? {
-              options: [
-                { id: `item_${nowStamp}_1`, label: "Item 1", value: "item_1", swatchImageUrl: "", assetImageUrl: "" },
-                { id: `item_${nowStamp}_2`, label: "Item 2", value: "item_2", swatchImageUrl: "", assetImageUrl: "" },
-                { id: `item_${nowStamp}_3`, label: "Item 3", value: "item_3", swatchImageUrl: "", assetImageUrl: "" },
-              ],
-            }
-          : fieldType === "TEXT"
-          ? { minCharacters: 3, maxCharacters: 50, disallowSpecialChars: false }
-          : {},
+      allowPersonalized: true,
+      config: buildDefaultFieldConfig(fieldType),
     };
 
     setFields((prev) => [...prev, newField]);
     setSelectedFieldId(newFieldId);
 
-    // Auto-create a linked canvas layer on active screen!
     const layerType: CanvasLayerItem["layerType"] =
       fieldType === "TEXT" || fieldType === "CALENDAR"
         ? "TEXT"
@@ -1256,7 +1266,7 @@ export default function ArtworkStudioRoute() {
 
     const newZ = layers.length > 0 ? Math.max(...layers.map((l) => l.zIndex)) + 1 : 0;
     const newLayer: CanvasLayerItem = {
-      id: `layer_${Date.now()}`,
+      id: `layer_${nowStamp}_linked`,
       name: newFieldLabel,
       layerType,
       zIndex: newZ,
@@ -1270,8 +1280,32 @@ export default function ArtworkStudioRoute() {
       linkedFieldId: newFieldId,
       properties:
         layerType === "TEXT"
-          ? { text: `[${newFieldLabel}]`, fontSize: 32, color: "#1e293b", align: "center", minCharacters: 3, maxCharacters: 50, disallowSpecialChars: false }
-          : {},
+          ? {
+              text: fieldType === "CALENDAR" ? "01/15/2026" : `[${newFieldLabel}]`,
+              fontSize: 32,
+              fontFamily: "Roboto",
+              fontWeight: "normal",
+              fontStyle: "normal",
+              color: "#1e293b",
+              align: "center",
+              verticalAlign: "middle",
+              autoFit: true,
+              minCharacters: 0,
+              maxCharacters: 50,
+              disallowSpecialChars: false,
+            }
+          : fieldType === "IMAGE_UPLOAD"
+          ? {
+              fieldLabel: newFieldLabel,
+              helpText: "High resolution JPG or PNG recommended",
+              isRequired: false,
+              maskShape: "RECTANGLE",
+              enableZoom: true,
+              enableRotate: true,
+              enableFlip: true,
+              enableFilters: true,
+            }
+          : { opacity: 1 },
     };
 
     setLayers((prev) => [...prev, newLayer]);
@@ -1279,32 +1313,60 @@ export default function ArtworkStudioRoute() {
   };
 
   const handleUpdateField = (fieldId: string, updatedProps: Partial<StudioFieldItem>) => {
-    setFields((prev) =>
-      prev.map((f) => (f.id === fieldId ? { ...f, ...updatedProps } : f))
-    );
+    setFields((prev) => prev.map((f) => (f.id === fieldId ? { ...f, ...updatedProps } : f)));
 
     if (updatedProps.label) {
       setLayers((prev) =>
         prev.map((l) => (l.linkedFieldId === fieldId ? { ...l, name: updatedProps.label! } : l))
       );
     }
+
+    if (updatedProps.config) {
+      const cfg = updatedProps.config;
+      setLayers((prev) =>
+        prev.map((l) => {
+          if (l.linkedFieldId !== fieldId) return l;
+          if (l.layerType === "TEXT") {
+            return {
+              ...l,
+              properties: {
+                ...(l.properties || {}),
+                minCharacters: cfg.minCharacters ?? l.properties?.minCharacters,
+                maxCharacters: cfg.maxCharacters ?? cfg.maxLength ?? l.properties?.maxCharacters,
+                disallowSpecialChars: cfg.disallowSpecialChars ?? l.properties?.disallowSpecialChars,
+                allowMultiline: cfg.allowMultiline ?? l.properties?.allowMultiline,
+                maxLines: cfg.maxLines ?? l.properties?.maxLines,
+                ...(cfg.defaultText ? { text: cfg.defaultText } : {}),
+              },
+            };
+          }
+          if (l.layerType === "PHOTO_UPLOAD" && (cfg.helpText !== undefined || cfg.fieldLabel !== undefined)) {
+            return {
+              ...l,
+              properties: {
+                ...(l.properties || {}),
+                helpText: cfg.helpText ?? l.properties?.helpText,
+                fieldLabel: cfg.fieldLabel ?? l.properties?.fieldLabel,
+              },
+            };
+          }
+          return l;
+        })
+      );
+    }
   };
 
   const handleDeleteField = (fieldId: string) => {
     setFields((prev) => prev.filter((f) => f.id !== fieldId));
+    setLayers((prev) =>
+      prev.map((l) => (l.linkedFieldId === fieldId ? { ...l, linkedFieldId: undefined } : l))
+    );
+    setRules((prev) =>
+      prev.filter(
+        (r) => r.sourceFieldId !== fieldId && !((r.action === "SHOW_FIELD" || r.action === "HIDE_FIELD") && r.targetId === fieldId)
+      )
+    );
     if (selectedFieldId === fieldId) setSelectedFieldId(null);
-  };
-
-  const handleAddRule = (ruleData: Omit<StudioConditionRuleItem, "id">) => {
-    const newRule: StudioConditionRuleItem = {
-      id: `rule_${Date.now()}`,
-      ...ruleData,
-    };
-    setRules((prev) => [...prev, newRule]);
-  };
-
-  const handleDeleteRule = (ruleId: string) => {
-    setRules((prev) => prev.filter((r) => r.id !== ruleId));
   };
 
 function detectCleanNameFromFileName(fileName: string): string {
@@ -1779,6 +1841,21 @@ function detectCleanNameFromFileName(fileName: string): string {
                 <ZoomIn className="w-3.5 h-3.5" />
               </button>
             </div>
+
+            {/* Download Active Screen PNG Button (Icon Only) */}
+            <button
+              type="button"
+              onClick={handleDownloadActiveScreenPNG}
+              disabled={isExportingPNG}
+              className="h-8 w-8 rounded-lg border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-extrabold text-xs flex items-center justify-center transition cursor-pointer shrink-0 shadow-2xs"
+              title="Download high-resolution PNG image of the active screen"
+            >
+              {isExportingPNG ? (
+                <span className="w-3.5 h-3.5 border-2 border-emerald-700 border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <Download className="w-4 h-4 text-emerald-700" />
+              )}
+            </button>
 
             {/* Close Button */}
             <button

@@ -7,6 +7,7 @@ import {
   AlignLeft,
   AlignCenter,
   AlignRight,
+  Italic,
   RotateCw,
   Sparkles,
   Sliders,
@@ -24,6 +25,7 @@ import {
 } from "lucide-react";
 
 import { StudioFieldItem } from "./StudioFieldPanel";
+import { defaultGradientPatch, getGradientCss, getNormalizedGradientStops } from "../../utils/textFill";
 
 interface StudioTopToolbarProps {
   selectedLayer: CanvasLayerItem | null;
@@ -227,7 +229,6 @@ export default function StudioTopToolbar({
           ...props,
           fontFamily: family,
           gridFontFamily: family,
-          fontWeight: "normal",
         },
       });
     }
@@ -315,24 +316,79 @@ export default function StudioTopToolbar({
               />
             </div>
 
-            {/* 3. Color Swatch */}
-            <div className="flex items-center gap-1 bg-slate-100 border border-slate-300 p-0.5 rounded-md h-7 shrink-0">
-              <input
-                type="color"
-                value={props.color || "#1e293b"}
-                onChange={(e) => handlePropChange("color", e.target.value)}
-                className="w-5 h-5 rounded border border-slate-300 cursor-pointer p-0 bg-white shrink-0"
-                title="Font Color"
-              />
-              <input
-                type="text"
-                value={props.color || "#1e293b"}
-                onChange={(e) => handlePropChange("color", e.target.value)}
-                className="w-13 font-mono text-[10px] border-none bg-transparent font-bold focus:outline-none uppercase p-0"
-              />
-            </div>
+            {/* 3. Color Swatch / Gradient Preview */}
+            {props.colorMode === "GRADIENT" ? (
+              <div className="flex items-center gap-1 bg-slate-100 border border-slate-300 p-0.5 rounded-md h-7 shrink-0">
+                <div
+                  className="w-10 h-5 rounded border border-slate-300 shadow-2xs shrink-0"
+                  style={{ background: getGradientCss(props) }}
+                  title="Gradient fill — edit stops in Properties"
+                />
+                {(() => {
+                  const stops = getNormalizedGradientStops(props);
+                  const ends = [stops[0], stops[stops.length - 1]];
+                  return ends.map((stop, idx) => (
+                    <input
+                      key={idx}
+                      type="color"
+                      value={stop.color}
+                      onChange={(e) => {
+                        const next = getNormalizedGradientStops(props);
+                        const targetIdx = idx === 0 ? 0 : next.length - 1;
+                        next[targetIdx] = { ...next[targetIdx], color: e.target.value };
+                        handlePropChange({
+                          colorMode: "GRADIENT",
+                          gradientStops: next,
+                          gradientColor1: next[0]?.color,
+                          gradientColor2: next[next.length - 1]?.color,
+                        });
+                      }}
+                      className="w-5 h-5 rounded border border-slate-300 cursor-pointer p-0 bg-white shrink-0"
+                      title={idx === 0 ? "Start color" : "End color"}
+                    />
+                  ));
+                })()}
+                <button
+                  type="button"
+                  onClick={() =>
+                    handlePropChange({
+                      colorMode: "SOLID",
+                      color: getNormalizedGradientStops(props)[0]?.color || props.color || "#1e293b",
+                    })
+                  }
+                  className="px-1 h-5 rounded text-[9px] font-extrabold text-indigo-700 bg-white border border-indigo-200 cursor-pointer"
+                  title="Switch to solid color"
+                >
+                  G
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1 bg-slate-100 border border-slate-300 p-0.5 rounded-md h-7 shrink-0">
+                <input
+                  type="color"
+                  value={props.color || "#1e293b"}
+                  onChange={(e) => handlePropChange("color", e.target.value)}
+                  className="w-5 h-5 rounded border border-slate-300 cursor-pointer p-0 bg-white shrink-0"
+                  title="Font Color"
+                />
+                <input
+                  type="text"
+                  value={props.color || "#1e293b"}
+                  onChange={(e) => handlePropChange("color", e.target.value)}
+                  className="w-13 font-mono text-[10px] border-none bg-transparent font-bold focus:outline-none uppercase p-0"
+                />
+                <button
+                  type="button"
+                  onClick={() => handlePropChange(defaultGradientPatch(props.color))}
+                  className="px-1 h-5 rounded text-[9px] font-extrabold text-slate-500 hover:text-indigo-700 hover:bg-white cursor-pointer"
+                  title="Use gradient fill"
+                >
+                  G
+                </button>
+              </div>
+            )}
 
-            {/* 4. Bold Toggle */}
+            {/* 4. Bold / Italic */}
             <button
               type="button"
               onClick={() =>
@@ -343,9 +399,21 @@ export default function StudioTopToolbar({
                   ? "bg-indigo-600 text-white border-indigo-600 shadow-2xs"
                   : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
               }`}
-              title="Bold Toggle"
+              title="Bold"
             >
               B
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePropChange("fontStyle", props.fontStyle === "italic" ? "normal" : "italic")}
+              className={`w-7 h-7 flex items-center justify-center rounded-md border transition cursor-pointer shrink-0 ${
+                props.fontStyle === "italic"
+                  ? "bg-indigo-600 text-white border-indigo-600 shadow-2xs"
+                  : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50"
+              }`}
+              title="Italic"
+            >
+              <Italic className="w-3.5 h-3.5" />
             </button>
 
             {/* 5. Text Case Selector (Aa, AA, aa) */}
@@ -379,6 +447,16 @@ export default function StudioTopToolbar({
                 title="lowercase"
               >
                 aa
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePropChange("textCase", "TITLECASE")}
+                className={`px-1 h-5 text-[10px] font-semibold rounded flex items-center justify-center transition cursor-pointer ${
+                  props.textCase === "TITLECASE" ? "bg-white shadow-2xs text-blue-600 font-bold" : "text-slate-500 hover:text-slate-900"
+                }`}
+                title="Title Case"
+              >
+                Tt
               </button>
             </div>
 

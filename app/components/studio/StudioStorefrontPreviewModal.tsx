@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import * as fabric from "fabric";
 import {
   X,
@@ -11,16 +11,31 @@ import {
   Zap,
   ShieldCheck,
   Truck,
-  RotateCw,
   SlidersHorizontal,
   Info,
   Sparkles,
   Layers,
+  Image as ImageIcon,
 } from "lucide-react";
-import { CanvasLayerItem, renderClippedPhotoCanvas } from "./StudioCanvas";
+import { CanvasLayerItem } from "./StudioCanvas";
 import { StudioFieldItem } from "./StudioFieldPanel";
 import { FontItem, ensureFontLoaded } from "../../utils/fontLoader";
-import { StudioConditionRuleItem } from "../../routes/app.artworks_.studio";
+import { type StudioConditionRuleItem } from "../../utils/fieldHelpers";
+import {
+  findOptionByValue,
+  formatCalendarDate,
+  getMaxCharacters,
+  getMinCharacters,
+  getOptionAssetUrl,
+  getOptionSwatchUrl,
+  getOptionValue,
+  isFieldVisibleByRules,
+  isLayerVisibleByRules,
+  isOptionFieldType,
+  normalizeDisplayType,
+  defaultDisplayType,
+  sanitizeTextInput,
+} from "../../utils/fieldHelpers";
 
 export interface StudioScreenItem {
   id: string;
@@ -72,79 +87,63 @@ export default function StudioStorefrontPreviewModal({
 
   const activeScreen = screens[activeScreenIndex] || screens[0];
   const activeLayers = activeScreen?.layers || [];
-  // Use fields configured on the active screen, OR fallback to global fields
-  const activeFields = (activeScreen?.fields && activeScreen.fields.length > 0) ? activeScreen.fields : fields;
+  const activeFields = useMemo(() => {
+    const source = activeScreen?.fields && activeScreen.fields.length > 0 ? activeScreen.fields : fields;
+    return [...source].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+  }, [activeScreen, fields]);
 
-  // Initialize Default Form Values when Modal Opens or Active Screen Changes
   useEffect(() => {
     if (!isOpen) return;
-    const initialVals: { [id: string]: any } = { ...formValues };
-
-    activeFields.forEach((f) => {
-      if (initialVals[f.id] === undefined) {
+    setFormValues((prev) => {
+      const initialVals: { [id: string]: any } = { ...prev };
+      activeFields.forEach((f) => {
+        if (initialVals[f.id] !== undefined) return;
         if (f.fieldType === "TEXT") {
           initialVals[f.id] = f.config?.defaultText || "";
-        } else if (
-          f.fieldType === "SELECT" ||
-          f.fieldType === "RADIO" ||
-          f.fieldType === "BUTTON_GROUP" ||
-          f.fieldType === "COLOR_SWATCH" ||
-          f.fieldType === "IMAGE_SWATCH"
-        ) {
+        } else if (f.fieldType === "CALENDAR") {
+          initialVals[f.id] = f.config?.defaultToToday
+            ? new Date().toISOString().slice(0, 10)
+            : "";
+        } else if (isOptionFieldType(f.fieldType)) {
           const opts = f.config?.options || [];
-          initialVals[f.id] = opts[0]?.value || opts[0]?.label || opts[0]?.assetUrl || "";
+          const firstVisible = opts.find((o: any) => o.isVisible !== false) || opts[0];
+          initialVals[f.id] = getOptionValue(firstVisible);
         }
-      }
+      });
+      return initialVals;
     });
-
-    setFormValues(initialVals);
   }, [isOpen, activeScreenIndex, activeFields]);
 
   // Handle Form Input Value Change
+  useEffect(() => {
+    if (isOpen) return;
+    setCustomerPhotoUploads((prev) => {
+      Object.values(prev).forEach((url) => {
+        if (typeof url === "string" && url.startsWith("blob:")) URL.revokeObjectURL(url);
+      });
+      return {};
+    });
+  }, [isOpen]);
+
   const handleValueChange = (fieldId: string, val: any) => {
     setFormValues((prev) => ({ ...prev, [fieldId]: val }));
   };
 
-  // Handle Customer Photo Upload
-  const handleCustomerPhotoUpload = (fieldId: string, e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleCustomerPhotoUpload = (fieldId: string, e: React.ChangeEvent<HTMLInputElement>, maxFileSizeMb = 10) => {
     const file = e.target.files?.[0];
-    if (file) {
-      const url = URL.createObjectURL(file);
-      setCustomerPhotoUploads((prev) => ({ ...prev, [fieldId]: url }));
+    if (!file) return;
+    const maxBytes = Math.max(1, maxFileSizeMb) * 1024 * 1024;
+    if (file.size > maxBytes) {
+      window.alert(`Photo must be ${maxFileSizeMb}MB or smaller.`);
+      e.target.value = "";
+      return;
     }
-  };
-
-  // Evaluate Rules to determine if a Field should be visible
-  const isFieldVisibleByRules = (field: StudioFieldItem) => {
-    if (!rules || rules.length === 0) return true;
-
-    // Check rules where this field is a target
-    const targetingRules = rules.filter((r) => r.targetFieldId === field.id && r.isActive !== false);
-    if (targetingRules.length === 0) return true;
-
-    // Evaluate each targeting rule
-    for (const rule of targetingRules) {
-      const parentVal = formValues[rule.parentFieldId];
-      let conditionMet = false;
-
-      if (rule.conditionType === "EQUALS") {
-        conditionMet = String(parentVal) === String(rule.value);
-      } else if (rule.conditionType === "NOT_EQUALS") {
-        conditionMet = String(parentVal) !== String(rule.value);
-      } else if (rule.conditionType === "CONTAINS") {
-        conditionMet = String(parentVal || "").includes(String(rule.value));
-      } else if (rule.conditionType === "NOT_EMPTY") {
-        conditionMet = Boolean(parentVal);
-      }
-
-      if (rule.action === "SHOW") {
-        if (!conditionMet) return false;
-      } else if (rule.action === "HIDE") {
-        if (conditionMet) return false;
-      }
-    }
-
-    return true;
+    const url = URL.createObjectURL(file);
+    setCustomerPhotoUploads((prev) => {
+      const previous = prev[fieldId];
+      if (previous) URL.revokeObjectURL(previous);
+      return { ...prev, [fieldId]: url };
+    });
   };
 
   // Initialize Fabric Canvas for Live Preview Stage
@@ -178,139 +177,150 @@ export default function StudioStorefrontPreviewModal({
   useEffect(() => {
     const fc = fabricCanvasRef.current;
     if (!isOpen || !fc) return;
+    let cancelled = false;
 
-    fc.clear();
-    fc.setDimensions({ width: widthPx, height: heightPx });
+    const loadImage = (src: string) =>
+      new Promise<HTMLImageElement | null>((resolve) => {
+        const imgEl = new Image();
+        imgEl.crossOrigin = "anonymous";
+        imgEl.onload = () => resolve(imgEl);
+        imgEl.onerror = () => resolve(null);
+        imgEl.src = src;
+      });
 
-    // Background Color
-    if (activeScreen?.bgColor && activeScreen.bgColor !== "transparent") {
-      fc.backgroundColor = activeScreen.bgColor;
-    } else {
-      fc.backgroundColor = "#ffffff";
-    }
+    const addImageLayer = (
+      imgEl: HTMLImageElement,
+      left: number,
+      top: number,
+      width: number,
+      height: number,
+      rotation: number,
+      opacity: number
+    ) => {
+      if (cancelled || !fc) return;
+      const nativeW = imgEl.naturalWidth || imgEl.width || width || 1;
+      const nativeH = imgEl.naturalHeight || imgEl.height || height || 1;
+      const fabricImg = new fabric.Image(imgEl, {
+        left,
+        top,
+        originX: "center",
+        originY: "center",
+        angle: rotation || 0,
+        scaleX: width / nativeW,
+        scaleY: height / nativeH,
+        opacity,
+        selectable: false,
+        evented: false,
+      });
+      fc.add(fabricImg);
+    };
 
-    const sortedLayers = [...activeLayers]
-      .filter((l) => l.isVisible)
-      .sort((a, b) => a.zIndex - b.zIndex);
+    (async () => {
+      fc.clear();
+      fc.setDimensions({ width: widthPx, height: heightPx });
+      fc.backgroundColor =
+        activeScreen?.bgColor && activeScreen.bgColor !== "transparent" ? activeScreen.bgColor : "#ffffff";
 
-    sortedLayers.forEach((layer) => {
-      const props = layer.properties || {};
-      const centerX = layer.posX + layer.width / 2;
-      const centerY = layer.posY + layer.height / 2;
-
-      // Determine display value from form input OR layer default
-      let displayValue = props.text !== undefined ? props.text : layer.name;
-      if (layer.linkedFieldId && formValues[layer.linkedFieldId] !== undefined) {
-        displayValue = formValues[layer.linkedFieldId];
+      if (activeScreen?.bgUrl) {
+        const bgImg = await loadImage(activeScreen.bgUrl);
+        if (cancelled || !fc) return;
+        if (bgImg) {
+          const fabricBg = new fabric.Image(bgImg, {
+            left: 0,
+            top: 0,
+            originX: "left",
+            originY: "top",
+            scaleX: widthPx / (bgImg.naturalWidth || widthPx),
+            scaleY: heightPx / (bgImg.naturalHeight || heightPx),
+            selectable: false,
+            evented: false,
+          });
+          fc.add(fabricBg);
+        }
       }
 
-      if (layer.layerType === "TEXT") {
-        const textStr = String(displayValue || "");
-        const font = props.fontFamily || "Roboto";
-        const fontSize = Number(props.fontSize) || 36;
-        const fill = props.color || "#1e293b";
+      const sortedLayers = [...activeLayers]
+        .filter((l) => l.isVisible && isLayerVisibleByRules(l.id, rules, formValues))
+        .sort((a, b) => a.zIndex - b.zIndex);
 
-        ensureFontLoaded(font, fonts).then(() => {
-          if (!fc) return;
+      for (const layer of sortedLayers) {
+        if (cancelled) return;
+        const props = layer.properties || {};
+        const linkedField = layer.linkedFieldId
+          ? activeFields.find((f) => f.id === layer.linkedFieldId)
+          : undefined;
+        const linkedValue = layer.linkedFieldId ? formValues[layer.linkedFieldId] : undefined;
+        const linkedOption = linkedField ? findOptionByValue(linkedField, linkedValue) : undefined;
 
-          const textObj = new fabric.Text(textStr, {
-            left: centerX,
-            top: centerY,
+        let drawX = layer.posX + layer.width / 2;
+        let drawY = layer.posY + layer.height / 2;
+        let drawW = layer.width;
+        let drawH = layer.height;
+        let drawRot = layer.rotation || 0;
+        if (linkedOption?.hasCustomPosition) {
+          if (linkedOption.posX !== undefined) drawX = linkedOption.posX + (linkedOption.width ?? drawW) / 2;
+          if (linkedOption.posY !== undefined) drawY = linkedOption.posY + (linkedOption.height ?? drawH) / 2;
+          if (linkedOption.width !== undefined) drawW = linkedOption.width;
+          if (linkedOption.height !== undefined) drawH = linkedOption.height;
+          if (linkedOption.rotation !== undefined) drawRot = linkedOption.rotation;
+        }
+
+        if (layer.layerType === "TEXT") {
+          let textStr = props.text !== undefined ? String(props.text) : layer.name;
+          if (linkedField?.fieldType === "CALENDAR" && linkedValue) {
+            textStr = formatCalendarDate(String(linkedValue), linkedField.config?.dateFormat);
+          } else if (linkedField?.fieldType === "TEXT" && linkedValue !== undefined) {
+            textStr = sanitizeTextInput(String(linkedValue), linkedField.config);
+          } else if (linkedValue !== undefined && linkedValue !== "") {
+            textStr = String(linkedValue);
+          }
+          const font = props.fontFamily || "Roboto";
+          await ensureFontLoaded(font, fonts);
+          if (cancelled || !fc) return;
+          const textObj = new fabric.Text(textStr || " ", {
+            left: drawX,
+            top: drawY,
             originX: "center",
             originY: "center",
             fontFamily: font,
-            fontSize: fontSize,
-            fill: fill,
-            angle: layer.rotation || 0,
+            fontSize: Number(props.fontSize) || 36,
+            fill: props.color || "#1e293b",
+            angle: drawRot,
             opacity: props.opacity !== undefined ? Number(props.opacity) : 1,
             selectable: false,
             evented: false,
           });
-
           fc.add(textObj);
-          fc.requestRenderAll();
-        });
-      } else if (layer.layerType === "ASSET" || layer.layerType === "IMAGE" || layer.layerType === "OVERLAY") {
-        let assetUrl = props.assetUrl;
-
-        // Check if customer selected an option for linked field
-        if (layer.linkedFieldId && formValues[layer.linkedFieldId]) {
-          const fieldVal = formValues[layer.linkedFieldId];
-          assetUrl = fieldVal;
-        }
-
-        if (assetUrl) {
-          const imgEl = new Image();
-          imgEl.crossOrigin = "anonymous";
-          imgEl.src = assetUrl;
-          imgEl.onload = () => {
-            if (!fc) return;
-
-            const nativeW = imgEl.naturalWidth || imgEl.width || layer.width;
-            const nativeH = imgEl.naturalHeight || imgEl.height || layer.height;
-
-            const fabricImg = new fabric.Image(imgEl, {
-              left: centerX,
-              top: centerY,
-              originX: "center",
-              originY: "center",
-              angle: layer.rotation || 0,
-              scaleX: layer.width / nativeW,
-              scaleY: layer.height / nativeH,
-              opacity: props.opacity !== undefined ? Number(props.opacity) : 1,
-              selectable: false,
-              evented: false,
-            });
-
-            fc.add(fabricImg);
-            fc.requestRenderAll();
-          };
-        }
-      } else if (layer.layerType === "PHOTO_UPLOAD") {
-        let customerAssetUrl = props.assetUrl;
-        if (layer.linkedFieldId && customerPhotoUploads[layer.linkedFieldId]) {
-          customerAssetUrl = customerPhotoUploads[layer.linkedFieldId];
-        }
-
-        if (customerAssetUrl) {
-          const imgEl = new Image();
-          imgEl.crossOrigin = "anonymous";
-          imgEl.src = customerAssetUrl;
-          imgEl.onload = () => {
-            if (!fc) return;
-
-            const nativeW = imgEl.naturalWidth || imgEl.width || layer.width;
-            const nativeH = imgEl.naturalHeight || imgEl.height || layer.height;
-
-            const fabricImg = new fabric.Image(imgEl, {
-              left: centerX,
-              top: centerY,
-              originX: "center",
-              originY: "center",
-              angle: layer.rotation || 0,
-              scaleX: layer.width / nativeW,
-              scaleY: layer.height / nativeH,
-              opacity: props.opacity !== undefined ? Number(props.opacity) : 1,
-              selectable: false,
-              evented: false,
-            });
-
-            fc.add(fabricImg);
-            fc.requestRenderAll();
-          };
+        } else if (layer.layerType === "ASSET" || layer.layerType === "IMAGE" || layer.layerType === "OVERLAY") {
+          const assetUrl = getOptionAssetUrl(linkedOption) || props.assetUrl;
+          if (!assetUrl) continue;
+          const imgEl = await loadImage(assetUrl);
+          if (cancelled || !imgEl) continue;
+          addImageLayer(imgEl, drawX, drawY, drawW, drawH, drawRot, props.opacity !== undefined ? Number(props.opacity) : 1);
+        } else if (layer.layerType === "PHOTO_UPLOAD") {
+          const customerAssetUrl =
+            (layer.linkedFieldId && customerPhotoUploads[layer.linkedFieldId]) || props.assetUrl;
+          if (!customerAssetUrl) continue;
+          const imgEl = await loadImage(customerAssetUrl);
+          if (cancelled || !imgEl) continue;
+          addImageLayer(imgEl, drawX, drawY, drawW, drawH, drawRot, props.opacity !== undefined ? Number(props.opacity) : 1);
         }
       }
-    });
 
-    fc.requestRenderAll();
-  }, [isOpen, activeScreenIndex, formValues, customerPhotoUploads]);
+      if (!cancelled) fc.requestRenderAll();
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, activeScreenIndex, formValues, customerPhotoUploads, activeLayers, activeFields, rules, widthPx, heightPx, fonts, activeScreen]);
 
   if (!isOpen) return null;
 
   const screenFieldLabel = screenFieldConfig?.customerLabel || "Select Screen / Option";
   const showScreenSelector = screenFieldConfig?.enableScreenField || screens.length > 1;
 
-  const visibleFields = activeFields.filter((f) => isFieldVisibleByRules(f));
+  const visibleFields = activeFields.filter((f) => isFieldVisibleByRules(f, rules, formValues));
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 sm:p-6 overflow-y-auto animate-in fade-in duration-200">
@@ -481,6 +491,11 @@ export default function StudioStorefrontPreviewModal({
                 ) : (
                   visibleFields.map((field) => {
                     const val = formValues[field.id] !== undefined ? formValues[field.id] : "";
+                    const viewType = normalizeDisplayType(field.displayType || defaultDisplayType(field.fieldType));
+                    const optionList = (field.config?.options || []).filter((o: any) => o.isVisible !== false);
+                    const maxChars = getMaxCharacters(field.config);
+                    const minChars = getMinCharacters(field.config);
+                    const textLen = String(val).length;
 
                     return (
                       <div key={field.id} className="space-y-1.5">
@@ -488,54 +503,68 @@ export default function StudioStorefrontPreviewModal({
                           <span>
                             {field.label} {field.isRequired && <span className="text-rose-500">*</span>}
                           </span>
-                          {field.fieldType === "TEXT" && field.config?.maxLength && (
-                            <span className="text-[10px] font-medium text-slate-400">
-                              {String(val).length} / {field.config.maxLength}
+                          {field.fieldType === "TEXT" && (
+                            <span className={`text-[10px] font-medium ${textLen < minChars ? "text-amber-600" : "text-slate-400"}`}>
+                              {textLen} / {maxChars}
                             </span>
                           )}
                         </label>
 
-                        {/* TEXT FIELD */}
                         {field.fieldType === "TEXT" && (
+                          field.config?.allowMultiline ? (
+                            <textarea
+                              value={val}
+                              rows={Math.min(6, Number(field.config?.maxLines) || 2)}
+                              maxLength={maxChars}
+                              onChange={(e) => handleValueChange(field.id, sanitizeTextInput(e.target.value, field.config))}
+                              placeholder={field.config?.placeholder || `Enter ${field.label}...`}
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium text-slate-800 focus:bg-white focus:border-blue-600 focus:outline-none transition shadow-2xs resize-y min-h-[64px]"
+                            />
+                          ) : (
+                            <input
+                              type="text"
+                              value={val}
+                              maxLength={maxChars}
+                              onChange={(e) => handleValueChange(field.id, sanitizeTextInput(e.target.value, field.config))}
+                              placeholder={field.config?.placeholder || `Enter ${field.label}...`}
+                              className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium text-slate-800 focus:bg-white focus:border-blue-600 focus:outline-none transition shadow-2xs"
+                            />
+                          )
+                        )}
+
+                        {field.fieldType === "CALENDAR" && (
                           <input
-                            type="text"
+                            type="date"
                             value={val}
-                            maxLength={field.config?.maxLength || 50}
+                            min={field.config?.minDate || undefined}
+                            max={field.config?.maxDate || undefined}
                             onChange={(e) => handleValueChange(field.id, e.target.value)}
-                            placeholder={field.config?.placeholder || `Enter ${field.label}...`}
-                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium text-slate-800 focus:bg-white focus:border-blue-600 focus:outline-none transition shadow-2xs"
+                            className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium text-slate-800 focus:bg-white focus:border-rose-500 focus:outline-none transition shadow-2xs"
                           />
                         )}
 
-                        {/* DROPDOWN SELECT MENU */}
-                        {(field.fieldType === "SELECT" || field.fieldType === "DROPDOWN" || field.fieldType === "RADIO" || field.fieldType === "FIELD_ASSET") &&
-                          (!field.displayType || field.displayType === "DROPDOWN") && (
+                        {isOptionFieldType(field.fieldType) && viewType === "DROPDOWN" && (
                             <select
                               value={val}
                               onChange={(e) => handleValueChange(field.id, e.target.value)}
                               className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold text-slate-800 focus:bg-white focus:border-indigo-600 focus:outline-none transition shadow-2xs cursor-pointer"
                             >
-                              {(field.config?.options || []).map((opt: any, idx: number) => {
-                                const optVal = opt.value || opt.assetImageUrl || opt.assetUrl || opt.label;
-                                return (
-                                  <option key={idx} value={optVal}>
+                              {optionList.map((opt: any, idx: number) => (
+                                  <option key={opt.id || idx} value={getOptionValue(opt)}>
                                     {opt.label || opt.name || `Option ${idx + 1}`}
                                   </option>
-                                );
-                              })}
+                              ))}
                             </select>
                           )}
 
-                        {/* RADIO BUTTON PILLS LIST */}
-                        {(field.fieldType === "RADIO" || field.fieldType === "SELECT" || field.fieldType === "DROPDOWN" || field.fieldType === "BUTTON_GROUP") &&
-                          (field.displayType === "RADIO" || field.displayType === "TEXT_BUTTON") && (
+                        {isOptionFieldType(field.fieldType) && viewType === "RADIO" && (
                             <div className="flex flex-wrap gap-2">
-                              {(field.config?.options || []).map((opt: any, idx: number) => {
-                                const optVal = opt.value || opt.assetImageUrl || opt.assetUrl || opt.label;
+                              {optionList.map((opt: any, idx: number) => {
+                                const optVal = getOptionValue(opt);
                                 const isSel = val === optVal;
                                 return (
                                   <button
-                                    key={idx}
+                                    key={opt.id || idx}
                                     type="button"
                                     onClick={() => handleValueChange(field.id, optVal)}
                                     className={`px-3.5 py-1.5 rounded-lg border text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
@@ -556,17 +585,15 @@ export default function StudioStorefrontPreviewModal({
                             </div>
                           )}
 
-                        {/* THUMBNAIL / IMAGE SELECT GRID */}
-                        {(field.fieldType === "RADIO" || field.fieldType === "SELECT" || field.fieldType === "DROPDOWN" || field.fieldType === "FIELD_ASSET") &&
-                          (field.displayType === "THUMBNAIL" || field.displayType === "IMAGE_SWATCH") && (
+                        {isOptionFieldType(field.fieldType) && viewType === "THUMBNAIL" && (
                             <div className="grid grid-cols-3 gap-2.5">
-                              {(field.config?.options || []).map((opt: any, idx: number) => {
-                                const optVal = opt.value || opt.assetImageUrl || opt.assetUrl || opt.label;
+                              {optionList.map((opt: any, idx: number) => {
+                                const optVal = getOptionValue(opt);
                                 const isSel = val === optVal;
-                                const displayImage = opt.swatchImageUrl || opt.assetImageUrl || opt.assetUrl || opt.imageUrl;
+                                const displayImage = getOptionSwatchUrl(opt);
                                 return (
                                   <button
-                                    key={idx}
+                                    key={opt.id || idx}
                                     type="button"
                                     onClick={() => handleValueChange(field.id, optVal)}
                                     className={`p-1.5 rounded-xl border text-center transition flex flex-col items-center gap-1.5 cursor-pointer relative ${
@@ -594,85 +621,16 @@ export default function StudioStorefrontPreviewModal({
                             </div>
                           )}
 
-                        {/* COLOR SWATCH */}
-                        {field.fieldType === "COLOR_SWATCH" && (
-                          <div className="flex flex-wrap gap-2">
-                            {(field.config?.options || []).map((opt: any, idx: number) => {
-                              const optVal = opt.value || opt.label;
-                              const isSel = val === optVal;
-                              const colorHex = opt.colorHex || opt.value || "#3b82f6";
-                              return (
-                                <button
-                                  key={idx}
-                                  type="button"
-                                  onClick={() => handleValueChange(field.id, optVal)}
-                                  className={`px-3 py-1.5 rounded-lg border text-xs font-bold flex items-center gap-2 cursor-pointer transition ${
-                                    isSel
-                                      ? "bg-white border-blue-600 text-blue-900 ring-2 ring-blue-600/30 shadow-2xs"
-                                      : "bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100"
-                                  }`}
-                                >
-                                  <span
-                                    className="w-4 h-4 rounded-full border border-slate-300 shadow-2xs"
-                                    style={{ backgroundColor: colorHex }}
-                                  />
-                                  <span>{opt.label}</span>
-                                  {isSel && (
-                                    <span className="w-3.5 h-3.5 bg-blue-600 text-white rounded-full flex items-center justify-center">
-                                      <Check className="w-2.5 h-2.5 stroke-[3]" />
-                                    </span>
-                                  )}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        )}
-
-                        {/* IMAGE SWATCH */}
-                        {field.fieldType === "IMAGE_SWATCH" && (
-                          <div className="grid grid-cols-4 gap-2">
-                            {(field.config?.options || []).map((opt: any, idx: number) => {
-                              const optVal = opt.assetUrl || opt.value || opt.label;
-                              const isSel = val === optVal;
-                              return (
-                                <button
-                                  key={idx}
-                                  type="button"
-                                  onClick={() => handleValueChange(field.id, optVal)}
-                                  className={`relative p-1 rounded-xl border-2 flex flex-col items-center gap-1 transition cursor-pointer ${
-                                    isSel
-                                      ? "bg-white border-blue-600 ring-2 ring-blue-600/30 shadow-2xs"
-                                      : "bg-slate-50 border-slate-200 hover:border-slate-300"
-                                  }`}
-                                >
-                                  {opt.assetUrl ? (
-                                    <img src={opt.assetUrl} alt={opt.label} className="w-10 h-10 object-contain rounded-lg" />
-                                  ) : (
-                                    <div className="w-10 h-10 rounded-lg bg-slate-200 flex items-center justify-center text-[10px] font-bold text-slate-500">
-                                      {opt.label?.substring(0, 3)}
-                                    </div>
-                                  )}
-                                  <span className="text-[10px] font-semibold text-slate-700 truncate max-w-full">{opt.label}</span>
-                                  {isSel && (
-                                    <span className="absolute top-1 right-1 w-4 h-4 bg-blue-600 text-white rounded-full flex items-center justify-center">
-                                      <Check className="w-2.5 h-2.5 stroke-[3]" />
-                                    </span>
-                                  )}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        )}
-
-                        {/* PHOTO UPLOAD FIELD */}
-                        {field.fieldType === "PHOTO_UPLOAD" && (
+                        {field.fieldType === "IMAGE_UPLOAD" && (
                           <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-                            <label className="block text-[11px] font-medium text-slate-600">Upload Your Photo (JPG / PNG):</label>
+                            <p className="text-[11px] font-medium text-slate-600">
+                              {field.config?.helpText || "Upload your photo (JPG / PNG)"}
+                            </p>
                             <div className="flex items-center gap-3">
                               <input
                                 type="file"
                                 accept="image/*"
-                                onChange={(e) => handleCustomerPhotoUpload(field.id, e)}
+                                onChange={(e) => handleCustomerPhotoUpload(field.id, e, field.config?.maxFileSizeMb || 10)}
                                 className="hidden"
                                 id={`upload_${field.id}`}
                               />
@@ -687,7 +645,7 @@ export default function StudioStorefrontPreviewModal({
                                 <div className="flex items-center gap-2 bg-white px-2 py-1 rounded-lg border border-slate-200">
                                   <img src={customerPhotoUploads[field.id]} alt="Uploaded" className="w-6 h-6 object-cover rounded" />
                                   <span className="text-[10px] font-bold text-emerald-600 flex items-center gap-1">
-                                    <Check className="w-3 h-3" /> Photo Loaded
+                                    <Check className="w-3 h-3" /> Photo loaded
                                   </span>
                                 </div>
                               )}

@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { autoGenerateSquareThumbnail } from "../../utils/thumbnailGenerator";
 import StudioFontPicker from "./StudioFontPicker";
+import TextGradientEditor from "./TextGradientEditor";
 
 export interface BackgroundOptionItem {
   id: string;
@@ -920,6 +921,8 @@ export default function StudioPropertyPanel({
               />
             </div>
 
+            <TextGradientEditor props={props} onChange={(patch) => handlePropChange(patch)} />
+
             <div className="flex items-center gap-4 pt-1">
               <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer" title="Require customer to fill out this text field before ordering">
                 <input
@@ -1102,9 +1105,14 @@ export default function StudioPropertyPanel({
             {(() => {
               let linkedField = fields.find((f) => f.id === selectedLayer.linkedFieldId);
 
-              // Fallback 1: If linkedFieldId is set or layer name indicates List / Item layer
+              const isOptionField =
+                linkedField &&
+                (linkedField.fieldType === "SELECT" ||
+                  linkedField.fieldType === "RADIO" ||
+                  linkedField.fieldType === "FIELD_ASSET");
+
               const isListTypeLayer = Boolean(
-                selectedLayer.linkedFieldId ||
+                isOptionField ||
                 selectedLayer.name.toLowerCase().includes("list") ||
                 selectedLayer.name.toLowerCase().includes("dropdown") ||
                 selectedLayer.name.toLowerCase().includes("select")
@@ -1116,6 +1124,7 @@ export default function StudioPropertyPanel({
                   label: selectedLayer.name || "List / Item",
                   fieldType: "SELECT",
                   displayType: "DROPDOWN",
+                  sortOrder: 0,
                   isRequired: true,
                   allowPersonalized: true,
                   config: {
@@ -1129,7 +1138,7 @@ export default function StudioPropertyPanel({
                 };
               }
 
-              if (linkedField) {
+              if (linkedField && (isOptionField || isListTypeLayer)) {
                 const config = linkedField.config || {};
                 const options: any[] = config.options || [];
                 const isItemSelected = Boolean(linkedField.activeOptionId);

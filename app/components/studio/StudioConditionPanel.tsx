@@ -1,16 +1,10 @@
 import React, { useState } from "react";
 import { StudioFieldItem } from "./StudioFieldPanel";
 import { CanvasLayerItem } from "./StudioCanvas";
-import { GitBranch, Plus, Trash2, ArrowRight, ShieldAlert } from "lucide-react";
+import { GitBranch, Plus, Trash2, ArrowRight } from "lucide-react";
+import { type StudioConditionRuleItem } from "../../utils/fieldHelpers";
 
-export interface StudioConditionRuleItem {
-  id: string;
-  sourceFieldId: string;
-  operator: "EQUALS" | "NOT_EQUALS";
-  targetValue: string;
-  action: "SHOW_LAYER" | "HIDE_LAYER" | "SHOW_FIELD" | "HIDE_FIELD";
-  targetId: string;
-}
+export type { StudioConditionRuleItem };
 
 interface StudioConditionPanelProps {
   rules: StudioConditionRuleItem[];

@@ -696,7 +696,7 @@ export default function StudioLayerPanel({
                 {/* NESTED DEPENDENT LIST / ITEM LAYERS (Bound to Parent List/Item Layer) */}
                 {(() => {
                   const linkedField = fields.find((f) => f.id === layer.linkedFieldId);
-                  if (!isLayerCollapsed(layer.id) && linkedField && (linkedField.fieldType === "SELECT" || linkedField.fieldType === "DROPDOWN" || linkedField.fieldType === "RADIO")) {
+                  if (!isLayerCollapsed(layer.id) && linkedField && (linkedField.fieldType === "SELECT" || linkedField.fieldType === "RADIO" || linkedField.fieldType === "FIELD_ASSET")) {
                     const options = linkedField.config?.options || [];
                     return (
                       <div className="ml-3 mt-1 space-y-1 pl-1.5 border-l-2 border-indigo-300/80">
