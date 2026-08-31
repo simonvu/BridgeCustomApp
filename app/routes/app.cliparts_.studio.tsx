@@ -214,7 +214,9 @@ export default function ClipArtStudioRoute() {
   // Create an Option Group: a FIELD_ASSET field (variants) + one linked slot layer.
   const createOptionGroup = async (files: any[]) => {
     if (!files || files.length === 0) return;
-    const label = (window.prompt("Option group name (e.g. Skin Color, Eyes, Hair)", "Option Group") || "Option Group").trim();
+    // Default name; the designer renames it in the inspector (Group name field).
+    const groupCount = fields.filter((f) => f.fieldType === "FIELD_ASSET").length;
+    const label = `Option Group ${groupCount + 1}`;
     const options = filesToVariants(files);
     const fieldId = `field_${Date.now()}`;
 
