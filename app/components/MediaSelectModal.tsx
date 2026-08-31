@@ -26,6 +26,7 @@ export interface MediaFileItem {
   createdByAvatar?: string | null;
   uploadedBy?: string;
   createdAt: string;
+  clipArtId?: string;
 }
 
 export interface FolderItem {
@@ -42,6 +43,8 @@ interface MediaSelectModalProps {
   initialSelectedUrl?: string;
   title?: string;
   allowedCategory?: "ALL" | "IMAGE" | "FONT" | "DOCUMENT";
+  /** When true, adds a "Clip Art" source tab that lists reusable clip-art objects. */
+  enableClipArts?: boolean;
 }
 
 export default function MediaSelectModal({
@@ -52,7 +55,11 @@ export default function MediaSelectModal({
   initialSelectedUrl = "",
   title = "Select file",
   allowedCategory = "ALL",
+  enableClipArts = false,
 }: MediaSelectModalProps) {
+  const [source, setSource] = useState<"MEDIA" | "CLIPART">("MEDIA");
+  const [cliparts, setCliparts] = useState<MediaFileItem[]>([]);
+  const [clipartLoading, setClipartLoading] = useState(false);
   const [files, setFiles] = useState<MediaFileItem[]>([]);
   const [folders, setFolders] = useState<FolderItem[]>([
     { id: "def-1", name: "general", label: "General" },
@@ -136,8 +143,45 @@ export default function MediaSelectModal({
       setPage(1);
       setShowCreateFolderModal(false);
       setNewFolderName("");
+      setSource("MEDIA");
     }
   }, [isOpen, fetchMediaFilesAndFolders]);
+
+  // Fetch clip arts when the Clip Art source tab is active
+  useEffect(() => {
+    if (!isOpen || source !== "CLIPART") return;
+    let cancelled = false;
+    setClipartLoading(true);
+    fetch("/api/cliparts")
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        const mapped: MediaFileItem[] = (data.cliparts || [])
+          .filter((c: any) => c.compositeUrl)
+          .map((c: any) => ({
+            id: `clipart_${c.id}`,
+            fileName: c.name,
+            fileSize: 0,
+            fileType: "image/png",
+            category: "IMAGE",
+            url: c.compositeUrl,
+            thumbnailUrl: c.thumbnailUrl || c.compositeUrl,
+            folder: "cliparts",
+            createdByName: c.createdByName,
+            createdByAvatar: c.createdByAvatar,
+            createdAt: c.updatedAt || c.createdAt,
+            clipArtId: c.id,
+          }));
+        setCliparts(mapped);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setClipartLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, source]);
 
   if (!isOpen) return null;
 
@@ -292,9 +336,31 @@ export default function MediaSelectModal({
         
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-white">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <h3 className="text-lg font-bold text-slate-800">{title}</h3>
-            {paginationInfo.total > 0 && (
+            {enableClipArts && (
+              <div className="flex items-center bg-slate-100 border border-slate-200 rounded-lg p-0.5 text-xs font-bold">
+                <button
+                  type="button"
+                  onClick={() => setSource("MEDIA")}
+                  className={`px-3 py-1 rounded-md transition cursor-pointer ${
+                    source === "MEDIA" ? "bg-white text-slate-900 shadow-2xs" : "text-slate-500 hover:text-slate-700"
+                  }`}
+                >
+                  Media
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSource("CLIPART")}
+                  className={`px-3 py-1 rounded-md transition cursor-pointer ${
+                    source === "CLIPART" ? "bg-white text-slate-900 shadow-2xs" : "text-slate-500 hover:text-slate-700"
+                  }`}
+                >
+                  Clip Art
+                </button>
+              </div>
+            )}
+            {source === "MEDIA" && paginationInfo.total > 0 && (
               <span className="bg-slate-100 border border-slate-200 text-slate-600 px-2 py-0.5 rounded-full text-xs font-semibold">
                 {paginationInfo.total} items
               </span>
@@ -370,7 +436,8 @@ export default function MediaSelectModal({
           </div>
         </div>
 
-        {/* Upload Dropzone with Destination Folder Selector */}
+        {/* Upload Dropzone with Destination Folder Selector (Media source only) */}
+        {source === "MEDIA" && (
         <div className="px-6 pt-4 space-y-2">
           <div className="flex items-center justify-between text-xs">
             <span className="font-semibold text-slate-700 flex items-center gap-1">
@@ -431,19 +498,20 @@ export default function MediaSelectModal({
             </div>
           )}
         </div>
+        )}
 
-        {/* Media Grid List */}
+        {/* Media / Clip Art Grid List */}
         <div className="flex-1 overflow-y-auto p-6">
-          {loading ? (
-            <div className="py-12 text-center text-xs text-gray-500">Loading files...</div>
-          ) : files.length === 0 ? (
+          {(source === "CLIPART" ? clipartLoading : loading) ? (
+            <div className="py-12 text-center text-xs text-gray-500">Loading…</div>
+          ) : (source === "CLIPART" ? cliparts : files).length === 0 ? (
             <div className="py-12 text-center text-xs text-gray-500 space-y-1">
               <ImageIcon className="w-8 h-8 mx-auto text-gray-300" />
-              <p>No media files found</p>
+              <p>{source === "CLIPART" ? "No clip art found. Build one in the Clip Art library." : "No media files found"}</p>
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-              {files.map((file) => {
+              {(source === "CLIPART" ? cliparts : files).map((file) => {
                 const isSelected = selectedFiles.some((f) => f.id === file.id);
                 return (
                   <div
@@ -533,7 +601,7 @@ export default function MediaSelectModal({
             </span>
 
             {/* Pagination Controls */}
-            {paginationInfo.totalPages > 1 && (
+            {source === "MEDIA" && paginationInfo.totalPages > 1 && (
               <div className="flex items-center gap-2 border-l pl-4 border-gray-200">
                 <button
                   type="button"

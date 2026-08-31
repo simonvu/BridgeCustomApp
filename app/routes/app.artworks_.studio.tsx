@@ -2340,6 +2340,7 @@ function detectCleanNameFromFileName(fileName: string): string {
         isOpen={mediaPickerOpen}
         onClose={() => setMediaPickerOpen(false)}
         multiSelect={pickerMultiSelect}
+        enableClipArts
         onSelect={async (selectedFiles) => {
           if (selectedFiles.length > 0) {
             await handleSelectMediaAssets(selectedFiles);
