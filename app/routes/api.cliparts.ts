@@ -73,6 +73,7 @@ export async function action({ request }: ActionFunctionArgs) {
       heightPx,
       bgColor,
       layers,
+      fields,
       compositeUrl,
       compositeKey,
       thumbnailUrl,
@@ -84,6 +85,7 @@ export async function action({ request }: ActionFunctionArgs) {
     }
 
     const layersJson = typeof layers === "object" ? JSON.stringify(layers) : layers || null;
+    const fieldsJson = typeof fields === "object" ? JSON.stringify(fields) : fields || null;
     const layerCount = Array.isArray(layers) ? layers.length : 0;
 
     const data: any = {
@@ -94,6 +96,7 @@ export async function action({ request }: ActionFunctionArgs) {
       heightPx: heightPx || 1000,
       bgColor: bgColor || null,
       layers: layersJson,
+      fields: fieldsJson,
       compositeUrl: compositeUrl || null,
       compositeKey: compositeKey || null,
       thumbnailUrl: thumbnailUrl || compositeUrl || null,

@@ -350,6 +350,7 @@ model ClipArt {
   heightPx        Int      @default(1000)
   bgColor         String?  // Optional solid background (usually transparent)
   layers          String?  // JSON string: CanvasLayerItem[] source layers (editable)
+  fields          String?  // JSON string: StudioFieldItem[] option groups (modular variants)
   compositeUrl    String?  // Flattened PNG of the whole object (used by artwork)
   compositeKey    String?  // Storage key of the composite (overwritten on re-export)
   thumbnailUrl    String?  // Square thumbnail for the library grid

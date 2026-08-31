@@ -17,6 +17,7 @@ import {
   ChevronDown,
   X,
   Download,
+  Package,
 } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import prisma from "../db.server";
@@ -29,6 +30,7 @@ import { autoGenerateSquareThumbnail } from "../utils/thumbnailGenerator";
 import StudioScreenBar, { StudioScreenItem } from "../components/studio/StudioScreenBar";
 import StudioTopToolbar from "../components/studio/StudioTopToolbar";
 import StudioStorefrontPreviewModal from "../components/studio/StudioStorefrontPreviewModal";
+import ClipArtSelectModal, { type ClipArtRecord } from "../components/studio/ClipArtSelectModal";
 import MediaSelectModal from "../components/MediaSelectModal";
 
 import { injectFontStylesheets, type FontItem } from "../utils/fontLoader";
@@ -603,6 +605,93 @@ export default function ArtworkStudioRoute() {
       pushHistorySnapshot(nextScreens);
       return nextScreens;
     });
+  };
+
+  // Insert a reusable Clip Art object. Modular clip art (with option groups)
+  // is expanded into layers + customer fields; static clip art is added as one
+  // composite image layer.
+  const [clipArtInsertOpen, setClipArtInsertOpen] = useState(false);
+
+  const handleInsertClipArt = (clip: ClipArtRecord) => {
+    const parseArr = (raw: any) => {
+      if (!raw) return [];
+      try {
+        const a = typeof raw === "string" ? JSON.parse(raw) : raw;
+        return Array.isArray(a) ? a : [];
+      } catch {
+        return [];
+      }
+    };
+    const caLayers = parseArr(clip.layers).map((l: any) => ({
+      ...l,
+      properties: typeof l.properties === "string" ? JSON.parse(l.properties) : l.properties || {},
+    }));
+    const caFields = parseArr(clip.fields).map((f: any) => ({
+      ...f,
+      config: typeof f.config === "string" ? JSON.parse(f.config) : f.config || {},
+    }));
+
+    const stamp = Date.now();
+    const rnd = () => Math.random().toString(36).slice(2, 6);
+    const baseZ = layers.length > 0 ? Math.max(...layers.map((l) => l.zIndex)) + 1 : 0;
+
+    // Static clip art (no option groups): drop the whole composite as one layer.
+    if (caLayers.length === 0 || (caFields.length === 0 && clip.compositeUrl)) {
+      const caW = clip.widthPx || 1000;
+      const caH = clip.heightPx || 1000;
+      const maxDim = Math.min(widthPx, heightPx) * 0.6;
+      const s = Math.min(maxDim / caW, maxDim / caH, 1);
+      const w = Math.round(caW * s);
+      const h = Math.round(caH * s);
+      const layer: CanvasLayerItem = {
+        id: `layer_${stamp}_${rnd()}`,
+        name: clip.name || "Clip Art",
+        layerType: "ASSET",
+        zIndex: baseZ,
+        posX: Math.round((widthPx - w) / 2),
+        posY: Math.round((heightPx - h) / 2),
+        width: w,
+        height: h,
+        rotation: 0,
+        isVisible: true,
+        isLocked: false,
+        properties: { assetUrl: clip.compositeUrl || "", opacity: 1 },
+      };
+      setLayers((prev) => [...prev, layer]);
+      setIsDirty(true);
+      return;
+    }
+
+    // Modular clip art: expand layers + option-group fields (id-remapped, scaled).
+    const caW = clip.widthPx || 1000;
+    const caH = clip.heightPx || 1000;
+    const scale = Math.min((widthPx * 0.6) / caW, (heightPx * 0.6) / caH, 1);
+    const offX = (widthPx - caW * scale) / 2;
+    const offY = (heightPx - caH * scale) / 2;
+
+    const fieldIdMap: Record<string, string> = {};
+    caFields.forEach((f: any, i: number) => (fieldIdMap[f.id] = `field_${stamp}_${i}_${rnd()}`));
+
+    const newFields = caFields.map((f: any, i: number) => ({
+      ...f,
+      id: fieldIdMap[f.id],
+      sortOrder: (fields?.length || 0) + i,
+    }));
+
+    const newLayers = caLayers.map((l: any, i: number) => ({
+      ...l,
+      id: `layer_${stamp}_${i}_${rnd()}`,
+      linkedFieldId: l.linkedFieldId ? fieldIdMap[l.linkedFieldId] || l.linkedFieldId : undefined,
+      posX: Math.round(offX + (l.posX || 0) * scale),
+      posY: Math.round(offY + (l.posY || 0) * scale),
+      width: Math.max(4, Math.round((l.width || 100) * scale)),
+      height: Math.max(4, Math.round((l.height || 100) * scale)),
+      zIndex: baseZ + i,
+    }));
+
+    if (newFields.length > 0) setFields((prev) => [...prev, ...newFields]);
+    setLayers((prev) => [...prev, ...newLayers]);
+    setIsDirty(true);
   };
 
   // Screen Management Handlers
@@ -1728,6 +1817,16 @@ function detectCleanNameFromFileName(fileName: string): string {
                 <Eye className="w-3.5 h-3.5" />
               </button>
 
+              {/* Insert Clip Art Button */}
+              <button
+                type="button"
+                onClick={() => setClipArtInsertOpen(true)}
+                className="px-2 h-6 rounded flex items-center justify-center transition cursor-pointer text-emerald-700 hover:bg-emerald-50 bg-emerald-50/50 border border-emerald-200"
+                title="Insert a Clip Art object (modular ones add customer options)"
+              >
+                <Package className="w-3.5 h-3.5" />
+              </button>
+
               <div className="w-[1px] h-3.5 bg-slate-300 mx-0.5" />
               <button
                 type="button"
@@ -2347,6 +2446,12 @@ function detectCleanNameFromFileName(fileName: string): string {
           }
           setMediaPickerOpen(false);
         }}
+      />
+
+      <ClipArtSelectModal
+        isOpen={clipArtInsertOpen}
+        onClose={() => setClipArtInsertOpen(false)}
+        onSelect={handleInsertClipArt}
       />
 
       {/* Amazon-Style Customer Photo Upload & Customization Modal */}

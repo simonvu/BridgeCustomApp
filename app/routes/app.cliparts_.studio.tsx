@@ -72,6 +72,23 @@ function parseLayers(raw: any): CanvasLayerItem[] {
   }
 }
 
+function parseFields(raw: any): any[] {
+  if (!raw) return [];
+  try {
+    const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!Array.isArray(arr)) return [];
+    return arr.map((f: any) => ({ ...f, config: typeof f.config === "string" ? JSON.parse(f.config) : f.config || {} }));
+  } catch {
+    return [];
+  }
+}
+
+function cleanFileName(name?: string, fallback = "Option"): string {
+  if (!name) return fallback;
+  const n = name.replace(/\.[^/.]+$/, "").replace(/[-_]+/g, " ").trim();
+  return n ? n.replace(/\b\w/g, (c) => c.toUpperCase()) : fallback;
+}
+
 export default function ClipArtStudioRoute() {
   const { currentUser, clipart, fonts } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
@@ -87,6 +104,7 @@ export default function ClipArtStudioRoute() {
   const [widthPx, setWidthPx] = useState(clipart?.widthPx || 1000);
   const [heightPx, setHeightPx] = useState(clipart?.heightPx || 1000);
   const [layers, setLayers] = useState<CanvasLayerItem[]>(() => parseLayers(clipart?.layers));
+  const [fields, setFields] = useState<any[]>(() => parseFields(clipart?.fields));
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>([]);
   const [zoom, setZoom] = useState(1);
   const [isSaving, setIsSaving] = useState(false);
@@ -101,8 +119,14 @@ export default function ClipArtStudioRoute() {
 
   // Media picker: purpose distinguishes single add / replace vs multi import
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [pickerMode, setPickerMode] = useState<"ADD" | "IMPORT" | "REPLACE">("ADD");
+  const [pickerMode, setPickerMode] = useState<"ADD" | "IMPORT" | "REPLACE" | "OPTGROUP" | "ADD_VARIANTS">("ADD");
   const [replaceTargetId, setReplaceTargetId] = useState<string | null>(null);
+
+  // Option group of the currently selected layer (if it is variant-linked)
+  const selectedGroupField = useMemo(
+    () => (selectedLayer?.linkedFieldId ? fields.find((f) => f.id === selectedLayer.linkedFieldId) : null),
+    [fields, selectedLayer]
+  );
 
   const nextZ = () => (layers.length > 0 ? Math.max(...layers.map((l) => l.zIndex)) + 1 : 0);
 
@@ -132,7 +156,11 @@ export default function ClipArtStudioRoute() {
   };
 
   const handleDeleteLayer = (layerId: string) => {
+    const target = layers.find((l) => l.id === layerId);
     setLayers((prev) => prev.filter((l) => l.id !== layerId));
+    if (target?.linkedFieldId) {
+      setFields((prev) => prev.filter((f) => f.id !== target.linkedFieldId));
+    }
     setSelectedLayerIds((prev) => prev.filter((id) => id !== layerId));
   };
 
@@ -152,37 +180,111 @@ export default function ClipArtStudioRoute() {
     setSelectedLayerIds([copy.id]);
   };
 
-  const handleAddText = () => {
-    const layer: CanvasLayerItem = {
-      id: `layer_${Date.now()}`,
-      name: "Text",
-      layerType: "TEXT",
-      zIndex: nextZ(),
-      posX: Math.round(widthPx / 4),
-      posY: Math.round(heightPx / 4),
-      width: 400,
-      height: 120,
-      rotation: 0,
-      isVisible: true,
-      isLocked: false,
-      properties: {
-        text: "Sample Text",
-        fontFamily: "Roboto",
-        fontSize: 64,
-        color: "#111827",
-        align: "center",
-        verticalAlign: "middle",
-        autoFit: true,
-      },
-    };
-    setLayers((prev) => [...prev, layer]);
-    setSelectedLayerIds([layer.id]);
-  };
-
-  const openPicker = (mode: "ADD" | "IMPORT" | "REPLACE", targetId?: string) => {
+  const openPicker = (
+    mode: "ADD" | "IMPORT" | "REPLACE" | "OPTGROUP" | "ADD_VARIANTS",
+    targetId?: string
+  ) => {
     setPickerMode(mode);
     setReplaceTargetId(targetId || null);
     setPickerOpen(true);
+  };
+
+  const measureImage = (url: string): Promise<{ natW: number; natH: number }> =>
+    new Promise((resolve) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => resolve({ natW: img.naturalWidth || 300, natH: img.naturalHeight || 300 });
+      img.onerror = () => resolve({ natW: 300, natH: 300 });
+      img.src = url;
+    });
+
+  const filesToVariants = (files: any[]) =>
+    files.map((f, i) => {
+      const url = f.url || f.thumbnailUrl;
+      return {
+        id: `opt_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 5)}`,
+        label: cleanFileName(f.fileName, `Option ${i + 1}`),
+        value: `variant_${i}_${Math.random().toString(36).slice(2, 5)}`,
+        assetImageUrl: url,
+        swatchImageUrl: f.thumbnailUrl || url,
+        isVisible: true,
+      };
+    });
+
+  // Create an Option Group: a FIELD_ASSET field (variants) + one linked slot layer.
+  const createOptionGroup = async (files: any[]) => {
+    if (!files || files.length === 0) return;
+    const label = (window.prompt("Option group name (e.g. Skin Color, Eyes, Hair)", "Option Group") || "Option Group").trim();
+    const options = filesToVariants(files);
+    const fieldId = `field_${Date.now()}`;
+
+    const first = files[0];
+    const { natW, natH } = await measureImage(first.url || first.thumbnailUrl);
+    const maxDim = Math.min(widthPx, heightPx) * 0.6;
+    const scale = Math.min(maxDim / natW, maxDim / natH, 1);
+    const w = Math.max(20, Math.round(natW * scale));
+    const h = Math.max(20, Math.round(natH * scale));
+
+    const layer: CanvasLayerItem = {
+      id: `layer_${Date.now()}_grp`,
+      name: label,
+      layerType: "ASSET",
+      zIndex: nextZ(),
+      posX: Math.round((widthPx - w) / 2),
+      posY: Math.round((heightPx - h) / 2),
+      width: w,
+      height: h,
+      rotation: 0,
+      isVisible: true,
+      isLocked: false,
+      linkedFieldId: fieldId,
+      properties: { assetUrl: options[0].assetImageUrl, opacity: 1 },
+    };
+
+    setFields((prev) => [
+      ...prev,
+      {
+        id: fieldId,
+        label: label || "Option Group",
+        fieldType: "FIELD_ASSET",
+        displayType: "THUMBNAIL",
+        sortOrder: fields.length,
+        isRequired: false,
+        allowPersonalized: true,
+        activeOptionId: options[0].id,
+        config: { options },
+      },
+    ]);
+    setLayers((prev) => [...prev, layer]);
+    setSelectedLayerIds([layer.id]);
+    setStatusMsg(`Added option group "${label}" with ${options.length} variants.`);
+    setTimeout(() => setStatusMsg(""), 3000);
+  };
+
+  const addVariantsToGroup = (fieldId: string, files: any[]) => {
+    const newOpts = filesToVariants(files);
+    setFields((prev) =>
+      prev.map((f) =>
+        f.id === fieldId ? { ...f, config: { ...(f.config || {}), options: [...(f.config?.options || []), ...newOpts] } } : f
+      )
+    );
+    setStatusMsg(`Added ${newOpts.length} variant(s).`);
+    setTimeout(() => setStatusMsg(""), 2500);
+  };
+
+  // Switch the active variant of an option group (updates preview + saved config)
+  const setActiveVariant = (fieldId: string, optId: string) => {
+    setFields((prev) => prev.map((f) => (f.id === fieldId ? { ...f, activeOptionId: optId } : f)));
+    const field = fields.find((f) => f.id === fieldId);
+    const opt = field?.config?.options?.find((o: any) => o.id === optId);
+    const layer = layers.find((l) => l.linkedFieldId === fieldId);
+    if (layer && opt) handleUpdateProps(layer.id, { assetUrl: opt.assetImageUrl });
+  };
+
+  const renameGroup = (fieldId: string, label: string) => {
+    setFields((prev) => prev.map((f) => (f.id === fieldId ? { ...f, label } : f)));
+    const layer = layers.find((l) => l.linkedFieldId === fieldId);
+    if (layer) handleUpdateLayer(layer.id, { name: label });
   };
 
   const addImageLayer = (fileUrl: string, fileName?: string) =>
@@ -225,6 +327,16 @@ export default function ClipArtStudioRoute() {
     if (pickerMode === "REPLACE" && replaceTargetId) {
       const url = files[0].url || files[0].thumbnailUrl;
       handleUpdateProps(replaceTargetId, { assetUrl: url });
+      return;
+    }
+
+    if (pickerMode === "OPTGROUP") {
+      await createOptionGroup(files);
+      return;
+    }
+
+    if (pickerMode === "ADD_VARIANTS" && replaceTargetId) {
+      addVariantsToGroup(replaceTargetId, files);
       return;
     }
 
@@ -419,6 +531,7 @@ export default function ClipArtStudioRoute() {
           widthPx,
           heightPx,
           layers,
+          fields,
           compositeUrl,
           compositeKey,
           thumbnailUrl: thumbnailUrl || compositeUrl,
@@ -530,11 +643,11 @@ export default function ClipArtStudioRoute() {
         {/* Action toolbar */}
         <div className="bg-slate-50 border-b border-slate-200 px-3 py-2 flex items-center gap-3 flex-wrap shrink-0">
           <div className="flex items-center gap-1.5">
-            <button type="button" onClick={() => openPicker("ADD")} className="h-8 px-2.5 rounded-lg bg-white border border-slate-300 hover:border-blue-300 text-slate-700 hover:text-blue-600 text-xs font-bold flex items-center gap-1.5 cursor-pointer">
+            <button type="button" onClick={() => openPicker("ADD")} className="h-8 px-2.5 rounded-lg bg-white border border-slate-300 hover:border-blue-300 text-slate-700 hover:text-blue-600 text-xs font-bold flex items-center gap-1.5 cursor-pointer" title="Add a fixed base image layer">
               <ImageIcon className="w-3.5 h-3.5" /> Image
             </button>
-            <button type="button" onClick={handleAddText} className="h-8 px-2.5 rounded-lg bg-white border border-slate-300 hover:border-blue-300 text-slate-700 hover:text-blue-600 text-xs font-bold flex items-center gap-1.5 cursor-pointer">
-              <TypeIcon className="w-3.5 h-3.5" /> Text
+            <button type="button" onClick={() => openPicker("OPTGROUP")} className="h-8 px-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer" title="Add an option group: a swappable part with image variants (e.g. Skin, Eyes, Hair)">
+              <LayersIcon className="w-3.5 h-3.5" /> Option Group
             </button>
             <button type="button" onClick={() => openPicker("IMPORT")} className="h-8 px-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer" title="Import a set of images and auto-arrange them">
               <Upload className="w-3.5 h-3.5" /> Import & Auto-arrange
@@ -581,7 +694,7 @@ export default function ClipArtStudioRoute() {
               widthPx={widthPx}
               heightPx={heightPx}
               layers={layers}
-              fields={[]}
+              fields={fields}
               selectedLayerId={selectedLayerId}
               selectedLayerIds={selectedLayerIds}
               onSelectLayer={handleSelectLayer}
@@ -664,10 +777,60 @@ export default function ClipArtStudioRoute() {
                   </label>
                 </div>
 
-                {selectedLayer.layerType === "ASSET" && (
+                {selectedLayer.layerType === "ASSET" && !selectedLayer.linkedFieldId && (
                   <button type="button" onClick={() => openPicker("REPLACE", selectedLayer.id)} className="w-full h-8 rounded-lg border border-slate-300 hover:border-blue-300 text-xs font-bold text-slate-700 hover:text-blue-600 flex items-center justify-center gap-1.5 cursor-pointer">
                     <ImageIcon className="w-3.5 h-3.5" /> Replace image
                   </button>
+                )}
+
+                {selectedGroupField && (
+                  <div className="space-y-2 pt-2 border-t border-slate-100">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider">Option Group</span>
+                      <span className="text-[10px] text-slate-400">{selectedGroupField.config?.options?.length || 0} variants</span>
+                    </div>
+                    <label className="text-[10px] text-slate-500 block">
+                      Group name
+                      <input
+                        value={selectedGroupField.label}
+                        onChange={(e) => renameGroup(selectedGroupField.id, e.target.value)}
+                        className="w-full mt-0.5 px-2 py-1 border border-slate-200 rounded text-xs"
+                      />
+                    </label>
+                    <div className="text-[10px] text-slate-500">Active variant (click to preview)</div>
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {(selectedGroupField.config?.options || []).map((opt: any) => {
+                        const isActive = selectedGroupField.activeOptionId === opt.id;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => setActiveVariant(selectedGroupField.id, opt.id)}
+                            title={opt.label}
+                            className={`aspect-square rounded-md border overflow-hidden bg-white flex items-center justify-center ${
+                              isActive ? "border-emerald-500 ring-2 ring-emerald-500/30" : "border-slate-200 hover:border-slate-300"
+                            }`}
+                          >
+                            {opt.swatchImageUrl || opt.assetImageUrl ? (
+                              <img src={opt.swatchImageUrl || opt.assetImageUrl} className="w-full h-full object-contain" alt={opt.label} />
+                            ) : (
+                              <ImageIcon className="w-3 h-3 text-slate-300" />
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => openPicker("ADD_VARIANTS", selectedGroupField.id)}
+                      className="w-full h-7 rounded-lg border border-emerald-300 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50 flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      <ImageIcon className="w-3 h-3" /> Add variants
+                    </button>
+                    <p className="text-[10px] text-slate-400 leading-tight">
+                      In an artwork this becomes a customer field to pick a variant.
+                    </p>
+                  </div>
                 )}
 
                 {selectedLayer.layerType === "TEXT" && (
@@ -700,7 +863,17 @@ export default function ClipArtStudioRoute() {
         onClose={() => setPickerOpen(false)}
         multiSelect={pickerMode !== "REPLACE"}
         allowedCategory="IMAGE"
-        title={pickerMode === "IMPORT" ? "Import clip art set" : pickerMode === "REPLACE" ? "Replace image" : "Add image"}
+        title={
+          pickerMode === "IMPORT"
+            ? "Import clip art set"
+            : pickerMode === "REPLACE"
+              ? "Replace image"
+              : pickerMode === "OPTGROUP"
+                ? "Pick variant images for the option group"
+                : pickerMode === "ADD_VARIANTS"
+                  ? "Add more variants"
+                  : "Add image"
+        }
         onSelect={handlePickerSelect}
       />
     </DashboardLayout>
