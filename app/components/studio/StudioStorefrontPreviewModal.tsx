@@ -17,25 +17,25 @@ import {
   Layers,
   Image as ImageIcon,
 } from "lucide-react";
-import { CanvasLayerItem } from "./StudioCanvas";
-import { StudioFieldItem } from "./StudioFieldPanel";
-import { FontItem, ensureFontLoaded } from "../../utils/fontLoader";
+import type { CanvasLayerItem } from "./StudioCanvas";
+import type { StudioFieldItem } from "./StudioFieldPanel";
+import type { FontItem } from "../../utils/fontLoader";
 import { type StudioConditionRuleItem } from "../../utils/fieldHelpers";
 import {
-  findOptionByValue,
-  formatCalendarDate,
   getMaxCharacters,
   getMinCharacters,
-  getOptionAssetUrl,
   getOptionSwatchUrl,
   getOptionValue,
   isFieldVisibleByRules,
-  isLayerVisibleByRules,
   isOptionFieldType,
   normalizeDisplayType,
   defaultDisplayType,
   sanitizeTextInput,
 } from "../../utils/fieldHelpers";
+import {
+  renderStudioScene,
+  getPersonalizableDoodleLayers,
+} from "../../utils/studioSceneRenderer";
 
 export interface StudioScreenItem {
   id: string;
@@ -59,6 +59,7 @@ interface StudioStorefrontPreviewModalProps {
   widthPx: number;
   heightPx: number;
   fonts?: FontItem[];
+  doodlePacks?: any[];
 }
 
 export default function StudioStorefrontPreviewModal({
@@ -72,6 +73,7 @@ export default function StudioStorefrontPreviewModal({
   widthPx = 1000,
   heightPx = 1000,
   fonts = [],
+  doodlePacks = [],
 }: StudioStorefrontPreviewModalProps) {
   const [activeScreenIndex, setActiveScreenIndex] = useState(0);
   const [isWishlisted, setIsWishlisted] = useState(false);
@@ -81,6 +83,8 @@ export default function StudioStorefrontPreviewModal({
   const [formValues, setFormValues] = useState<{ [fieldId: string]: any }>({});
   // Customer Uploaded Photo Blob URLs (Field ID -> image URL)
   const [customerPhotoUploads, setCustomerPhotoUploads] = useState<{ [fieldId: string]: string }>({});
+  // Customer Doodle Alphabet text overrides (Layer ID -> custom text)
+  const [doodleTextValues, setDoodleTextValues] = useState<{ [layerId: string]: string }>({});
 
   const canvasElRef = useRef<HTMLCanvasElement>(null);
   const fabricCanvasRef = useRef<fabric.Canvas | null>(null);
@@ -91,6 +95,12 @@ export default function StudioStorefrontPreviewModal({
     const source = activeScreen?.fields && activeScreen.fields.length > 0 ? activeScreen.fields : fields;
     return [...source].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
   }, [activeScreen, fields]);
+
+  // Doodle Alphabet layers on this screen the customer may personalize with their own text
+  const personalizableDoodleLayers = useMemo(
+    () => getPersonalizableDoodleLayers(activeLayers),
+    [activeLayers]
+  );
 
   useEffect(() => {
     if (!isOpen) return;
@@ -113,6 +123,20 @@ export default function StudioStorefrontPreviewModal({
       return initialVals;
     });
   }, [isOpen, activeScreenIndex, activeFields]);
+
+  // Seed default doodle text for personalizable Doodle Alphabet layers
+  useEffect(() => {
+    if (!isOpen) return;
+    setDoodleTextValues((prev) => {
+      const next = { ...prev };
+      personalizableDoodleLayers.forEach((l) => {
+        if (next[l.id] === undefined) {
+          next[l.id] = l.properties?.text || "";
+        }
+      });
+      return next;
+    });
+  }, [isOpen, activeScreenIndex, personalizableDoodleLayers]);
 
   // Handle Form Input Value Change
   useEffect(() => {
@@ -173,147 +197,51 @@ export default function StudioStorefrontPreviewModal({
     };
   }, [isOpen, widthPx, heightPx]);
 
-  // Render Fabric Objects on Live Canvas whenever Form Values or Active Screen changes
+  // Render the storefront scene onto the live canvas whenever the customer's
+  // inputs or the active screen change. Delegates to the shared read-only
+  // renderer so the preview matches the Studio editor for every layer type
+  // (text w/ gradients & curves, option-driven assets, photo-upload masks,
+  // doodle alphabet, word-search) and honors condition rules.
   useEffect(() => {
     const fc = fabricCanvasRef.current;
     if (!isOpen || !fc) return;
-    let cancelled = false;
+    const token = { cancelled: false };
 
-    const loadImage = (src: string) =>
-      new Promise<HTMLImageElement | null>((resolve) => {
-        const imgEl = new Image();
-        imgEl.crossOrigin = "anonymous";
-        imgEl.onload = () => resolve(imgEl);
-        imgEl.onerror = () => resolve(null);
-        imgEl.src = src;
-      });
-
-    const addImageLayer = (
-      imgEl: HTMLImageElement,
-      left: number,
-      top: number,
-      width: number,
-      height: number,
-      rotation: number,
-      opacity: number
-    ) => {
-      if (cancelled || !fc) return;
-      const nativeW = imgEl.naturalWidth || imgEl.width || width || 1;
-      const nativeH = imgEl.naturalHeight || imgEl.height || height || 1;
-      const fabricImg = new fabric.Image(imgEl, {
-        left,
-        top,
-        originX: "center",
-        originY: "center",
-        angle: rotation || 0,
-        scaleX: width / nativeW,
-        scaleY: height / nativeH,
-        opacity,
-        selectable: false,
-        evented: false,
-      });
-      fc.add(fabricImg);
-    };
-
-    (async () => {
-      fc.clear();
-      fc.setDimensions({ width: widthPx, height: heightPx });
-      fc.backgroundColor =
-        activeScreen?.bgColor && activeScreen.bgColor !== "transparent" ? activeScreen.bgColor : "#ffffff";
-
-      if (activeScreen?.bgUrl) {
-        const bgImg = await loadImage(activeScreen.bgUrl);
-        if (cancelled || !fc) return;
-        if (bgImg) {
-          const fabricBg = new fabric.Image(bgImg, {
-            left: 0,
-            top: 0,
-            originX: "left",
-            originY: "top",
-            scaleX: widthPx / (bgImg.naturalWidth || widthPx),
-            scaleY: heightPx / (bgImg.naturalHeight || heightPx),
-            selectable: false,
-            evented: false,
-          });
-          fc.add(fabricBg);
-        }
-      }
-
-      const sortedLayers = [...activeLayers]
-        .filter((l) => l.isVisible && isLayerVisibleByRules(l.id, rules, formValues))
-        .sort((a, b) => a.zIndex - b.zIndex);
-
-      for (const layer of sortedLayers) {
-        if (cancelled) return;
-        const props = layer.properties || {};
-        const linkedField = layer.linkedFieldId
-          ? activeFields.find((f) => f.id === layer.linkedFieldId)
-          : undefined;
-        const linkedValue = layer.linkedFieldId ? formValues[layer.linkedFieldId] : undefined;
-        const linkedOption = linkedField ? findOptionByValue(linkedField, linkedValue) : undefined;
-
-        let drawX = layer.posX + layer.width / 2;
-        let drawY = layer.posY + layer.height / 2;
-        let drawW = layer.width;
-        let drawH = layer.height;
-        let drawRot = layer.rotation || 0;
-        if (linkedOption?.hasCustomPosition) {
-          if (linkedOption.posX !== undefined) drawX = linkedOption.posX + (linkedOption.width ?? drawW) / 2;
-          if (linkedOption.posY !== undefined) drawY = linkedOption.posY + (linkedOption.height ?? drawH) / 2;
-          if (linkedOption.width !== undefined) drawW = linkedOption.width;
-          if (linkedOption.height !== undefined) drawH = linkedOption.height;
-          if (linkedOption.rotation !== undefined) drawRot = linkedOption.rotation;
-        }
-
-        if (layer.layerType === "TEXT") {
-          let textStr = props.text !== undefined ? String(props.text) : layer.name;
-          if (linkedField?.fieldType === "CALENDAR" && linkedValue) {
-            textStr = formatCalendarDate(String(linkedValue), linkedField.config?.dateFormat);
-          } else if (linkedField?.fieldType === "TEXT" && linkedValue !== undefined) {
-            textStr = sanitizeTextInput(String(linkedValue), linkedField.config);
-          } else if (linkedValue !== undefined && linkedValue !== "") {
-            textStr = String(linkedValue);
-          }
-          const font = props.fontFamily || "Roboto";
-          await ensureFontLoaded(font, fonts);
-          if (cancelled || !fc) return;
-          const textObj = new fabric.Text(textStr || " ", {
-            left: drawX,
-            top: drawY,
-            originX: "center",
-            originY: "center",
-            fontFamily: font,
-            fontSize: Number(props.fontSize) || 36,
-            fill: props.color || "#1e293b",
-            angle: drawRot,
-            opacity: props.opacity !== undefined ? Number(props.opacity) : 1,
-            selectable: false,
-            evented: false,
-          });
-          fc.add(textObj);
-        } else if (layer.layerType === "ASSET" || layer.layerType === "IMAGE" || layer.layerType === "OVERLAY") {
-          const assetUrl = getOptionAssetUrl(linkedOption) || props.assetUrl;
-          if (!assetUrl) continue;
-          const imgEl = await loadImage(assetUrl);
-          if (cancelled || !imgEl) continue;
-          addImageLayer(imgEl, drawX, drawY, drawW, drawH, drawRot, props.opacity !== undefined ? Number(props.opacity) : 1);
-        } else if (layer.layerType === "PHOTO_UPLOAD") {
-          const customerAssetUrl =
-            (layer.linkedFieldId && customerPhotoUploads[layer.linkedFieldId]) || props.assetUrl;
-          if (!customerAssetUrl) continue;
-          const imgEl = await loadImage(customerAssetUrl);
-          if (cancelled || !imgEl) continue;
-          addImageLayer(imgEl, drawX, drawY, drawW, drawH, drawRot, props.opacity !== undefined ? Number(props.opacity) : 1);
-        }
-      }
-
-      if (!cancelled) fc.requestRenderAll();
-    })();
+    renderStudioScene({
+      canvas: fc,
+      widthPx,
+      heightPx,
+      bgUrl: activeScreen?.bgUrl,
+      bgColor: activeScreen?.bgColor,
+      layers: activeLayers,
+      fields: activeFields,
+      rules,
+      formValues,
+      customerPhotoUploads,
+      doodleTextValues,
+      fonts,
+      doodlePacks,
+      token,
+    });
 
     return () => {
-      cancelled = true;
+      token.cancelled = true;
     };
-  }, [isOpen, activeScreenIndex, formValues, customerPhotoUploads, activeLayers, activeFields, rules, widthPx, heightPx, fonts, activeScreen]);
+  }, [
+    isOpen,
+    activeScreenIndex,
+    formValues,
+    customerPhotoUploads,
+    doodleTextValues,
+    activeLayers,
+    activeFields,
+    rules,
+    widthPx,
+    heightPx,
+    fonts,
+    doodlePacks,
+    activeScreen,
+  ]);
 
   if (!isOpen) return null;
 
@@ -657,6 +585,34 @@ export default function StudioStorefrontPreviewModal({
                   })
                 )}
               </div>
+
+              {/* DOODLE ALPHABET PERSONALIZATION INPUTS */}
+              {personalizableDoodleLayers.length > 0 && (
+                <div className="space-y-4">
+                  {personalizableDoodleLayers.map((layer) => (
+                    <div key={layer.id} className="space-y-1.5">
+                      <label className="block text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+                        <span>{layer.properties?.fieldLabel || "Custom Doodle Text"}</span>
+                      </label>
+                      {layer.properties?.helpText && (
+                        <p className="text-[11px] text-slate-500 font-medium -mt-0.5">
+                          {layer.properties.helpText}
+                        </p>
+                      )}
+                      <input
+                        type="text"
+                        value={doodleTextValues[layer.id] ?? ""}
+                        onChange={(e) =>
+                          setDoodleTextValues((prev) => ({ ...prev, [layer.id]: e.target.value }))
+                        }
+                        placeholder="Type your text..."
+                        className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold tracking-wide text-slate-800 focus:bg-white focus:border-purple-600 focus:outline-none transition shadow-2xs"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* 3. SHOPIFY ACTION BUTTONS */}

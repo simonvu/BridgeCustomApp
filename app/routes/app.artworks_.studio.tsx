@@ -2395,6 +2395,7 @@ function detectCleanNameFromFileName(fileName: string): string {
         widthPx={widthPx}
         heightPx={heightPx}
         fonts={fonts}
+        doodlePacks={doodlePacks}
       />
 
       {/* Unsaved Changes Confirmation Modal */}
