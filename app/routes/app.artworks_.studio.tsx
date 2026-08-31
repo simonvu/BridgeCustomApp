@@ -1,6 +1,6 @@
 import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useNavigate, useSearchParams } from "@remix-run/react";
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import {
   ArrowLeft,
   Save,
@@ -17,6 +17,7 @@ import {
   ChevronDown,
   X,
   Download,
+  GitBranch,
 } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import prisma from "../db.server";
@@ -28,6 +29,7 @@ import StudioPropertyPanel from "../components/studio/StudioPropertyPanel";
 import { autoGenerateSquareThumbnail } from "../utils/thumbnailGenerator";
 import StudioScreenBar, { StudioScreenItem } from "../components/studio/StudioScreenBar";
 import StudioTopToolbar from "../components/studio/StudioTopToolbar";
+import StudioConditionPanel from "../components/studio/StudioConditionPanel";
 import StudioStorefrontPreviewModal from "../components/studio/StudioStorefrontPreviewModal";
 import MediaSelectModal from "../components/MediaSelectModal";
 
@@ -283,6 +285,28 @@ export default function ArtworkStudioRoute() {
   const fields = activeScreen?.fields || [];
 
   const [rules, setRules] = useState<StudioConditionRuleItem[]>(artworkData?.rules || []);
+  const [conditionsModalOpen, setConditionsModalOpen] = useState(false);
+
+  const handleAddRule = (rule: Omit<StudioConditionRuleItem, "id">) => {
+    const newRule: StudioConditionRuleItem = {
+      ...rule,
+      id: `rule_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    };
+    setRules((prev) => [...prev, newRule]);
+    setIsDirty(true);
+  };
+
+  const handleDeleteRule = (ruleId: string) => {
+    setRules((prev) => prev.filter((r) => r.id !== ruleId));
+    setIsDirty(true);
+  };
+
+  // Condition rules that belong to the active screen (their source field lives here)
+  const activeScreenRules = useMemo(() => {
+    const ids = new Set(fields.map((f) => f.id));
+    return rules.filter((r) => ids.has(r.sourceFieldId));
+  }, [rules, fields]);
+
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(() => (layers[0]?.id ? [layers[0].id] : []));
 
   const handleSelectLayer = (layerId: string | null, isMultiKey: boolean = false) => {
@@ -1728,6 +1752,19 @@ function detectCleanNameFromFileName(fileName: string): string {
                 <Eye className="w-3.5 h-3.5" />
               </button>
 
+              {/* Conditional Logic Rules Button */}
+              <button
+                type="button"
+                onClick={() => setConditionsModalOpen(true)}
+                className="relative px-2 h-6 rounded flex items-center gap-1 justify-center transition cursor-pointer text-amber-700 hover:bg-amber-50 bg-amber-50/50 border border-amber-200"
+                title="Conditional Logic Rules (show/hide fields & layers)"
+              >
+                <GitBranch className="w-3.5 h-3.5" />
+                {rules.length > 0 && (
+                  <span className="text-[10px] font-extrabold leading-none">{rules.length}</span>
+                )}
+              </button>
+
               <div className="w-[1px] h-3.5 bg-slate-300 mx-0.5" />
               <button
                 type="button"
@@ -2397,6 +2434,58 @@ function detectCleanNameFromFileName(fileName: string): string {
         fonts={fonts}
         doodlePacks={doodlePacks}
       />
+
+      {/* Conditional Logic Rules Modal */}
+      {conditionsModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-3xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-amber-50 text-amber-600 rounded-lg">
+                  <GitBranch className="w-4 h-4" />
+                </div>
+                <div>
+                  <h2 className="font-bold text-sm text-[#303030]">Conditional Logic</h2>
+                  <p className="text-[11px] text-[#616161]">
+                    Show or hide fields &amp; layers based on customer selections on &ldquo;
+                    {activeScreen?.name || "this view"}&rdquo;.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConditionsModalOpen(false)}
+                className="text-gray-400 hover:text-gray-700 hover:bg-gray-100 p-1.5 rounded-lg transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 max-h-[75vh] overflow-y-auto bg-white">
+              <StudioConditionPanel
+                rules={activeScreenRules}
+                fields={fields}
+                layers={layers}
+                onAddRule={handleAddRule}
+                onDeleteRule={handleDeleteRule}
+              />
+            </div>
+
+            <div className="bg-gray-50/80 border-t border-gray-200 px-6 py-3.5 flex items-center justify-between gap-2">
+              <span className="text-[11px] text-slate-500">
+                Rules apply in the live customizer &amp; storefront. Remember to Save.
+              </span>
+              <button
+                type="button"
+                onClick={() => setConditionsModalOpen(false)}
+                className="px-4 py-2 text-xs font-bold text-white bg-[#005bd3] hover:bg-[#004bb5] rounded-lg transition cursor-pointer shadow-2xs"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Unsaved Changes Confirmation Modal */}
       {showCloseConfirmModal && (

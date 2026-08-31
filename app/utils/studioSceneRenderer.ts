@@ -23,6 +23,7 @@ import {
   findOptionByValue,
   formatCalendarDate,
   getOptionAssetUrl,
+  isFieldHiddenByCondition,
   isLayerVisibleByRules,
   isOptionFieldType,
   sanitizeTextInput,
@@ -810,8 +811,17 @@ export async function renderStudioScene(params: RenderStudioSceneParams): Promis
   };
 
   // Draw in strict z-index order (awaiting each layer keeps stacking deterministic).
+  // A layer is hidden when: it is not visible, a HIDE/SHOW_LAYER rule hides it,
+  // or its linked field is currently hidden by a SHOW_FIELD/HIDE_FIELD rule (so a
+  // list-item field that hides another field also removes that field's artwork).
   const drawable = (layers || [])
-    .filter((l) => l.isVisible && l.layerType !== "MASK" && isLayerVisibleByRules(l.id, rules, formValues))
+    .filter(
+      (l) =>
+        l.isVisible &&
+        l.layerType !== "MASK" &&
+        isLayerVisibleByRules(l.id, rules, formValues) &&
+        !(l.linkedFieldId && isFieldHiddenByCondition(l.linkedFieldId, rules, formValues))
+    )
     .sort((a, b) => a.zIndex - b.zIndex);
 
   // Warm the browser image cache BEFORE clearing the canvas so the rebuild is
