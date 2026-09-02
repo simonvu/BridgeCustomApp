@@ -1458,6 +1458,8 @@ export default function StudioCanvas({
         let renderWidth = layer.width;
         let renderHeight = layer.height;
         let renderRotation = layer.rotation;
+        let flipHFlag = Boolean(props.flipH);
+        let flipVFlag = Boolean(props.flipV);
 
         if (layer.linkedFieldId) {
           const linkedF = (fields || []).find((f) => f.id === layer.linkedFieldId);
@@ -1476,6 +1478,8 @@ export default function StudioCanvas({
                 if (activeOpt.height !== undefined) renderHeight = activeOpt.height;
                 if (activeOpt.rotation !== undefined) renderRotation = activeOpt.rotation;
                 if (activeOpt.opacity !== undefined) opacity = Number(activeOpt.opacity);
+                if (activeOpt.flipH !== undefined) flipHFlag = Boolean(activeOpt.flipH);
+                if (activeOpt.flipV !== undefined) flipVFlag = Boolean(activeOpt.flipV);
               } else {
                 assetUrl = "";
               }
@@ -1511,8 +1515,10 @@ export default function StudioCanvas({
             restoreRawPhotoElement(existingImgObj);
             const currentW = (existingImgObj as any).nativeWidth || existingImgObj.width || 100;
             const currentH = (existingImgObj as any).nativeHeight || existingImgObj.height || 100;
-            const baseScaleX = renderWidth / currentW;
-            const baseScaleY = renderHeight / currentH;
+            const flipH = flipHFlag ? -1 : 1;
+            const flipV = flipVFlag ? -1 : 1;
+            const baseScaleX = (renderWidth / currentW) * flipH;
+            const baseScaleY = (renderHeight / currentH) * flipV;
 
             existingImgObj.set({
               left: centerX,
@@ -1564,8 +1570,10 @@ export default function StudioCanvas({
                 ? fc.getObjects().find((o: any) => o.layerId === freshLinkedMaskLayer.id)
                 : undefined;
 
-              const baseScaleX = renderWidth / nativeW;
-              const baseScaleY = renderHeight / nativeH;
+              const flipH = flipHFlag ? -1 : 1;
+              const flipV = flipVFlag ? -1 : 1;
+              const baseScaleX = (renderWidth / nativeW) * flipH;
+              const baseScaleY = (renderHeight / nativeH) * flipV;
 
               const fabricImg = new fabric.Image(imgEl, {
                 left: centerX,
@@ -1807,7 +1815,7 @@ export default function StudioCanvas({
     }
 
     fc.renderAll();
-  }, [layers, selectedLayerId, widthPx, heightPx, onSelectLayer, isPreviewMode, maskCacheVersion]);
+  }, [layers, fields, selectedLayerId, widthPx, heightPx, onSelectLayer, isPreviewMode, maskCacheVersion]);
 
   return (
     <div className="w-full h-full min-h-full bg-slate-200/70 overflow-auto p-4 relative select-none flex flex-col">

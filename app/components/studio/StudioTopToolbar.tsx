@@ -9,6 +9,7 @@ import {
   AlignRight,
   Italic,
   RotateCw,
+  FlipHorizontal,
   Sparkles,
   Sliders,
   Layers,
@@ -75,6 +76,8 @@ export default function StudioTopToolbar({
     const currentRotation = activeOpt?.rotation !== undefined ? activeOpt.rotation : selectedLayer.rotation || 0;
     const currentOpacity = activeOpt?.opacity !== undefined ? Number(activeOpt.opacity) : selectedLayer.properties?.opacity ?? 1;
 
+    const currentFlipH = Boolean(activeOpt?.flipH ?? selectedLayer.properties?.flipH);
+
     const handleOptionPropChange = (key: string, value: any) => {
       if (linkedField && onUpdateField && activeOptIdx >= 0) {
         const updatedOpts = [...options];
@@ -89,6 +92,11 @@ export default function StudioTopToolbar({
       }
       if (["posX", "posY", "width", "height", "rotation"].includes(key)) {
         onUpdateLayer(selectedLayer.id, { [key]: value });
+      }
+      if (key === "flipH" || key === "flipV") {
+        onUpdateLayer(selectedLayer.id, {
+          properties: { ...(selectedLayer.properties || {}), [key]: value },
+        });
       }
     };
 
@@ -198,6 +206,20 @@ export default function StudioTopToolbar({
               <span className="text-[9px] font-bold text-slate-400 pointer-events-none">°</span>
             </div>
           </div>
+
+          <button
+            type="button"
+            onClick={() => handleOptionPropChange("flipH", !currentFlipH)}
+            className={`h-7 px-2 rounded-md border text-[11px] font-bold flex items-center gap-1 cursor-pointer shrink-0 ${
+              currentFlipH
+                ? "bg-indigo-50 border-indigo-300 text-indigo-700"
+                : "bg-slate-100 border-slate-300 text-slate-600 hover:border-indigo-300"
+            }`}
+            title="Flip horizontally"
+          >
+            <FlipHorizontal className="w-3.5 h-3.5" />
+            Flip
+          </button>
         </div>
       </div>
     );
@@ -285,10 +307,24 @@ export default function StudioTopToolbar({
                 onChange={(e) => handlePropChange("opacity", Number(e.target.value))}
                 className="w-12 accent-emerald-600 cursor-pointer h-1.5 bg-slate-200 rounded-lg"
               />
-              <span className="font-mono text-[10px] font-bold text-emerald-700 w-7 text-right">
-                {Math.round((props.opacity !== undefined ? Number(props.opacity) : 1) * 100)}%
-              </span>
+            <span className="font-mono text-[10px] font-bold text-emerald-700 w-7 text-right">
+              {Math.round((props.opacity !== undefined ? Number(props.opacity) : 1) * 100)}%
+            </span>
             </div>
+
+            <button
+              type="button"
+              onClick={() => handlePropChange("flipH", !props.flipH)}
+              className={`h-7 px-2 rounded-md border text-[11px] font-bold flex items-center gap-1 cursor-pointer shrink-0 ${
+                props.flipH
+                  ? "bg-emerald-50 border-emerald-300 text-emerald-700"
+                  : "bg-slate-100 border-slate-300 text-slate-600 hover:border-emerald-300"
+              }`}
+              title="Flip horizontally"
+            >
+              <FlipHorizontal className="w-3.5 h-3.5" />
+              Flip
+            </button>
           </>
         )}
 

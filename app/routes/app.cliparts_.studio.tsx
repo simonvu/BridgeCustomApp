@@ -2,16 +2,11 @@ import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useNavigate, useSearchParams } from "@remix-run/react";
 import { useState, useMemo, useEffect } from "react";
 import {
-  ArrowLeft,
-  Save,
   Image as ImageIcon,
-  Type as TypeIcon,
   Upload,
-  Layers as LayersIcon,
-  Trash2,
-  Copy,
   Check,
-  Combine,
+  MoreHorizontal,
+  Download,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -19,15 +14,13 @@ import DashboardLayout from "../components/DashboardLayout";
 import prisma from "../db.server";
 import { requireTeamUserId } from "../services/auth.server";
 import StudioCanvas, { type CanvasLayerItem, getActiveFabricCanvas } from "../components/studio/StudioCanvas";
+import StudioTopToolbar from "../components/studio/StudioTopToolbar";
+import ClipArtAssetPanel from "../components/studio/ClipArtAssetPanel";
 import MediaSelectModal from "../components/MediaSelectModal";
 import { injectFontStylesheets, type FontItem } from "../utils/fontLoader";
-import {
-  analyzeAndArrangeImages,
-  computeAlign,
-  computeDistribute,
-  type AlignMode,
-} from "../utils/clipArtImport";
-import { computeConcat, dataUrlToFile } from "../utils/clipArtMerge";
+import { analyzeAndArrangeImages } from "../utils/clipArtImport";
+import { dataUrlToFile } from "../utils/clipArtMerge";
+import type { StudioFieldItem } from "../utils/fieldHelpers";
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const currentUserId = await requireTeamUserId(request);
@@ -101,15 +94,21 @@ export default function ClipArtStudioRoute() {
   const [clipArtId, setClipArtId] = useState<string | null>(clipart?.id || searchParams.get("id") || null);
   const [name, setName] = useState(clipart?.name || "New Clip Art");
   const [category, setCategory] = useState(clipart?.category || "General");
+  const [saveStatus, setSaveStatus] = useState<"DRAFT" | "PUBLISHED">(
+    clipart?.status === "PUBLISHED" ? "PUBLISHED" : "DRAFT"
+  );
   const [widthPx, setWidthPx] = useState(clipart?.widthPx || 1000);
   const [heightPx, setHeightPx] = useState(clipart?.heightPx || 1000);
   const [layers, setLayers] = useState<CanvasLayerItem[]>(() => parseLayers(clipart?.layers));
   const [fields, setFields] = useState<any[]>(() => parseFields(clipart?.fields));
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>([]);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [isSaving, setIsSaving] = useState(false);
   const [savedToast, setSavedToast] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
+  const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [rightSidebarWidthPx, setRightSidebarWidthPx] = useState(420);
 
   const selectedLayerId = selectedLayerIds.length === 1 ? selectedLayerIds[0] : null;
   const selectedLayer = useMemo(
@@ -117,16 +116,30 @@ export default function ClipArtStudioRoute() {
     [layers, selectedLayerId]
   );
 
-  // Media picker: purpose distinguishes single add / replace vs multi import
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [pickerMode, setPickerMode] = useState<"ADD" | "IMPORT" | "REPLACE" | "OPTGROUP" | "ADD_VARIANTS">("ADD");
-  const [replaceTargetId, setReplaceTargetId] = useState<string | null>(null);
+  const [pickerMultiSelect, setPickerMultiSelect] = useState(true);
+  const [pickerTarget, setPickerTarget] = useState<{
+    type: "LAYER" | "OPTION" | "BATCH_OPTIONS" | "IMPORT" | "OPTGROUP";
+    layerId?: string;
+    fieldId?: string;
+    optionIndex?: number;
+    optionTargetType?: "SWATCH" | "ASSET";
+  } | null>(null);
 
-  // Option group of the currently selected layer (if it is variant-linked)
-  const selectedGroupField = useMemo(
-    () => (selectedLayer?.linkedFieldId ? fields.find((f) => f.id === selectedLayer.linkedFieldId) : null),
-    [fields, selectedLayer]
-  );
+  const handleStartResizingRightSidebar = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = rightSidebarWidthPx;
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      setRightSidebarWidthPx(Math.max(280, Math.min(650, startWidth + (startX - moveEvent.clientX))));
+    };
+    const handleMouseUp = () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  };
 
   const nextZ = () => (layers.length > 0 ? Math.max(...layers.map((l) => l.zIndex)) + 1 : 0);
 
@@ -143,10 +156,6 @@ export default function ClipArtStudioRoute() {
 
   const handleUpdateLayer = (layerId: string, patch: Partial<CanvasLayerItem>) => {
     setLayers((prev) => prev.map((l) => (l.id === layerId ? { ...l, ...patch } : l)));
-  };
-
-  const applyPatches = (patches: Record<string, Partial<CanvasLayerItem>>) => {
-    setLayers((prev) => prev.map((l) => (patches[l.id] ? { ...l, ...patches[l.id] } : l)));
   };
 
   const handleUpdateProps = (layerId: string, propsPatch: Record<string, any>) => {
@@ -167,26 +176,179 @@ export default function ClipArtStudioRoute() {
   const handleDuplicateLayer = (layerId: string) => {
     const src = layers.find((l) => l.id === layerId);
     if (!src) return;
+    const stamp = Date.now();
+    const rnd = Math.random().toString(36).slice(2, 6);
+    let newLinkedFieldId = src.linkedFieldId;
+    if (src.linkedFieldId) {
+      const srcField = fields.find((f) => f.id === src.linkedFieldId);
+      if (srcField) {
+        const newFieldId = `field_${stamp}_${rnd}`;
+        const srcOpts = srcField.config?.options || [];
+        const options = srcOpts.map((o: any, i: number) => ({
+          ...o,
+          id: `opt_${stamp}_${i}_${rnd}`,
+          value: `${o.value || "v"}_copy_${rnd}`,
+        }));
+        const srcActiveIdx = srcOpts.findIndex((o: any) => o.id === srcField.activeOptionId);
+        const activeOptionId = (srcActiveIdx >= 0 ? options[srcActiveIdx]?.id : options[0]?.id) as string | undefined;
+        setFields((prev) => [
+          ...prev,
+          {
+            ...srcField,
+            id: newFieldId,
+            label: `${srcField.label || src.name} (Copy)`,
+            sortOrder: prev.length,
+            activeOptionId,
+            config: { ...(srcField.config || {}), options },
+          },
+        ]);
+        newLinkedFieldId = newFieldId;
+      }
+    }
     const copy: CanvasLayerItem = {
       ...src,
-      id: `layer_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      id: `layer_${stamp}_${rnd}`,
       name: `${src.name} (Copy)`,
       posX: src.posX + 20,
       posY: src.posY + 20,
       zIndex: nextZ(),
+      linkedFieldId: newLinkedFieldId,
       properties: JSON.parse(JSON.stringify(src.properties || {})),
     };
     setLayers((prev) => [...prev, copy]);
     setSelectedLayerIds([copy.id]);
   };
 
-  const openPicker = (
-    mode: "ADD" | "IMPORT" | "REPLACE" | "OPTGROUP" | "ADD_VARIANTS",
-    targetId?: string
-  ) => {
-    setPickerMode(mode);
-    setReplaceTargetId(targetId || null);
+  const openPicker = (target: NonNullable<typeof pickerTarget>, multi = true) => {
+    setPickerTarget(target);
+    setPickerMultiSelect(multi);
     setPickerOpen(true);
+  };
+
+  const handleOpenMediaPickerForLayer = (layerId: string) => {
+    openPicker({ type: "LAYER", layerId }, false);
+  };
+
+  const handleOpenMediaPickerForBatchOptions = (fieldId: string) => {
+    openPicker({ type: "BATCH_OPTIONS", fieldId }, true);
+  };
+
+  const handleUpdateField = (fieldId: string, updatedProps: Partial<StudioFieldItem>) => {
+    setFields((prev) => prev.map((f) => (f.id === fieldId ? { ...f, ...updatedProps } : f)));
+    if (updatedProps.label) {
+      setLayers((prev) =>
+        prev.map((l) => (l.linkedFieldId === fieldId ? { ...l, name: updatedProps.label! } : l))
+      );
+    }
+  };
+
+  const handlePreviewOptionChoice = (fieldId: string, option: any) => {
+    const linkedLayer = layers.find((l) => l.linkedFieldId === fieldId);
+    if (!linkedLayer) return;
+    const updatedProps: Partial<CanvasLayerItem> = {
+      properties: {
+        ...(linkedLayer.properties || {}),
+        assetUrl: option.assetImageUrl || linkedLayer.properties?.assetUrl,
+      },
+    };
+    if (option.posX !== undefined) updatedProps.posX = option.posX;
+    if (option.posY !== undefined) updatedProps.posY = option.posY;
+    if (option.width !== undefined) updatedProps.width = option.width;
+    if (option.height !== undefined) updatedProps.height = option.height;
+    if (option.rotation !== undefined) updatedProps.rotation = option.rotation;
+    if (option.opacity !== undefined) {
+      updatedProps.properties = { ...updatedProps.properties, opacity: Number(option.opacity) };
+    }
+    handleUpdateLayer(linkedLayer.id, updatedProps);
+    setSelectedLayerIds([linkedLayer.id]);
+  };
+
+  const renameApartment = (layerId: string, label: string) => {
+    handleUpdateLayer(layerId, { name: label });
+    const layer = layers.find((l) => l.id === layerId);
+    if (layer?.linkedFieldId) handleUpdateField(layer.linkedFieldId, { label });
+  };
+
+  const ensureOptionGroup = (layerId: string): string | null => {
+    const layer = layers.find((l) => l.id === layerId);
+    if (!layer) return null;
+    if (layer.linkedFieldId) return layer.linkedFieldId;
+    const fieldId = `field_${Date.now()}`;
+    const url = layer.properties?.assetUrl || "";
+    const opt = {
+      id: `opt_${Date.now()}`,
+      label: layer.name || "Option 1",
+      value: `variant_${Math.random().toString(36).slice(2, 6)}`,
+      assetImageUrl: url,
+      swatchImageUrl: url,
+      isVisible: true,
+    };
+    setFields((prev) => [
+      ...prev,
+      {
+        id: fieldId,
+        label: layer.name || "Option Group",
+        fieldType: "FIELD_ASSET",
+        displayType: "THUMBNAIL",
+        sortOrder: prev.length,
+        isRequired: false,
+        allowPersonalized: true,
+        activeOptionId: opt.id,
+        config: { options: [opt] },
+      },
+    ]);
+    handleUpdateLayer(layerId, { linkedFieldId: fieldId });
+    return fieldId;
+  };
+
+  const handleAddVariants = (layerId: string) => {
+    const fieldId = ensureOptionGroup(layerId);
+    if (fieldId) handleOpenMediaPickerForBatchOptions(fieldId);
+  };
+
+  const handleDeleteVariant = (fieldId: string, optId: string) => {
+    setFields((prev) =>
+      prev.map((f) => {
+        if (f.id !== fieldId) return f;
+        const options = (f.config?.options || []).filter((o: any) => o.id !== optId);
+        const nextActive = f.activeOptionId === optId ? options[0]?.id : f.activeOptionId;
+        if (options[0] && f.activeOptionId === optId) {
+          handlePreviewOptionChoice(fieldId, options[0]);
+        }
+        return { ...f, activeOptionId: nextActive, config: { ...(f.config || {}), options } };
+      })
+    );
+  };
+
+  const handleResetGroup = (layerId: string) => {
+    const layer = layers.find((l) => l.id === layerId);
+    if (!layer) return;
+    const w = layer.properties?.naturalWidth || layer.width;
+    const h = layer.properties?.naturalHeight || layer.height;
+    const maxDim = Math.min(widthPx, heightPx) * 0.6;
+    const scale = Math.min(maxDim / Math.max(1, w), maxDim / Math.max(1, h), 1);
+    const nw = Math.max(20, Math.round(w * scale));
+    const nh = Math.max(20, Math.round(h * scale));
+    handleUpdateLayer(layerId, {
+      posX: Math.round((widthPx - nw) / 2),
+      posY: Math.round((heightPx - nh) / 2),
+      width: nw,
+      height: nh,
+      rotation: 0,
+      properties: { ...(layer.properties || {}), flipH: false, flipV: false, opacity: 1 },
+    });
+    if (layer.linkedFieldId) {
+      setFields((prev) =>
+        prev.map((f) => {
+          if (f.id !== layer.linkedFieldId) return f;
+          const options = (f.config?.options || []).map((o: any) => {
+            const { posX, posY, width, height, rotation, flipH, flipV, ...rest } = o;
+            return rest;
+          });
+          return { ...f, config: { ...(f.config || {}), options } };
+        })
+      );
+    }
   };
 
   const measureImage = (url: string): Promise<{ natW: number; natH: number }> =>
@@ -274,80 +436,70 @@ export default function ClipArtStudioRoute() {
     setTimeout(() => setStatusMsg(""), 2500);
   };
 
-  // Switch the active variant of an option group (updates preview + saved config)
-  const setActiveVariant = (fieldId: string, optId: string) => {
-    setFields((prev) => prev.map((f) => (f.id === fieldId ? { ...f, activeOptionId: optId } : f)));
-    const field = fields.find((f) => f.id === fieldId);
-    const opt = field?.config?.options?.find((o: any) => o.id === optId);
-    const layer = layers.find((l) => l.linkedFieldId === fieldId);
-    if (layer && opt) handleUpdateProps(layer.id, { assetUrl: opt.assetImageUrl });
-  };
-
-  const renameGroup = (fieldId: string, label: string) => {
-    setFields((prev) => prev.map((f) => (f.id === fieldId ? { ...f, label } : f)));
-    const layer = layers.find((l) => l.linkedFieldId === fieldId);
-    if (layer) handleUpdateLayer(layer.id, { name: label });
-  };
-
-  const addImageLayer = (fileUrl: string, fileName?: string) =>
-    new Promise<void>((resolve) => {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.onload = () => {
-        const natW = img.naturalWidth || 300;
-        const natH = img.naturalHeight || 300;
-        const maxDim = Math.min(widthPx, heightPx) * 0.6;
-        const scale = Math.min(maxDim / natW, maxDim / natH, 1);
-        const w = Math.max(20, Math.round(natW * scale));
-        const h = Math.max(20, Math.round(natH * scale));
-        const layer: CanvasLayerItem = {
-          id: `layer_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-          name: (fileName || "Image").replace(/\.[^/.]+$/, ""),
-          layerType: "ASSET",
-          zIndex: nextZ(),
-          posX: Math.round((widthPx - w) / 2),
-          posY: Math.round((heightPx - h) / 2),
-          width: w,
-          height: h,
-          rotation: 0,
-          isVisible: true,
-          isLocked: false,
-          properties: { assetUrl: fileUrl, opacity: 1, naturalWidth: natW, naturalHeight: natH, aspectRatio: natW / natH },
-        };
-        setLayers((prev) => [...prev, layer]);
-        setSelectedLayerIds([layer.id]);
-        resolve();
-      };
-      img.onerror = () => resolve();
-      img.src = fileUrl;
-    });
-
   const handlePickerSelect = async (files: any[]) => {
+    const target = pickerTarget;
     setPickerOpen(false);
-    if (!files || files.length === 0) return;
+    setPickerTarget(null);
+    if (!files || files.length === 0 || !target) return;
 
-    if (pickerMode === "REPLACE" && replaceTargetId) {
+    if (target.type === "LAYER" && target.layerId) {
       const url = files[0].url || files[0].thumbnailUrl;
-      handleUpdateProps(replaceTargetId, { assetUrl: url });
+      const layer = layers.find((l) => l.id === target.layerId);
+      handleUpdateProps(target.layerId, { assetUrl: url });
+      if (layer?.linkedFieldId) {
+        setFields((prev) =>
+          prev.map((f) => {
+            if (f.id !== layer.linkedFieldId) return f;
+            const options = (f.config?.options || []).map((o: any) =>
+              o.id === f.activeOptionId ? { ...o, assetImageUrl: url, swatchImageUrl: url } : o
+            );
+            return { ...f, config: { ...(f.config || {}), options } };
+          })
+        );
+      }
       return;
     }
 
-    if (pickerMode === "OPTGROUP") {
+    if (target.type === "OPTION" && target.fieldId != null && target.optionIndex != null) {
+      const url = files[0].url || files[0].thumbnailUrl;
+      const thumb = files[0].thumbnailUrl || url;
+      setFields((prev) =>
+        prev.map((f) => {
+          if (f.id !== target.fieldId) return f;
+          const options = [...(f.config?.options || [])];
+          if (!options[target.optionIndex!]) return f;
+          options[target.optionIndex!] = {
+            ...options[target.optionIndex!],
+            ...(target.optionTargetType === "SWATCH"
+              ? { swatchImageUrl: thumb }
+              : { assetImageUrl: url, swatchImageUrl: thumb }),
+          };
+          return { ...f, config: { ...(f.config || {}), options } };
+        })
+      );
+      const field = fields.find((f) => f.id === target.fieldId);
+      const opt = field?.config?.options?.[target.optionIndex];
+      if (opt && target.optionTargetType !== "SWATCH") {
+        handlePreviewOptionChoice(target.fieldId, { ...opt, assetImageUrl: url });
+      }
+      return;
+    }
+
+    if (target.type === "BATCH_OPTIONS" && target.fieldId) {
+      addVariantsToGroup(target.fieldId, files);
+      return;
+    }
+
+    if (target.type === "OPTGROUP") {
       await createOptionGroup(files);
       return;
     }
 
-    if (pickerMode === "ADD_VARIANTS" && replaceTargetId) {
-      addVariantsToGroup(replaceTargetId, files);
-      return;
-    }
-
-    if (pickerMode === "IMPORT") {
+    if (target.type === "IMPORT") {
       setStatusMsg("Importing & auto-arranging…");
       const sources = files.map((f) => ({ url: f.url || f.thumbnailUrl, name: f.fileName }));
       const result = await analyzeAndArrangeImages(sources, widthPx, heightPx);
       if (result.mode === "FULL") {
-        // Reconstruct original composition -> adopt the source canvas size.
         setWidthPx(result.canvasWidth);
         setHeightPx(result.canvasHeight);
         setLayers(result.layers);
@@ -364,17 +516,7 @@ export default function ClipArtStudioRoute() {
       setTimeout(() => setStatusMsg(""), 3500);
       return;
     }
-
-    // ADD (single or several as centered layers)
-    for (const f of files) {
-      await addImageLayer(f.url || f.thumbnailUrl, f.fileName);
-    }
   };
-
-  // ---- Align / Distribute / Concat ----
-  const doAlign = (mode: AlignMode) => applyPatches(computeAlign(layers, selectedLayerIds, mode, widthPx, heightPx));
-  const doDistribute = (axis: "h" | "v") => applyPatches(computeDistribute(layers, selectedLayerIds, axis));
-  const doConcat = (dir: "row" | "col") => applyPatches(computeConcat(layers, selectedLayerIds, dir, 0));
 
   // ---- Flatten selected layers into one image (rasterize + upload) ----
   const uploadDataUrl = async (dataUrl: string, fileName: string): Promise<{ url: string; key: string } | null> => {
@@ -392,17 +534,18 @@ export default function ClipArtStudioRoute() {
     return null;
   };
 
-  const handleFlatten = async () => {
-    if (selectedLayerIds.length < 2) {
-      setStatusMsg("Select 2+ layers to flatten.");
+  const handleFlatten = async (ids?: string[]) => {
+    const targetIds = ids && ids.length >= 2 ? ids : selectedLayerIds;
+    if (targetIds.length < 2) {
+      setStatusMsg("Select 2+ layers to merge.");
       setTimeout(() => setStatusMsg(""), 2500);
       return;
     }
     const fc = getActiveFabricCanvas();
     if (!fc) return;
-    setStatusMsg("Flattening…");
+    setStatusMsg("Merging…");
 
-    const sel = layers.filter((l) => selectedLayerIds.includes(l.id));
+    const sel = layers.filter((l) => targetIds.includes(l.id));
     const minX = Math.min(...sel.map((l) => l.posX));
     const minY = Math.min(...sel.map((l) => l.posY));
     const maxX = Math.max(...sel.map((l) => l.posX + l.width));
@@ -410,12 +553,11 @@ export default function ClipArtStudioRoute() {
     const bboxW = Math.max(1, Math.round(maxX - minX));
     const bboxH = Math.max(1, Math.round(maxY - minY));
 
-    // Hide non-selected fabric objects, deselect, drop selection frames.
     const objs = fc.getObjects();
     const hidden: any[] = [];
     fc.discardActiveObject();
     objs.forEach((o: any) => {
-      if (o.layerId && !selectedLayerIds.includes(o.layerId)) {
+      if (o.layerId && !targetIds.includes(o.layerId)) {
         if (o.visible !== false) {
           hidden.push(o);
           o.visible = false;
@@ -437,23 +579,33 @@ export default function ClipArtStudioRoute() {
       console.error("Flatten export failed", e);
     }
 
-    // Restore
     hidden.forEach((o) => (o.visible = true));
     fc.backgroundColor = origBg;
     fc.renderAll();
 
     if (!dataUrl) {
-      setStatusMsg("Flatten failed.");
+      setStatusMsg("Merge failed.");
       setTimeout(() => setStatusMsg(""), 2500);
       return;
     }
 
     const uploaded = await uploadDataUrl(dataUrl, `clipart_flat_${Date.now()}.png`);
     const finalUrl = uploaded?.url || dataUrl;
+    const stamp = Date.now();
+    const fieldId = `field_${stamp}_merged`;
+    const opt = {
+      id: `opt_${stamp}`,
+      label: "Merged",
+      value: "merged",
+      assetImageUrl: finalUrl,
+      swatchImageUrl: finalUrl,
+      isVisible: true,
+    };
+    const removedFieldIds = sel.map((l) => l.linkedFieldId).filter(Boolean) as string[];
 
     const flatLayer: CanvasLayerItem = {
-      id: `layer_${Date.now()}_flat`,
-      name: "Merged Object",
+      id: `layer_${stamp}_flat`,
+      name: "Merged",
       layerType: "ASSET",
       zIndex: Math.max(...sel.map((l) => l.zIndex)),
       posX: Math.round(minX),
@@ -463,11 +615,26 @@ export default function ClipArtStudioRoute() {
       rotation: 0,
       isVisible: true,
       isLocked: false,
+      linkedFieldId: fieldId,
       properties: { assetUrl: finalUrl, opacity: 1, naturalWidth: bboxW, naturalHeight: bboxH, aspectRatio: bboxW / bboxH },
     };
-    setLayers((prev) => [...prev.filter((l) => !selectedLayerIds.includes(l.id)), flatLayer]);
+    setFields((prev) => [
+      ...prev.filter((f) => !removedFieldIds.includes(f.id)),
+      {
+        id: fieldId,
+        label: "Merged",
+        fieldType: "FIELD_ASSET",
+        displayType: "THUMBNAIL",
+        sortOrder: prev.length,
+        isRequired: false,
+        allowPersonalized: true,
+        activeOptionId: opt.id,
+        config: { options: [opt] },
+      },
+    ]);
+    setLayers((prev) => [...prev.filter((l) => !targetIds.includes(l.id)), flatLayer]);
     setSelectedLayerIds([flatLayer.id]);
-    setStatusMsg("Merged into one object.");
+    setStatusMsg("Merged into one layer.");
     setTimeout(() => setStatusMsg(""), 2500);
   };
 
@@ -496,7 +663,7 @@ export default function ClipArtStudioRoute() {
     return dataUrl;
   };
 
-  const handleSave = async () => {
+  const handleSave = async (nextStatus: "DRAFT" | "PUBLISHED" = saveStatus) => {
     if (layers.length === 0) {
       setStatusMsg("Add or import layers before saving.");
       setTimeout(() => setStatusMsg(""), 2500);
@@ -537,12 +704,13 @@ export default function ClipArtStudioRoute() {
           compositeUrl,
           compositeKey,
           thumbnailUrl: thumbnailUrl || compositeUrl,
-          status: "PUBLISHED",
+          status: nextStatus,
         }),
       });
       const data = await res.json();
       if (data.success && data.clipart) {
         setClipArtId(data.clipart.id);
+        setSaveStatus(nextStatus);
         window.history.replaceState(null, "", `/app/cliparts/studio?id=${data.clipart.id}`);
         setSavedToast(true);
         setTimeout(() => setSavedToast(false), 2500);
@@ -558,75 +726,98 @@ export default function ClipArtStudioRoute() {
     }
   };
 
-  const sortedLayers = [...layers].sort((a, b) => b.zIndex - a.zIndex);
-  const multi = selectedLayerIds.length >= 2;
+  const handleDownload = () => {
+    const dataUrl = exportComposite(1);
+    if (!dataUrl) {
+      setStatusMsg("Nothing to download yet.");
+      setTimeout(() => setStatusMsg(""), 2000);
+      return;
+    }
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = `${name || "clipart"}.png`;
+    a.click();
+  };
 
-  const ToolBtn = ({
-    onClick,
-    title,
-    disabled,
-    children,
-  }: {
-    onClick: () => void;
-    title: string;
-    disabled?: boolean;
-    children: React.ReactNode;
-  }) => (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      title={title}
-      className="h-8 w-8 flex items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 hover:text-blue-600 hover:border-blue-300 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer shrink-0"
-    >
-      {children}
-    </button>
-  );
+  const pickerTitle =
+    pickerTarget?.type === "IMPORT"
+      ? "Import clip art set"
+      : pickerTarget?.type === "LAYER"
+        ? "Replace image"
+        : pickerTarget?.type === "OPTGROUP"
+          ? "Pick variant images for the option group"
+          : pickerTarget?.type === "BATCH_OPTIONS"
+            ? "Add more variants"
+            : pickerTarget?.type === "OPTION"
+              ? pickerTarget.optionTargetType === "SWATCH"
+                ? "Pick swatch image"
+                : "Pick variant image"
+              : "Select image";
 
   return (
     <DashboardLayout currentUser={currentUser} contentPaddingClassName="p-4">
       <div className="flex flex-col h-[calc(100vh-80px)] min-h-[640px] overflow-hidden bg-slate-100 rounded-xl border border-slate-200">
-        {/* Top bar */}
         <div className="bg-white border-b border-slate-200 px-3 py-2 flex items-center justify-between gap-2 shrink-0">
           <div className="flex items-center gap-2 min-w-0">
+            <h1 className="text-[14px] font-bold text-slate-900 shrink-0">Edit Asset</h1>
             <button
               type="button"
-              onClick={() => navigate("/app/cliparts")}
-              className="h-8 px-2.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs flex items-center gap-1.5 cursor-pointer"
+              onClick={() => setSaveStatus("DRAFT")}
+              className={`h-6 px-2 rounded text-[11px] font-bold cursor-pointer ${
+                saveStatus === "DRAFT" ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-500 hover:bg-amber-50"
+              }`}
             >
-              <ArrowLeft className="w-3.5 h-3.5" /> Library
+              Draft
             </button>
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="h-8 px-2.5 rounded-lg border border-slate-300 text-xs font-bold text-slate-900 focus:outline-none focus:border-blue-500 w-48"
-              placeholder="Clip art name"
-            />
-            <input
-              value={category}
-              onChange={(e) => setCategory(e.target.value)}
-              className="h-8 px-2.5 rounded-lg border border-slate-300 text-xs font-medium text-slate-700 focus:outline-none focus:border-blue-500 w-32"
-              placeholder="Category"
-            />
-            <span className="text-[11px] text-slate-400 font-mono">{widthPx}×{heightPx}</span>
+            <button
+              type="button"
+              onClick={() => setSaveStatus("PUBLISHED")}
+              className={`h-6 px-2 rounded text-[11px] font-bold cursor-pointer ${
+                saveStatus === "PUBLISHED" ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-500 hover:bg-emerald-50"
+              }`}
+            >
+              Published
+            </button>
+            {statusMsg && <span className="text-[11px] font-semibold text-blue-600 truncate max-w-[240px]">{statusMsg}</span>}
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            {statusMsg && <span className="text-[11px] font-semibold text-blue-600 truncate max-w-[240px]">{statusMsg}</span>}
-            <div className="flex items-center gap-1 bg-slate-100 border border-slate-300 rounded-lg p-0.5">
-              <button type="button" onClick={() => setZoom((z) => Math.max(0.2, Math.round((z - 0.1) * 10) / 10))} className="h-6 w-6 flex items-center justify-center hover:bg-slate-200 rounded cursor-pointer">
+            <div className="flex items-center gap-0.5 bg-slate-100 border border-slate-300 rounded-lg p-0.5">
+              <button
+                type="button"
+                onClick={() => setZoom((z) => Math.max(0.1, Math.round((z - 0.1) * 100) / 100))}
+                className="h-6 w-6 flex items-center justify-center hover:bg-slate-200 rounded cursor-pointer"
+                title="Zoom Out"
+              >
                 <ZoomOut className="w-3.5 h-3.5" />
               </button>
-              <button type="button" onClick={() => setZoom(1)} className="min-w-[36px] h-6 text-[11px] font-bold hover:bg-slate-200 rounded cursor-pointer">
+              <button
+                type="button"
+                onClick={() => setZoom(1)}
+                className="min-w-[36px] h-6 text-[11px] font-bold hover:bg-slate-200 rounded cursor-pointer"
+                title="Reset zoom"
+              >
                 {Math.round(zoom * 100)}%
               </button>
-              <button type="button" onClick={() => setZoom((z) => Math.min(3, Math.round((z + 0.1) * 10) / 10))} className="h-6 w-6 flex items-center justify-center hover:bg-slate-200 rounded cursor-pointer">
+              <button
+                type="button"
+                onClick={() => setZoom((z) => Math.min(3, Math.round((z + 0.1) * 100) / 100))}
+                className="h-6 w-6 flex items-center justify-center hover:bg-slate-200 rounded cursor-pointer"
+                title="Zoom In"
+              >
                 <ZoomIn className="w-3.5 h-3.5" />
               </button>
             </div>
             <button
               type="button"
-              onClick={handleSave}
+              onClick={() => navigate("/app/cliparts")}
+              className="h-8 px-3 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSave("DRAFT")}
               disabled={isSaving}
               className="h-8 px-3.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-60"
             >
@@ -634,228 +825,176 @@ export default function ClipArtStudioRoute() {
                 <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
               ) : savedToast ? (
                 <Check className="w-3.5 h-3.5" />
-              ) : (
-                <Save className="w-3.5 h-3.5" />
-              )}
-              {savedToast ? "Saved!" : "Save"}
+              ) : null}
+              {savedToast ? "Saved!" : "Save Draft"}
             </button>
-          </div>
-        </div>
-
-        {/* Action toolbar */}
-        <div className="bg-slate-50 border-b border-slate-200 px-3 py-2 flex items-center gap-3 flex-wrap shrink-0">
-          <div className="flex items-center gap-1.5">
-            <button type="button" onClick={() => openPicker("ADD")} className="h-8 px-2.5 rounded-lg bg-white border border-slate-300 hover:border-blue-300 text-slate-700 hover:text-blue-600 text-xs font-bold flex items-center gap-1.5 cursor-pointer" title="Add a fixed base image layer">
-              <ImageIcon className="w-3.5 h-3.5" /> Image
-            </button>
-            <button type="button" onClick={() => openPicker("OPTGROUP")} className="h-8 px-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer" title="Add an option group: a swappable part with image variants (e.g. Skin, Eyes, Hair)">
-              <LayersIcon className="w-3.5 h-3.5" /> Option Group
-            </button>
-            <button type="button" onClick={() => openPicker("IMPORT")} className="h-8 px-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer" title="Import a set of images and auto-arrange them">
-              <Upload className="w-3.5 h-3.5" /> Import & Auto-arrange
-            </button>
-          </div>
-
-          <div className="w-px h-6 bg-slate-300" />
-
-          {/* Align */}
-          <div className="flex items-center gap-1">
-            <span className="text-[10px] font-bold text-slate-400 uppercase mr-0.5">Align</span>
-            <ToolBtn onClick={() => doAlign("left")} title="Align left" disabled={selectedLayerIds.length === 0}><span className="text-[11px] font-bold">L</span></ToolBtn>
-            <ToolBtn onClick={() => doAlign("hcenter")} title="Align center X" disabled={selectedLayerIds.length === 0}><span className="text-[11px] font-bold">C</span></ToolBtn>
-            <ToolBtn onClick={() => doAlign("right")} title="Align right" disabled={selectedLayerIds.length === 0}><span className="text-[11px] font-bold">R</span></ToolBtn>
-            <ToolBtn onClick={() => doAlign("top")} title="Align top" disabled={selectedLayerIds.length === 0}><span className="text-[11px] font-bold">T</span></ToolBtn>
-            <ToolBtn onClick={() => doAlign("vcenter")} title="Align middle Y" disabled={selectedLayerIds.length === 0}><span className="text-[11px] font-bold">M</span></ToolBtn>
-            <ToolBtn onClick={() => doAlign("bottom")} title="Align bottom" disabled={selectedLayerIds.length === 0}><span className="text-[11px] font-bold">B</span></ToolBtn>
-            <ToolBtn onClick={() => doDistribute("h")} title="Distribute horizontally" disabled={selectedLayerIds.length < 3}><span className="text-[10px] font-bold">↔</span></ToolBtn>
-            <ToolBtn onClick={() => doDistribute("v")} title="Distribute vertically" disabled={selectedLayerIds.length < 3}><span className="text-[10px] font-bold">↕</span></ToolBtn>
-          </div>
-
-          <div className="w-px h-6 bg-slate-300" />
-
-          {/* Merge */}
-          <div className="flex items-center gap-1">
-            <span className="text-[10px] font-bold text-slate-400 uppercase mr-0.5">Merge</span>
-            <button type="button" onClick={() => doConcat("row")} disabled={!multi} className="h-8 px-2.5 rounded-lg bg-white border border-slate-300 hover:border-amber-300 text-slate-700 hover:text-amber-700 text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-40" title="Concat in a row">
-              <Combine className="w-3.5 h-3.5" /> Concat →
-            </button>
-            <button type="button" onClick={() => doConcat("col")} disabled={!multi} className="h-8 px-2 rounded-lg bg-white border border-slate-300 hover:border-amber-300 text-slate-700 hover:text-amber-700 text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-40" title="Concat in a column">
-              <Combine className="w-3.5 h-3.5 rotate-90" /> Concat ↓
-            </button>
-            <button type="button" onClick={handleFlatten} disabled={!multi} className="h-8 px-2.5 rounded-lg bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-40" title="Flatten selected layers into one object">
-              <Combine className="w-3.5 h-3.5" /> Flatten
-            </button>
-          </div>
-        </div>
-
-        {/* Body */}
-        <div className="flex-1 flex overflow-hidden">
-          {/* Canvas */}
-          <div className="flex-1 overflow-auto bg-slate-200/60">
-            <StudioCanvas
-              widthPx={widthPx}
-              heightPx={heightPx}
-              layers={layers}
-              fields={fields}
-              selectedLayerId={selectedLayerId}
-              selectedLayerIds={selectedLayerIds}
-              onSelectLayer={handleSelectLayer}
-              onUpdateLayer={handleUpdateLayer}
-              zoom={zoom}
-              showGrid={true}
-              workspaceBgColor="#ffffff"
-              fonts={fonts}
-              doodlePacks={[]}
-            />
-          </div>
-
-          {/* Right sidebar: layers + inspector */}
-          <div className="w-72 shrink-0 bg-white border-l border-slate-200 flex flex-col overflow-hidden">
-            <div className="px-3 py-2 border-b border-slate-200 flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                <LayersIcon className="w-3.5 h-3.5 text-slate-500" /> Layers ({layers.length})
-              </span>
-            </div>
-            <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {sortedLayers.length === 0 ? (
-                <div className="text-center text-[11px] text-slate-400 py-8">
-                  Add / import images or text to start building.
-                </div>
-              ) : (
-                sortedLayers.map((l) => {
-                  const isSel = selectedLayerIds.includes(l.id);
-                  return (
-                    <div
-                      key={l.id}
-                      onClick={(e) => handleSelectLayer(l.id, e.metaKey || e.ctrlKey)}
-                      className={`flex items-center gap-2 px-2 py-1.5 rounded-lg border cursor-pointer ${
-                        isSel ? "border-blue-500 bg-blue-50/60" : "border-transparent hover:bg-slate-50"
-                      }`}
-                    >
-                      <span className="w-7 h-7 rounded bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center shrink-0">
-                        {l.layerType === "TEXT" ? (
-                          <TypeIcon className="w-3.5 h-3.5 text-slate-500" />
-                        ) : l.properties?.assetUrl ? (
-                          <img src={l.properties.assetUrl} alt="" className="w-full h-full object-contain" />
-                        ) : (
-                          <ImageIcon className="w-3.5 h-3.5 text-slate-400" />
-                        )}
-                      </span>
-                      <span className="flex-1 truncate text-[11px] font-semibold text-slate-700">{l.name}</span>
-                      <button type="button" onClick={(e) => { e.stopPropagation(); handleDuplicateLayer(l.id); }} className="p-1 text-slate-400 hover:text-blue-600 cursor-pointer" title="Duplicate">
-                        <Copy className="w-3 h-3" />
-                      </button>
-                      <button type="button" onClick={(e) => { e.stopPropagation(); handleDeleteLayer(l.id); }} className="p-1 text-slate-400 hover:text-red-600 cursor-pointer" title="Delete">
-                        <Trash2 className="w-3 h-3" />
-                      </button>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            {/* Inspector */}
-            {selectedLayer && (
-              <div className="border-t border-slate-200 p-3 space-y-2.5 max-h-[45%] overflow-y-auto">
-                <div className="text-[11px] font-bold text-slate-700 uppercase tracking-wider">Properties</div>
-                <div className="grid grid-cols-2 gap-2">
-                  <label className="text-[10px] text-slate-500">X
-                    <input type="number" value={Math.round(selectedLayer.posX)} onChange={(e) => handleUpdateLayer(selectedLayer.id, { posX: Number(e.target.value) })} className="w-full mt-0.5 px-2 py-1 border border-slate-200 rounded text-xs" />
-                  </label>
-                  <label className="text-[10px] text-slate-500">Y
-                    <input type="number" value={Math.round(selectedLayer.posY)} onChange={(e) => handleUpdateLayer(selectedLayer.id, { posY: Number(e.target.value) })} className="w-full mt-0.5 px-2 py-1 border border-slate-200 rounded text-xs" />
-                  </label>
-                  <label className="text-[10px] text-slate-500">W
-                    <input type="number" value={Math.round(selectedLayer.width)} onChange={(e) => handleUpdateLayer(selectedLayer.id, { width: Math.max(4, Number(e.target.value)) })} className="w-full mt-0.5 px-2 py-1 border border-slate-200 rounded text-xs" />
-                  </label>
-                  <label className="text-[10px] text-slate-500">H
-                    <input type="number" value={Math.round(selectedLayer.height)} onChange={(e) => handleUpdateLayer(selectedLayer.id, { height: Math.max(4, Number(e.target.value)) })} className="w-full mt-0.5 px-2 py-1 border border-slate-200 rounded text-xs" />
-                  </label>
-                  <label className="text-[10px] text-slate-500">Rotation
-                    <input type="number" value={Math.round(selectedLayer.rotation || 0)} onChange={(e) => handleUpdateLayer(selectedLayer.id, { rotation: Number(e.target.value) })} className="w-full mt-0.5 px-2 py-1 border border-slate-200 rounded text-xs" />
-                  </label>
-                  <label className="text-[10px] text-slate-500">Opacity
-                    <input type="number" min={0} max={1} step={0.1} value={selectedLayer.properties?.opacity ?? 1} onChange={(e) => handleUpdateProps(selectedLayer.id, { opacity: Number(e.target.value) })} className="w-full mt-0.5 px-2 py-1 border border-slate-200 rounded text-xs" />
-                  </label>
-                </div>
-
-                {selectedLayer.layerType === "ASSET" && !selectedLayer.linkedFieldId && (
-                  <button type="button" onClick={() => openPicker("REPLACE", selectedLayer.id)} className="w-full h-8 rounded-lg border border-slate-300 hover:border-blue-300 text-xs font-bold text-slate-700 hover:text-blue-600 flex items-center justify-center gap-1.5 cursor-pointer">
-                    <ImageIcon className="w-3.5 h-3.5" /> Replace image
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setHeaderMenuOpen((v) => !v)}
+                className="h-8 w-8 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-600 flex items-center justify-center cursor-pointer"
+                title="More"
+              >
+                <MoreHorizontal className="w-4 h-4" />
+              </button>
+              {headerMenuOpen && (
+                <div className="absolute right-0 top-9 z-30 w-52 rounded-lg border border-slate-200 bg-white shadow-lg py-1 text-[12px]">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMenuOpen(false);
+                      handleSave("PUBLISHED");
+                    }}
+                    className="w-full px-3 py-1.5 text-left hover:bg-slate-50 cursor-pointer font-semibold text-slate-700"
+                  >
+                    Save & Publish
                   </button>
-                )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMenuOpen(false);
+                      openPicker({ type: "IMPORT" }, true);
+                    }}
+                    className="w-full px-3 py-1.5 text-left hover:bg-slate-50 cursor-pointer text-slate-700 flex items-center gap-2"
+                  >
+                    <Upload className="w-3.5 h-3.5 text-slate-400" /> Import & auto-arrange
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMenuOpen(false);
+                      openPicker({ type: "OPTGROUP" }, true);
+                    }}
+                    className="w-full px-3 py-1.5 text-left hover:bg-slate-50 cursor-pointer text-slate-700 flex items-center gap-2"
+                  >
+                    <ImageIcon className="w-3.5 h-3.5 text-slate-400" /> Option group from images
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMenuOpen(false);
+                      handleFlatten();
+                    }}
+                    className="w-full px-3 py-1.5 text-left hover:bg-slate-50 cursor-pointer text-slate-700"
+                  >
+                    Merge selected layers
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeaderMenuOpen(false);
+                      handleDownload();
+                    }}
+                    className="w-full px-3 py-1.5 text-left hover:bg-slate-50 cursor-pointer text-slate-700 flex items-center gap-2"
+                  >
+                    <Download className="w-3.5 h-3.5 text-slate-400" /> Download image
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
 
-                {selectedGroupField && (
-                  <div className="space-y-2 pt-2 border-t border-slate-100">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-bold text-emerald-700 uppercase tracking-wider">Option Group</span>
-                      <span className="text-[10px] text-slate-400">{selectedGroupField.config?.options?.length || 0} variants</span>
-                    </div>
-                    <label className="text-[10px] text-slate-500 block">
-                      Group name
-                      <input
-                        value={selectedGroupField.label}
-                        onChange={(e) => renameGroup(selectedGroupField.id, e.target.value)}
-                        className="w-full mt-0.5 px-2 py-1 border border-slate-200 rounded text-xs"
-                      />
-                    </label>
-                    <div className="text-[10px] text-slate-500">Active variant (click to preview)</div>
-                    <div className="grid grid-cols-4 gap-1.5">
-                      {(selectedGroupField.config?.options || []).map((opt: any) => {
-                        const isActive = selectedGroupField.activeOptionId === opt.id;
-                        return (
-                          <button
-                            key={opt.id}
-                            type="button"
-                            onClick={() => setActiveVariant(selectedGroupField.id, opt.id)}
-                            title={opt.label}
-                            className={`aspect-square rounded-md border overflow-hidden bg-white flex items-center justify-center ${
-                              isActive ? "border-emerald-500 ring-2 ring-emerald-500/30" : "border-slate-200 hover:border-slate-300"
-                            }`}
-                          >
-                            {opt.swatchImageUrl || opt.assetImageUrl ? (
-                              <img src={opt.swatchImageUrl || opt.assetImageUrl} className="w-full h-full object-contain" alt={opt.label} />
-                            ) : (
-                              <ImageIcon className="w-3 h-3 text-slate-300" />
-                            )}
-                          </button>
-                        );
-                      })}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => openPicker("ADD_VARIANTS", selectedGroupField.id)}
-                      className="w-full h-7 rounded-lg border border-emerald-300 text-[11px] font-bold text-emerald-700 hover:bg-emerald-50 flex items-center justify-center gap-1 cursor-pointer"
-                    >
-                      <ImageIcon className="w-3 h-3" /> Add variants
-                    </button>
-                    <p className="text-[10px] text-slate-400 leading-tight">
-                      In an artwork this becomes a customer field to pick a variant.
-                    </p>
-                  </div>
-                )}
+        <div className="flex-1 flex overflow-hidden">
+          <div className="flex-1 h-full flex flex-col overflow-hidden bg-slate-200/60 relative">
+            <StudioTopToolbar
+              selectedLayer={selectedLayer}
+              fields={fields}
+              fonts={fonts}
+              onUpdateLayer={handleUpdateLayer}
+              onUpdateField={handleUpdateField}
+              onOpenMediaPickerForLayer={handleOpenMediaPickerForLayer}
+            />
+            <div className="flex-1 relative overflow-auto">
+              <StudioCanvas
+                widthPx={widthPx}
+                heightPx={heightPx}
+                layers={layers}
+                fields={fields}
+                selectedLayerId={selectedLayerId}
+                selectedLayerIds={selectedLayerIds}
+                onSelectLayer={handleSelectLayer}
+                onUpdateLayer={handleUpdateLayer}
+                onUpdateField={handleUpdateField}
+                zoom={zoom}
+                showGrid={true}
+                workspaceBgColor="#ffffff"
+                fonts={fonts}
+                doodlePacks={[]}
+              />
+            </div>
+          </div>
 
-                {selectedLayer.layerType === "TEXT" && (
-                  <div className="space-y-2">
-                    <label className="text-[10px] text-slate-500 block">Text
-                      <input value={selectedLayer.properties?.text || ""} onChange={(e) => handleUpdateProps(selectedLayer.id, { text: e.target.value })} className="w-full mt-0.5 px-2 py-1 border border-slate-200 rounded text-xs" />
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <label className="text-[10px] text-slate-500">Font
-                        <select value={selectedLayer.properties?.fontFamily || "Roboto"} onChange={(e) => handleUpdateProps(selectedLayer.id, { fontFamily: e.target.value })} className="w-full mt-0.5 px-2 py-1 border border-slate-200 rounded text-xs">
-                          {(fonts.length ? fonts : [{ family: "Roboto" } as any]).map((f) => (
-                            <option key={f.family} value={f.family}>{f.family}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="text-[10px] text-slate-500">Color
-                        <input type="color" value={selectedLayer.properties?.color || "#111827"} onChange={(e) => handleUpdateProps(selectedLayer.id, { color: e.target.value })} className="w-full mt-0.5 h-7 border border-slate-200 rounded cursor-pointer" />
-                      </label>
-                    </div>
-                  </div>
+          <div
+            onMouseDown={handleStartResizingRightSidebar}
+            className="w-2 bg-slate-200/80 hover:bg-blue-300 border-x border-slate-300/60 cursor-ew-resize flex items-center justify-center group transition select-none shrink-0 z-20"
+            title="Drag left/right to adjust sidebar width"
+          >
+            <div className="h-8 w-1 rounded-full bg-slate-400 group-hover:bg-blue-600 transition" />
+          </div>
+
+          <div style={{ width: `${rightSidebarWidthPx}px` }} className="flex flex-col bg-white shrink-0">
+            <div className="h-9 px-3 border-b border-slate-200 bg-slate-50/80 flex items-center justify-between gap-2 shrink-0">
+              <div className="flex items-center gap-1.5 min-w-0 flex-1">
+                {isEditingTitle ? (
+                  <input
+                    type="text"
+                    autoFocus
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    onBlur={() => setIsEditingTitle(false)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === "Escape") setIsEditingTitle(false);
+                    }}
+                    className="font-bold text-slate-900 text-xs bg-white border border-blue-500 rounded px-2 py-1 focus:outline-none w-full shadow-2xs"
+                    placeholder="Clip art name"
+                  />
+                ) : (
+                  <span
+                    onDoubleClick={() => setIsEditingTitle(true)}
+                    className="font-bold text-slate-900 text-xs hover:bg-slate-200/60 rounded px-2 py-1 transition cursor-pointer truncate max-w-[220px] select-none"
+                    title="Double click to edit name"
+                  >
+                    {name || "Untitled Clip Art"}
+                  </span>
                 )}
+                <span className="text-[11px] text-slate-400 font-mono shrink-0">
+                  ({widthPx}×{heightPx})
+                </span>
               </div>
-            )}
+              <input
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="h-7 w-24 px-2 rounded-md border border-slate-200 text-[11px] font-medium text-slate-600 focus:outline-none focus:border-blue-500"
+                placeholder="Category"
+                title="Category"
+              />
+            </div>
+
+            <div className="flex-1 overflow-hidden">
+              <ClipArtAssetPanel
+                layers={layers}
+                fields={fields}
+                selectedLayerIds={selectedLayerIds}
+                onSelectLayer={(id) => handleSelectLayer(id)}
+                onAddGroup={() => openPicker({ type: "OPTGROUP" }, true)}
+                onAddVariants={handleAddVariants}
+                onSetActiveVariant={(fieldId, option) => {
+                  handleUpdateField(fieldId, { activeOptionId: option.id });
+                  handlePreviewOptionChoice(fieldId, option);
+                }}
+                onRename={renameApartment}
+                onToggleVisible={(id) => {
+                  const layer = layers.find((l) => l.id === id);
+                  if (layer) handleUpdateLayer(id, { isVisible: !layer.isVisible });
+                }}
+                onDuplicate={handleDuplicateLayer}
+                onReset={handleResetGroup}
+                onDelete={handleDeleteLayer}
+                onDeleteVariant={handleDeleteVariant}
+                onReorder={(newLayers) => setLayers(newLayers)}
+              />
+            </div>
           </div>
         </div>
       </div>
@@ -863,19 +1002,9 @@ export default function ClipArtStudioRoute() {
       <MediaSelectModal
         isOpen={pickerOpen}
         onClose={() => setPickerOpen(false)}
-        multiSelect={pickerMode !== "REPLACE"}
+        multiSelect={pickerMultiSelect}
         allowedCategory="IMAGE"
-        title={
-          pickerMode === "IMPORT"
-            ? "Import clip art set"
-            : pickerMode === "REPLACE"
-              ? "Replace image"
-              : pickerMode === "OPTGROUP"
-                ? "Pick variant images for the option group"
-                : pickerMode === "ADD_VARIANTS"
-                  ? "Add more variants"
-                  : "Add image"
-        }
+        title={pickerTitle}
         onSelect={handlePickerSelect}
       />
     </DashboardLayout>
