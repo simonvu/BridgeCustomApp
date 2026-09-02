@@ -181,6 +181,32 @@ export function isLayerVisibleByRules(
   return true;
 }
 
+/**
+ * True when a field is currently hidden specifically by a SHOW_FIELD / HIDE_FIELD
+ * condition rule (independent of `allowPersonalized`). Used to also hide a
+ * hidden field's linked canvas layer so conditions visibly affect the artwork.
+ */
+export function isFieldHiddenByCondition(
+  fieldId: string,
+  rules: StudioConditionRuleItem[] | undefined,
+  formValues: Record<string, unknown>
+): boolean {
+  if (!fieldId || !rules || rules.length === 0) return false;
+
+  const targeting = rules.filter(
+    (r) => (r.action === "SHOW_FIELD" || r.action === "HIDE_FIELD") && r.targetId === fieldId
+  );
+  if (targeting.length === 0) return false;
+
+  for (const rule of targeting) {
+    const parentVal = formValues[rule.sourceFieldId];
+    const matched = conditionMatches(parentVal, rule.operator, rule.targetValue);
+    if (rule.action === "SHOW_FIELD" && !matched) return true;
+    if (rule.action === "HIDE_FIELD" && matched) return true;
+  }
+  return false;
+}
+
 export function buildDefaultFieldConfig(fieldType: StudioFieldItem["fieldType"]): Record<string, unknown> {
   const stamp = Date.now();
   if (isOptionFieldType(fieldType)) {
