@@ -1,6 +1,6 @@
 import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useNavigate, useSearchParams } from "@remix-run/react";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import {
   Image as ImageIcon,
   Upload,
@@ -9,6 +9,10 @@ import {
   Download,
   ZoomIn,
   ZoomOut,
+  Undo2,
+  Redo2,
+  Save,
+  Trash2,
 } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import prisma from "../db.server";
@@ -115,6 +119,144 @@ export default function ClipArtStudioRoute() {
     () => layers.find((l) => l.id === selectedLayerId) || null,
     [layers, selectedLayerId]
   );
+
+  // ---- Undo / Redo history + unsaved-changes tracking ----
+  const historyRef = useRef<any[]>([]);
+  const historyIndexRef = useRef(-1);
+  const savedIndexRef = useRef(0);
+  const seededRef = useRef(false);
+  const isUndoRedoRef = useRef(false);
+  const [, forceHist] = useState(0);
+  const bump = () => forceHist((n) => n + 1);
+
+  const snapshot = () => ({
+    layers: JSON.parse(JSON.stringify(layers)),
+    fields: JSON.parse(JSON.stringify(fields)),
+    widthPx,
+    heightPx,
+  });
+
+  // Record a history entry whenever the design changes (skips undo/redo replays).
+  useEffect(() => {
+    if (!seededRef.current) {
+      seededRef.current = true;
+      historyRef.current = [snapshot()];
+      historyIndexRef.current = 0;
+      savedIndexRef.current = 0;
+      return;
+    }
+    if (isUndoRedoRef.current) {
+      isUndoRedoRef.current = false;
+      return;
+    }
+    const sliced = historyRef.current.slice(0, historyIndexRef.current + 1);
+    const updated = [...sliced, snapshot()];
+    // Cap history depth; keep the saved marker valid when trimming the front.
+    if (updated.length > 80) {
+      updated.shift();
+      savedIndexRef.current = Math.max(0, savedIndexRef.current - 1);
+    }
+    historyRef.current = updated;
+    historyIndexRef.current = updated.length - 1;
+    bump();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layers, fields, widthPx, heightPx]);
+
+  const applySnapshot = (snap: any) => {
+    isUndoRedoRef.current = true;
+    setLayers(JSON.parse(JSON.stringify(snap.layers)));
+    setFields(JSON.parse(JSON.stringify(snap.fields)));
+    setWidthPx(snap.widthPx);
+    setHeightPx(snap.heightPx);
+    setSelectedLayerIds((prev) => prev.filter((id) => snap.layers.some((l: any) => l.id === id)));
+  };
+
+  const canUndo = historyIndexRef.current > 0;
+  const canRedo = historyIndexRef.current < historyRef.current.length - 1;
+  const isDirty = historyIndexRef.current !== savedIndexRef.current;
+
+  const undo = () => {
+    if (historyIndexRef.current <= 0) return;
+    historyIndexRef.current -= 1;
+    applySnapshot(historyRef.current[historyIndexRef.current]);
+    bump();
+  };
+  const redo = () => {
+    if (historyIndexRef.current >= historyRef.current.length - 1) return;
+    historyIndexRef.current += 1;
+    applySnapshot(historyRef.current[historyIndexRef.current]);
+    bump();
+  };
+
+  const markSaved = () => {
+    savedIndexRef.current = historyIndexRef.current;
+    bump();
+  };
+
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
+  const handleBack = () => {
+    if (isDirty) setShowExitConfirm(true);
+    else navigate("/app/cliparts");
+  };
+
+  // Warn on browser tab close / reload when there are unsaved changes.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!isDirty) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [isDirty]);
+
+  // Keyboard: arrow-key nudge / delete for selected layers, plus undo/redo.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select" || t?.isContentEditable) return;
+
+      const isMac = navigator.platform.toUpperCase().includes("MAC");
+      const cmd = isMac ? e.metaKey : e.ctrlKey;
+      if (cmd && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redo();
+        else undo();
+        return;
+      }
+      if (cmd && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        redo();
+        return;
+      }
+
+      if (selectedLayerIds.length === 0) return;
+
+      if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
+        e.preventDefault();
+        const step = e.shiftKey ? 10 : 1;
+        let dx = 0;
+        let dy = 0;
+        if (e.key === "ArrowUp") dy = -step;
+        if (e.key === "ArrowDown") dy = step;
+        if (e.key === "ArrowLeft") dx = -step;
+        if (e.key === "ArrowRight") dx = step;
+        setLayers((prev) =>
+          prev.map((l) =>
+            selectedLayerIds.includes(l.id) && !l.isLocked ? { ...l, posX: l.posX + dx, posY: l.posY + dy } : l
+          )
+        );
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault();
+        selectedLayerIds.forEach((id) => handleDeleteLayer(id));
+        setSelectedLayerIds([]);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedLayerIds, layers, fields]);
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerMultiSelect, setPickerMultiSelect] = useState(true);
@@ -712,6 +854,7 @@ export default function ClipArtStudioRoute() {
         setClipArtId(data.clipart.id);
         setSaveStatus(nextStatus);
         window.history.replaceState(null, "", `/app/cliparts/studio?id=${data.clipart.id}`);
+        markSaved();
         setSavedToast(true);
         setTimeout(() => setSavedToast(false), 2500);
       } else {
@@ -785,6 +928,26 @@ export default function ClipArtStudioRoute() {
             <div className="flex items-center gap-0.5 bg-slate-100 border border-slate-300 rounded-lg p-0.5">
               <button
                 type="button"
+                onClick={undo}
+                disabled={!canUndo}
+                className="h-6 w-6 flex items-center justify-center rounded hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                title="Undo (Ctrl/Cmd + Z)"
+              >
+                <Undo2 className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={redo}
+                disabled={!canRedo}
+                className="h-6 w-6 flex items-center justify-center rounded hover:bg-slate-200 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                title="Redo (Ctrl/Cmd + Shift + Z)"
+              >
+                <Redo2 className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="flex items-center gap-0.5 bg-slate-100 border border-slate-300 rounded-lg p-0.5">
+              <button
+                type="button"
                 onClick={() => setZoom((z) => Math.max(0.1, Math.round((z - 0.1) * 100) / 100))}
                 className="h-6 w-6 flex items-center justify-center hover:bg-slate-200 rounded cursor-pointer"
                 title="Zoom Out"
@@ -810,10 +973,11 @@ export default function ClipArtStudioRoute() {
             </div>
             <button
               type="button"
-              onClick={() => navigate("/app/cliparts")}
-              className="h-8 px-3 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs cursor-pointer"
+              onClick={handleBack}
+              className="h-8 px-3 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs cursor-pointer flex items-center gap-1.5"
             >
-              Cancel
+              {isDirty && <span className="w-1.5 h-1.5 rounded-full bg-amber-500" title="Unsaved changes" />}
+              Close
             </button>
             <button
               type="button"
@@ -1007,6 +1171,60 @@ export default function ClipArtStudioRoute() {
         title={pickerTitle}
         onSelect={handlePickerSelect}
       />
+
+      {/* Unsaved changes confirmation on exit */}
+      {showExitConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-md w-full p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-amber-100 border border-amber-200 flex items-center justify-center text-amber-600 shrink-0 text-lg font-bold">
+                ⚠️
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-900 text-base">Save changes before leaving?</h3>
+                <p className="text-xs text-slate-500 mt-0.5">You have unsaved changes in this clip art.</p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={isSaving}
+                onClick={async () => {
+                  await handleSave(saveStatus);
+                  setShowExitConfirm(false);
+                  navigate("/app/cliparts");
+                }}
+                className="w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer disabled:opacity-60"
+              >
+                {isSaving ? (
+                  <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <Save className="w-4 h-4" />
+                )}
+                <span>Save &amp; Close</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowExitConfirm(false);
+                  navigate("/app/cliparts");
+                }}
+                className="w-full py-2.5 px-4 bg-slate-100 hover:bg-rose-50 border border-slate-300 hover:border-rose-300 text-slate-700 hover:text-rose-700 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>Discard &amp; Close</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowExitConfirm(false)}
+                className="w-full py-2 px-4 bg-transparent hover:bg-slate-100 text-slate-500 font-semibold text-xs rounded-xl transition cursor-pointer"
+              >
+                Keep editing
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </DashboardLayout>
   );
 }
