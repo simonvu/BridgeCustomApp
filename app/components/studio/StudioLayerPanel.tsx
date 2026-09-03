@@ -20,7 +20,9 @@ import {
   ListFilter,
   Images,
   RotateCcw,
+  RefreshCw,
   Grid,
+  Package,
 } from "lucide-react";
 
 import { StudioFieldItem } from "./StudioFieldPanel";
@@ -33,7 +35,7 @@ interface StudioLayerPanelProps {
   onSelectLayer: (layerId: string | null, isMultiKey?: boolean) => void;
   onUpdateLayer: (layerId: string, updatedProps: Partial<CanvasLayerItem>) => void;
   onUpdateField?: (fieldId: string, updatedProps: Partial<StudioFieldItem>) => void;
-  onAddLayer: (layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY" | "DROPDOWN" | "WORD_SEARCH_PUZZLE" | "DOODLE_ALPHABET") => void;
+  onAddLayer: (layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY" | "DROPDOWN" | "WORD_SEARCH_PUZZLE" | "DOODLE_ALPHABET" | "CLIPART") => void;
   onAddMaskLayer?: (photoLayerId: string) => void;
   onOpenMediaPickerForOption?: (fieldId: string, optionIndex: number, targetType: "SWATCH" | "ASSET") => void;
   onOpenMediaPickerForBatchOptions?: (fieldId: string) => void;
@@ -41,6 +43,8 @@ interface StudioLayerPanelProps {
   onDuplicateLayer?: (layerId: string) => void;
   onDeleteLayer: (layerId: string) => void;
   onReorderLayers: (reorderedLayers: CanvasLayerItem[]) => void;
+  onReloadClipArt?: (layerId: string) => void;
+  reloadingClipArtLayerId?: string | null;
 }
 
 export default function StudioLayerPanel({
@@ -59,6 +63,8 @@ export default function StudioLayerPanel({
   onDuplicateLayer,
   onDeleteLayer,
   onReorderLayers,
+  onReloadClipArt,
+  reloadingClipArtLayerId = null,
 }: StudioLayerPanelProps) {
   const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
   const [showAddMenu, setShowAddMenu] = useState(false);
@@ -164,6 +170,8 @@ export default function StudioLayerPanel({
         return <Grid className="w-4 h-4 text-blue-600 shrink-0" />;
       case "ASSET":
         return <ImageIcon className="w-4 h-4 text-emerald-600 shrink-0" />;
+      case "CLIPART":
+        return <Package className="w-4 h-4 text-emerald-600 shrink-0" />;
       case "PHOTO_UPLOAD":
         return <Upload className="w-4 h-4 text-blue-600 shrink-0" />;
       case "MASK":
@@ -325,6 +333,21 @@ export default function StudioLayerPanel({
                   <div>
                     <p className="font-bold text-xs text-slate-900">Graphic Image</p>
                     <p className="text-[10px] text-slate-500">Clipart & background graphics</p>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    onAddLayer("CLIPART");
+                    setShowAddMenu(false);
+                  }}
+                  className="w-full px-3 py-2 text-left hover:bg-emerald-50 flex items-center gap-2.5 text-slate-800 transition cursor-pointer"
+                >
+                  <Package className="w-4 h-4 text-emerald-700 shrink-0" />
+                  <div>
+                    <p className="font-bold text-xs text-slate-900">Asset (clipart)</p>
+                    <p className="text-[10px] text-slate-500">One object with option groups</p>
                   </div>
                 </button>
 
@@ -519,6 +542,23 @@ export default function StudioLayerPanel({
                         title="Reset position of all Items (#2 onwards) to match Item #1"
                       >
                         <RotateCcw className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+
+                    {layer.layerType === "CLIPART" && onReloadClipArt && (
+                      <button
+                        type="button"
+                        disabled={!layer.properties?.clipArtId || reloadingClipArtLayerId === layer.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onReloadClipArt(layer.id);
+                        }}
+                        className="p-1 text-emerald-600 hover:text-emerald-800 hover:bg-emerald-50 rounded transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                        title="Reload latest clip art"
+                      >
+                        <RefreshCw
+                          className={`w-3.5 h-3.5 ${reloadingClipArtLayerId === layer.id ? "animate-spin" : ""}`}
+                        />
                       </button>
                     )}
 

@@ -30,23 +30,67 @@ import { defaultGradientPatch, getGradientCss, getNormalizedGradientStops } from
 
 interface StudioTopToolbarProps {
   selectedLayer: CanvasLayerItem | null;
+  selectedCount?: number;
   fields?: StudioFieldItem[];
   fonts?: FontItem[];
   onUpdateLayer: (layerId: string, updatedProps: Partial<CanvasLayerItem>) => void;
   onUpdateField?: (fieldId: string, updatedProps: Partial<StudioFieldItem>) => void;
   onOpenMediaPickerForLayer?: (layerId: string) => void;
+  onFlipSelected?: () => void;
+  onMergeSelected?: () => void;
 }
 
 export default function StudioTopToolbar({
   selectedLayer,
+  selectedCount = 0,
   fields = [],
   fonts = [],
   onUpdateLayer,
   onUpdateField,
   onOpenMediaPickerForLayer,
+  onFlipSelected,
+  onMergeSelected,
 }: StudioTopToolbarProps) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [isFontLoading, setIsFontLoading] = useState(false);
+
+  if (selectedCount > 1) {
+    return (
+      <div className="h-11 bg-white border-b border-slate-200 px-3 flex items-center justify-between text-xs select-none shrink-0 shadow-2xs w-full">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="h-7 px-2 rounded-md bg-indigo-50 border border-indigo-200 text-indigo-700 font-bold flex items-center">
+            {selectedCount} groups
+          </span>
+          <span className="text-slate-500 truncate hidden sm:inline">
+            Drag on canvas to move together · Shift/⌘-click in Assets to add
+          </span>
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {onFlipSelected && (
+            <button
+              type="button"
+              onClick={onFlipSelected}
+              className="h-7 px-2 rounded-md border border-slate-300 bg-slate-100 text-slate-700 hover:border-indigo-300 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+              title="Flip all selected groups horizontally"
+            >
+              <FlipHorizontal className="w-3.5 h-3.5" />
+              Flip
+            </button>
+          )}
+          {onMergeSelected && (
+            <button
+              type="button"
+              onClick={onMergeSelected}
+              className="h-7 px-2.5 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold cursor-pointer"
+              title="Merge selected option groups"
+            >
+              Merge
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   if (!selectedLayer) {
     return (

@@ -16,6 +16,8 @@ export interface StudioFieldOptionChoice {
   rotation?: number;
   opacity?: number;
   isVisible?: boolean;
+  isEmpty?: boolean;
+  showWhen?: any[];
 }
 
 export interface StudioFieldItem {
@@ -26,6 +28,8 @@ export interface StudioFieldItem {
   sortOrder: number;
   isRequired: boolean;
   allowPersonalized?: boolean;
+  /** Clip-art: customer never picks this group; options follow a related group. */
+  hiddenFromCustomer?: boolean;
   activeOptionId?: string;
   config?: any;
 }
@@ -58,13 +62,17 @@ export function defaultDisplayType(fieldType: string): FieldDisplayType {
   return "DROPDOWN";
 }
 
+export function isEmptyOption(opt?: Partial<StudioFieldOptionChoice> | null): boolean {
+  return Boolean(opt && (opt as any).isEmpty === true);
+}
+
 export function getOptionValue(opt?: Partial<StudioFieldOptionChoice> | null): string {
   if (!opt) return "";
   return String(opt.value || opt.label || opt.id || "");
 }
 
 export function getOptionAssetUrl(opt?: Partial<StudioFieldOptionChoice> | null): string {
-  if (!opt) return "";
+  if (!opt || isEmptyOption(opt)) return "";
   return String((opt as any).assetImageUrl || (opt as any).assetUrl || (opt as any).imageUrl || "");
 }
 

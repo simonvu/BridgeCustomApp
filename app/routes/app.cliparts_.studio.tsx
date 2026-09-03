@@ -13,6 +13,8 @@ import {
   Redo2,
   Save,
   Trash2,
+  GitBranch,
+  X,
 } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import prisma from "../db.server";
@@ -20,11 +22,47 @@ import { requireTeamUserId } from "../services/auth.server";
 import StudioCanvas, { type CanvasLayerItem, getActiveFabricCanvas } from "../components/studio/StudioCanvas";
 import StudioTopToolbar from "../components/studio/StudioTopToolbar";
 import ClipArtAssetPanel from "../components/studio/ClipArtAssetPanel";
+import ClipArtConditionPanel from "../components/studio/ClipArtConditionPanel";
 import MediaSelectModal from "../components/MediaSelectModal";
 import { injectFontStylesheets, type FontItem } from "../utils/fontLoader";
 import { analyzeAndArrangeImages } from "../utils/clipArtImport";
-import { dataUrlToFile } from "../utils/clipArtMerge";
+import {
+  buildMergeCombos,
+  dataUrlToFile,
+  rasterizePlacements,
+  unionBBox,
+  visibleMergeOptions,
+  type MergeGroup,
+} from "../utils/clipArtMerge";
 import type { StudioFieldItem } from "../utils/fieldHelpers";
+import { isEmptyOption } from "../utils/fieldHelpers";
+import MergeOptionsModal, { type MergeOptionsSubmit } from "../components/studio/MergeOptionsModal";
+import { autoGenerateSquareThumbnail } from "../utils/thumbnailGenerator";
+import { cleanImportedName, guessGroupName, slugValue } from "../utils/optionRename";
+import {
+  buildClipArtInstance,
+  encodeClipArtFields,
+  isClipArtGroupVisible,
+  parseClipArtDocument,
+  pruneClipArtRules,
+  rasterizeClipArtFrame,
+  isClipArtGroupHiddenFromCustomer,
+  type ClipArtConditionRule,
+} from "../utils/clipArtInstance";
+
+async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, Math.max(1, items.length)) }, async () => {
+      while (cursor < items.length) {
+        const i = cursor++;
+        out[i] = await fn(items[i], i);
+      }
+    })
+  );
+  return out;
+}
 
 export async function loader({ request }: LoaderFunctionArgs) {
   const currentUserId = await requireTeamUserId(request);
@@ -37,6 +75,15 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const id = url.searchParams.get("id");
   const model = (prisma as any).clipArt;
   const clipart = id && model ? await model.findUnique({ where: { id } }) : null;
+  const dbCategories: string[] = model
+    ? Array.from(
+        new Set(
+          (await model.findMany({ select: { category: true } }))
+            .map((c: any) => c.category)
+            .filter(Boolean)
+        )
+      ).sort()
+    : [];
 
   const fontModel = (prisma as any).font;
   const fonts: FontItem[] = fontModel
@@ -51,6 +98,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
       avatarUrl: currentUser?.avatarUrl || null,
     },
     clipart,
+    dbCategories,
     fonts,
   });
 }
@@ -69,25 +117,8 @@ function parseLayers(raw: any): CanvasLayerItem[] {
   }
 }
 
-function parseFields(raw: any): any[] {
-  if (!raw) return [];
-  try {
-    const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (!Array.isArray(arr)) return [];
-    return arr.map((f: any) => ({ ...f, config: typeof f.config === "string" ? JSON.parse(f.config) : f.config || {} }));
-  } catch {
-    return [];
-  }
-}
-
-function cleanFileName(name?: string, fallback = "Option"): string {
-  if (!name) return fallback;
-  const n = name.replace(/\.[^/.]+$/, "").replace(/[-_]+/g, " ").trim();
-  return n ? n.replace(/\b\w/g, (c) => c.toUpperCase()) : fallback;
-}
-
 export default function ClipArtStudioRoute() {
-  const { currentUser, clipart, fonts } = useLoaderData<typeof loader>();
+  const { currentUser, clipart, dbCategories, fonts } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
 
@@ -98,13 +129,36 @@ export default function ClipArtStudioRoute() {
   const [clipArtId, setClipArtId] = useState<string | null>(clipart?.id || searchParams.get("id") || null);
   const [name, setName] = useState(clipart?.name || "New Clip Art");
   const [category, setCategory] = useState(clipart?.category || "General");
+  const [categoryList, setCategoryList] = useState<string[]>(() => {
+    const set = new Set([...(dbCategories || []), clipart?.category || "General", "General"]);
+    return Array.from(set).filter(Boolean).sort();
+  });
+  const [isAddingCategory, setIsAddingCategory] = useState(false);
+  const [newCategoryText, setNewCategoryText] = useState("");
+
+  const handleAddNewCategory = () => {
+    const trimmed = newCategoryText.trim();
+    if (trimmed) {
+      if (!categoryList.includes(trimmed)) {
+        setCategoryList((prev) => [...prev, trimmed].sort());
+      }
+      setCategory(trimmed);
+      setNewCategoryText("");
+    }
+    setIsAddingCategory(false);
+  };
   const [saveStatus, setSaveStatus] = useState<"DRAFT" | "PUBLISHED">(
     clipart?.status === "PUBLISHED" ? "PUBLISHED" : "DRAFT"
   );
   const [widthPx, setWidthPx] = useState(clipart?.widthPx || 1000);
   const [heightPx, setHeightPx] = useState(clipart?.heightPx || 1000);
   const [layers, setLayers] = useState<CanvasLayerItem[]>(() => parseLayers(clipart?.layers));
-  const [fields, setFields] = useState<any[]>(() => parseFields(clipart?.fields));
+  const [fields, setFields] = useState<any[]>(() => parseClipArtDocument(clipart?.fields).fields);
+  const [clipArtRules, setClipArtRules] = useState<ClipArtConditionRule[]>(
+    () => parseClipArtDocument(clipart?.fields).rules
+  );
+  const [conditionsOpen, setConditionsOpen] = useState(false);
+  const [conditionDraft, setConditionDraft] = useState<ClipArtConditionRule[]>([]);
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>([]);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const [zoom, setZoom] = useState(1);
@@ -113,12 +167,74 @@ export default function ClipArtStudioRoute() {
   const [statusMsg, setStatusMsg] = useState("");
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [rightSidebarWidthPx, setRightSidebarWidthPx] = useState(420);
+  const didAutoTrim = useRef(false);
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeBusy, setMergeBusy] = useState(false);
+  const [mergeProgress, setMergeProgress] = useState("");
 
   const selectedLayerId = selectedLayerIds.length === 1 ? selectedLayerIds[0] : null;
   const selectedLayer = useMemo(
     () => layers.find((l) => l.id === selectedLayerId) || null,
     [layers, selectedLayerId]
   );
+
+  const clipArtPreview = useMemo(
+    () =>
+      buildClipArtInstance({
+        id: clipArtId || "draft",
+        name,
+        widthPx,
+        heightPx,
+        layers,
+        fields: encodeClipArtFields(fields, clipArtRules),
+      }),
+    [clipArtId, name, widthPx, heightPx, layers, fields, clipArtRules]
+  );
+
+  const canvasLayers = useMemo(
+    () =>
+      layers.map((l) => {
+        const groupId = l.linkedFieldId || l.id;
+        const shown = isClipArtGroupVisible(groupId, clipArtPreview.groups, clipArtPreview.rules);
+        return shown ? l : { ...l, isVisible: false };
+      }),
+    [layers, clipArtPreview]
+  );
+
+  const mergeGroups: MergeGroup[] = useMemo(() => {
+    const selected = layers
+      .filter((l) => selectedLayerIds.includes(l.id))
+      .sort((a, b) => a.zIndex - b.zIndex);
+    return selected.map((layer) => {
+      const field = fields.find((f) => f.id === layer.linkedFieldId);
+      const all = (field?.config?.options || []) as any[];
+      const visible = all.filter((o) => o.isVisible !== false);
+      const options = visibleMergeOptions(visible);
+      if (options.length === 0 && layer.properties?.assetUrl) {
+        options.push({
+          label: layer.name,
+          value: slugValue(layer.name || "option", 1),
+          assetImageUrl: layer.properties.assetUrl,
+          swatchImageUrl: layer.properties.assetUrl,
+        });
+      }
+      return {
+        layer: {
+          id: layer.id,
+          name: layer.name,
+          zIndex: layer.zIndex,
+          posX: layer.posX,
+          posY: layer.posY,
+          width: layer.width,
+          height: layer.height,
+          rotation: layer.rotation,
+          properties: layer.properties,
+        },
+        options,
+        hasEmpty: visible.some((o) => isEmptyOption(o)),
+      };
+    });
+  }, [layers, fields, selectedLayerIds]);
 
   // ---- Undo / Redo history + unsaved-changes tracking ----
   const historyRef = useRef<any[]>([]);
@@ -132,6 +248,7 @@ export default function ClipArtStudioRoute() {
   const snapshot = () => ({
     layers: JSON.parse(JSON.stringify(layers)),
     fields: JSON.parse(JSON.stringify(fields)),
+    rules: JSON.parse(JSON.stringify(clipArtRules)),
     widthPx,
     heightPx,
   });
@@ -160,12 +277,13 @@ export default function ClipArtStudioRoute() {
     historyIndexRef.current = updated.length - 1;
     bump();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [layers, fields, widthPx, heightPx]);
+  }, [layers, fields, clipArtRules, widthPx, heightPx]);
 
   const applySnapshot = (snap: any) => {
     isUndoRedoRef.current = true;
     setLayers(JSON.parse(JSON.stringify(snap.layers)));
     setFields(JSON.parse(JSON.stringify(snap.fields)));
+    setClipArtRules(JSON.parse(JSON.stringify(snap.rules || [])));
     setWidthPx(snap.widthPx);
     setHeightPx(snap.heightPx);
     setSelectedLayerIds((prev) => prev.filter((id) => snap.layers.some((l: any) => l.id === id)));
@@ -215,7 +333,11 @@ export default function ClipArtStudioRoute() {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       const tag = t?.tagName?.toLowerCase();
-      if (tag === "input" || tag === "textarea" || tag === "select" || t?.isContentEditable) return;
+      if (tag === "textarea" || tag === "select" || t?.isContentEditable) return;
+      if (tag === "input") {
+        const type = (t as HTMLInputElement).type;
+        if (type !== "checkbox" && type !== "radio") return;
+      }
 
       const isMac = navigator.platform.toUpperCase().includes("MAC");
       const cmd = isMac ? e.metaKey : e.ctrlKey;
@@ -296,23 +418,114 @@ export default function ClipArtStudioRoute() {
     }
   };
 
+  const handleSelectLayers = (layerIds: string[]) => {
+    setSelectedLayerIds(layerIds.filter(Boolean));
+  };
+
+  const handleSelectGroup = (layerId: string, mode?: { multi?: boolean; range?: boolean }) => {
+    if (mode?.range) {
+      const ordered = [...layers].sort((a, b) => b.zIndex - a.zIndex).map((l) => l.id);
+      const anchor = selectedLayerIds[selectedLayerIds.length - 1] || selectedLayerIds[0];
+      if (!anchor) {
+        setSelectedLayerIds([layerId]);
+        return;
+      }
+      const i1 = ordered.indexOf(anchor);
+      const i2 = ordered.indexOf(layerId);
+      if (i1 < 0 || i2 < 0) {
+        setSelectedLayerIds([layerId]);
+        return;
+      }
+      const lo = Math.min(i1, i2);
+      const hi = Math.max(i1, i2);
+      setSelectedLayerIds(ordered.slice(lo, hi + 1));
+      return;
+    }
+    handleSelectLayer(layerId, Boolean(mode?.multi));
+  };
+
+  const handleFlipSelected = () => {
+    const ids = new Set(selectedLayerIds);
+    if (ids.size === 0) return;
+    const nextFlip = new Map(
+      layers.filter((l) => ids.has(l.id)).map((l) => [l.id, !Boolean(l.properties?.flipH)])
+    );
+    setLayers((prev) =>
+      prev.map((l) =>
+        ids.has(l.id) && !l.isLocked
+          ? { ...l, properties: { ...(l.properties || {}), flipH: nextFlip.get(l.id) } }
+          : l
+      )
+    );
+    setFields((prev) =>
+      prev.map((f) => {
+        const layer = layers.find((l) => l.linkedFieldId === f.id && ids.has(l.id));
+        if (!layer) return f;
+        const flipH = nextFlip.get(layer.id);
+        const activeId = f.activeOptionId;
+        const options = (f.config?.options || []).map((o: any, i: number) =>
+          o.id === activeId || (!activeId && i === 0) ? { ...o, flipH } : o
+        );
+        return { ...f, config: { ...(f.config || {}), options } };
+      })
+    );
+  };
+
   const handleUpdateLayer = (layerId: string, patch: Partial<CanvasLayerItem>) => {
-    setLayers((prev) => prev.map((l) => (l.id === layerId ? { ...l, ...patch } : l)));
+    setLayers((prev) => {
+      const next = prev.map((l) => {
+        if (l.id !== layerId) return l;
+        const merged = { ...l, ...patch };
+        if (patch.properties) {
+          merged.properties = { ...(l.properties || {}), ...patch.properties };
+        }
+        return merged;
+      });
+      const src = next.find((l) => l.id === layerId);
+      if (!src) return next;
+      return next.map((l) => {
+        if (l.properties?.sandwichSourceLayerId !== layerId) return l;
+        return {
+          ...l,
+          posX: src.posX,
+          posY: src.posY,
+          width: src.width,
+          height: src.height,
+          rotation: src.rotation,
+          properties: {
+            ...(l.properties || {}),
+            assetUrl: src.properties?.assetUrl,
+            flipH: src.properties?.flipH,
+            flipV: src.properties?.flipV,
+            opacity: src.properties?.opacity,
+          },
+        };
+      });
+    });
   };
 
   const handleUpdateProps = (layerId: string, propsPatch: Record<string, any>) => {
-    setLayers((prev) =>
-      prev.map((l) => (l.id === layerId ? { ...l, properties: { ...(l.properties || {}), ...propsPatch } } : l))
-    );
+    handleUpdateLayer(layerId, { properties: propsPatch } as Partial<CanvasLayerItem>);
   };
 
   const handleDeleteLayer = (layerId: string) => {
     const target = layers.find((l) => l.id === layerId);
-    setLayers((prev) => prev.filter((l) => l.id !== layerId));
-    if (target?.linkedFieldId) {
+    const removeIds = new Set<string>([layerId]);
+    if (target && target.properties?.sandwichRole !== "front") {
+      layers.forEach((l) => {
+        if (l.properties?.sandwichSourceLayerId === layerId) removeIds.add(l.id);
+      });
+    }
+    const remaining = layers.filter((l) => !removeIds.has(l.id));
+    const remainingIds = remaining.map((l) => l.linkedFieldId || l.id);
+    setLayers(remaining);
+    const fieldStillUsed =
+      target?.linkedFieldId && remaining.some((l) => l.linkedFieldId === target.linkedFieldId);
+    if (target?.linkedFieldId && !fieldStillUsed) {
       setFields((prev) => prev.filter((f) => f.id !== target.linkedFieldId));
     }
-    setSelectedLayerIds((prev) => prev.filter((id) => id !== layerId));
+    setClipArtRules((prev) => pruneClipArtRules(prev, remainingIds));
+    setSelectedLayerIds((prev) => prev.filter((id) => !removeIds.has(id)));
   };
 
   const handleDuplicateLayer = (layerId: string) => {
@@ -384,25 +597,108 @@ export default function ClipArtStudioRoute() {
     }
   };
 
-  const handlePreviewOptionChoice = (fieldId: string, option: any) => {
-    const linkedLayer = layers.find((l) => l.linkedFieldId === fieldId);
-    if (!linkedLayer) return;
-    const updatedProps: Partial<CanvasLayerItem> = {
+  const handlePreviewOptionChoice = (fieldId: string, option: any, select = true) => {
+    const linkedLayers = layers.filter((l) => l.linkedFieldId === fieldId);
+    if (linkedLayers.length === 0) return;
+    const empty = Boolean(option?.isEmpty);
+    linkedLayers.forEach((linkedLayer, i) => {
+      const updatedProps: Partial<CanvasLayerItem> = {
+        properties: {
+          ...(linkedLayer.properties || {}),
+          assetUrl: empty ? "" : option.assetImageUrl || "",
+        },
+      };
+      if (option.posX !== undefined) updatedProps.posX = option.posX;
+      if (option.posY !== undefined) updatedProps.posY = option.posY;
+      if (option.width !== undefined) updatedProps.width = option.width;
+      if (option.height !== undefined) updatedProps.height = option.height;
+      if (option.rotation !== undefined) updatedProps.rotation = option.rotation;
+      if (option.opacity !== undefined) {
+        updatedProps.properties = { ...updatedProps.properties, opacity: Number(option.opacity) };
+      }
+      handleUpdateLayer(linkedLayer.id, updatedProps);
+      if (select && i === 0 && linkedLayer.properties?.sandwichRole !== "front") {
+        setSelectedLayerIds([linkedLayer.id]);
+      }
+    });
+  };
+
+  const handleAddSandwichFront = (layerId: string) => {
+    const src = layers.find((l) => l.id === layerId);
+    if (!src || src.properties?.sandwichRole === "front") return;
+    if (layers.some((l) => l.properties?.sandwichSourceLayerId === src.id)) return;
+    const stamp = Date.now();
+    const rnd = Math.random().toString(36).slice(2, 6);
+    const knockoutGroupIds = fields
+      .filter(
+        (f) =>
+          f.id !== src.linkedFieldId &&
+          (f.hiddenFromCustomer || f.allowPersonalized === false)
+      )
+      .map((f) => f.id);
+    const copy: CanvasLayerItem = {
+      ...src,
+      id: `layer_${stamp}_front_${rnd}`,
+      name: `${src.name} (front)`,
+      zIndex: nextZ(),
+      linkedFieldId: src.linkedFieldId,
       properties: {
-        ...(linkedLayer.properties || {}),
-        assetUrl: option.assetImageUrl || linkedLayer.properties?.assetUrl,
+        ...(src.properties || {}),
+        sandwichRole: "front",
+        sandwichSourceLayerId: src.id,
+        sandwichOfGroupId: src.linkedFieldId || src.id,
+        knockoutGroupIds,
       },
     };
-    if (option.posX !== undefined) updatedProps.posX = option.posX;
-    if (option.posY !== undefined) updatedProps.posY = option.posY;
-    if (option.width !== undefined) updatedProps.width = option.width;
-    if (option.height !== undefined) updatedProps.height = option.height;
-    if (option.rotation !== undefined) updatedProps.rotation = option.rotation;
-    if (option.opacity !== undefined) {
-      updatedProps.properties = { ...updatedProps.properties, opacity: Number(option.opacity) };
-    }
-    handleUpdateLayer(linkedLayer.id, updatedProps);
-    setSelectedLayerIds([linkedLayer.id]);
+    setLayers((prev) => [...prev, copy]);
+    setSelectedLayerIds([copy.id]);
+  };
+
+  const applyDrivenOptions = (nextFields: any[]) => {
+    const inst = buildClipArtInstance({
+      id: clipArtId || "draft",
+      name,
+      widthPx,
+      heightPx,
+      layers,
+      fields: encodeClipArtFields(nextFields, clipArtRules),
+    });
+    const updates: { fieldId: string; option: any }[] = [];
+    inst.groups.forEach((g) => {
+      if (!isClipArtGroupHiddenFromCustomer(g)) return;
+      const field = nextFields.find((f) => f.id === g.id);
+      if (!field || field.activeOptionId === g.activeOptionId) return;
+      const opt = (field.config?.options || []).find((o: any) => o.id === g.activeOptionId);
+      if (opt) updates.push({ fieldId: g.id, option: opt });
+    });
+    if (updates.length === 0) return;
+    setFields((prev) =>
+      prev.map((f) => {
+        const u = updates.find((x) => x.fieldId === f.id);
+        return u ? { ...f, activeOptionId: u.option.id } : f;
+      })
+    );
+    setLayers((prev) =>
+      prev.map((layer) => {
+        const u = updates.find((x) => x.fieldId === layer.linkedFieldId);
+        if (!u) return layer;
+        const option = u.option;
+        const empty = Boolean(option?.isEmpty);
+        return {
+          ...layer,
+          ...(option.posX !== undefined ? { posX: option.posX } : {}),
+          ...(option.posY !== undefined ? { posY: option.posY } : {}),
+          ...(option.width !== undefined ? { width: option.width } : {}),
+          ...(option.height !== undefined ? { height: option.height } : {}),
+          ...(option.rotation !== undefined ? { rotation: option.rotation } : {}),
+          properties: {
+            ...(layer.properties || {}),
+            assetUrl: empty ? "" : option.assetImageUrl || "",
+            ...(option.opacity !== undefined ? { opacity: Number(option.opacity) } : {}),
+          },
+        };
+      })
+    );
   };
 
   const renameApartment = (layerId: string, label: string) => {
@@ -420,7 +716,7 @@ export default function ClipArtStudioRoute() {
     const opt = {
       id: `opt_${Date.now()}`,
       label: layer.name || "Option 1",
-      value: `variant_${Math.random().toString(36).slice(2, 6)}`,
+      value: slugValue(layer.name || "option_1", 1),
       assetImageUrl: url,
       swatchImageUrl: url,
       isVisible: true,
@@ -440,12 +736,48 @@ export default function ClipArtStudioRoute() {
       },
     ]);
     handleUpdateLayer(layerId, { linkedFieldId: fieldId });
+    if (url) {
+      void makeSquareThumb(url).then((swatch) => {
+        if (!swatch || swatch === url) return;
+        setFields((prev) =>
+          prev.map((f) => {
+            if (f.id !== fieldId) return f;
+            const options = (f.config?.options || []).map((o: any) =>
+              o.id === opt.id ? { ...o, swatchImageUrl: swatch } : o
+            );
+            return { ...f, config: { ...(f.config || {}), options } };
+          })
+        );
+      });
+    }
     return fieldId;
   };
 
   const handleAddVariants = (layerId: string) => {
     const fieldId = ensureOptionGroup(layerId);
     if (fieldId) handleOpenMediaPickerForBatchOptions(fieldId);
+  };
+
+  const handleAddEmptyOption = (layerId: string) => {
+    const fieldId = ensureOptionGroup(layerId);
+    if (!fieldId) return;
+    setFields((prev) =>
+      prev.map((f) => {
+        if (f.id !== fieldId) return f;
+        const options = f.config?.options || [];
+        if (options.some((o: any) => o.isEmpty)) return f;
+        const empty = {
+          id: `opt_empty_${Date.now()}`,
+          label: "None",
+          value: "none",
+          assetImageUrl: "",
+          swatchImageUrl: "",
+          isEmpty: true,
+          isVisible: true,
+        };
+        return { ...f, config: { ...(f.config || {}), options: [...options, empty] } };
+      })
+    );
   };
 
   const handleDeleteVariant = (fieldId: string, optId: string) => {
@@ -502,26 +834,135 @@ export default function ClipArtStudioRoute() {
       img.src = url;
     });
 
-  const filesToVariants = (files: any[]) =>
-    files.map((f, i) => {
+  const uploadDataUrl = async (dataUrl: string, fileName: string): Promise<{ url: string; key: string } | null> => {
+    try {
+      const file = dataUrlToFile(dataUrl, fileName);
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("folder", "cliparts");
+      const res = await fetch("/api/upload", { method: "POST", body: fd });
+      const data = await res.json();
+      if (data.success && data.url) return { url: data.url, key: data.key || fileName };
+    } catch (e) {
+      console.error("Upload failed", e);
+    }
+    return null;
+  };
+
+  const makeSquareThumb = async (url: string): Promise<string> => {
+    if (!url) return "";
+    try {
+      const dataUrl = await autoGenerateSquareThumbnail(url, 256);
+      if (!dataUrl || dataUrl === url) return url;
+      if (dataUrl.startsWith("data:")) {
+        const up = await uploadDataUrl(
+          dataUrl,
+          `opt_thumb_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.png`
+        );
+        return up?.url || dataUrl;
+      }
+      return dataUrl;
+    } catch {
+      return url;
+    }
+  };
+
+  const filesToVariants = async (files: any[]) =>
+    mapPool(files, 4, async (f, i) => {
       const url = f.url || f.thumbnailUrl;
+      const label = cleanImportedName(f.fileName, `Option ${i + 1}`);
       return {
         id: `opt_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 5)}`,
-        label: cleanFileName(f.fileName, `Option ${i + 1}`),
-        value: `variant_${i}_${Math.random().toString(36).slice(2, 5)}`,
+        label,
+        value: slugValue(label, i + 1),
         assetImageUrl: url,
-        swatchImageUrl: f.thumbnailUrl || url,
+        swatchImageUrl: (await makeSquareThumb(url)) || url,
         isVisible: true,
       };
     });
 
+  const handleRenameOption = (fieldId: string, optId: string, name: string) => {
+    const label = name.trim();
+    if (!label) return;
+    setFields((prev) =>
+      prev.map((f) => {
+        if (f.id !== fieldId) return f;
+        const options = (f.config?.options || []).map((o: any, i: number) =>
+          o.id === optId ? { ...o, label, value: slugValue(label, i + 1) } : o
+        );
+        return { ...f, config: { ...(f.config || {}), options } };
+      })
+    );
+  };
+
+  const handleReorderOptions = (fieldId: string, options: any[]) => {
+    setFields((prev) =>
+      prev.map((f) => (f.id === fieldId ? { ...f, config: { ...(f.config || {}), options } } : f))
+    );
+  };
+
+  const handleBulkRenameOptions = (fieldId: string, updates: { id: string; label: string }[]) => {
+    const byId = new Map(updates.map((u) => [u.id, u.label]));
+    setFields((prev) =>
+      prev.map((f) => {
+        if (f.id !== fieldId) return f;
+        const options = (f.config?.options || []).map((o: any, i: number) => {
+          const label = byId.get(o.id);
+          return label ? { ...o, label, value: slugValue(label, i + 1) } : o;
+        });
+        return { ...f, config: { ...(f.config || {}), options } };
+      })
+    );
+  };
+
+  const handleRegenerateThumbs = async (fieldId: string, sourceOpts?: any[]) => {
+    const source = sourceOpts || fields.find((f) => f.id === fieldId)?.config?.options || [];
+    if (source.length === 0) return;
+    setStatusMsg("Trimming thumbnails…");
+    const options = await mapPool(source, 4, async (o: any) => {
+      if (o.isEmpty) return o;
+      const src = o.assetImageUrl || o.swatchImageUrl;
+      const swatch = src ? await makeSquareThumb(src) : o.swatchImageUrl;
+      return { ...o, swatchImageUrl: swatch || o.swatchImageUrl };
+    });
+    setFields((prev) =>
+      prev.map((f) => (f.id === fieldId ? { ...f, config: { ...(f.config || {}), options } } : f))
+    );
+    setStatusMsg("Thumbnails updated.");
+    setTimeout(() => setStatusMsg(""), 2500);
+  };
+
+  useEffect(() => {
+    const storageKey = `clipart-swatch-trim-v3-${clipArtId || "draft"}`;
+    try {
+      if (sessionStorage.getItem(storageKey)) return;
+    } catch {
+      if (didAutoTrim.current) return;
+    }
+    const pending = fields.filter((f) => (f.config?.options || []).length > 0);
+    if (pending.length === 0) return;
+    didAutoTrim.current = true;
+    try {
+      sessionStorage.setItem(storageKey, "1");
+    } catch {
+      /* ignore */
+    }
+    (async () => {
+      for (const f of pending) {
+        await handleRegenerateThumbs(f.id, f.config?.options || []);
+      }
+    })();
+    // one-shot per clip art after the server-side trim shipped
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fields, clipArtId]);
+
   // Create an Option Group: a FIELD_ASSET field (variants) + one linked slot layer.
   const createOptionGroup = async (files: any[]) => {
     if (!files || files.length === 0) return;
-    // Default name; the designer renames it in the inspector (Group name field).
+    setStatusMsg("Preparing options…");
+    const options = await filesToVariants(files);
     const groupCount = fields.filter((f) => f.fieldType === "FIELD_ASSET").length;
-    const label = `Option Group ${groupCount + 1}`;
-    const options = filesToVariants(files);
+    const label = guessGroupName(options.map((o) => o.label)) || `Option Group ${groupCount + 1}`;
     const fieldId = `field_${Date.now()}`;
 
     const first = files[0];
@@ -567,12 +1008,18 @@ export default function ClipArtStudioRoute() {
     setTimeout(() => setStatusMsg(""), 3000);
   };
 
-  const addVariantsToGroup = (fieldId: string, files: any[]) => {
-    const newOpts = filesToVariants(files);
+  const addVariantsToGroup = async (fieldId: string, files: any[]) => {
+    setStatusMsg("Preparing variants…");
+    const newOpts = await filesToVariants(files);
     setFields((prev) =>
-      prev.map((f) =>
-        f.id === fieldId ? { ...f, config: { ...(f.config || {}), options: [...(f.config?.options || []), ...newOpts] } } : f
-      )
+      prev.map((f) => {
+        if (f.id !== fieldId) return f;
+        const options = [...(f.config?.options || [])];
+        const emptyIdx = options.findIndex((o: any) => o.isEmpty);
+        if (emptyIdx >= 0) options.splice(emptyIdx, 0, ...newOpts);
+        else options.push(...newOpts);
+        return { ...f, config: { ...(f.config || {}), options } };
+      })
     );
     setStatusMsg(`Added ${newOpts.length} variant(s).`);
     setTimeout(() => setStatusMsg(""), 2500);
@@ -587,13 +1034,14 @@ export default function ClipArtStudioRoute() {
     if (target.type === "LAYER" && target.layerId) {
       const url = files[0].url || files[0].thumbnailUrl;
       const layer = layers.find((l) => l.id === target.layerId);
+      const swatch = await makeSquareThumb(url);
       handleUpdateProps(target.layerId, { assetUrl: url });
       if (layer?.linkedFieldId) {
         setFields((prev) =>
           prev.map((f) => {
             if (f.id !== layer.linkedFieldId) return f;
             const options = (f.config?.options || []).map((o: any) =>
-              o.id === f.activeOptionId ? { ...o, assetImageUrl: url, swatchImageUrl: url } : o
+              o.id === f.activeOptionId ? { ...o, assetImageUrl: url, swatchImageUrl: swatch || url } : o
             );
             return { ...f, config: { ...(f.config || {}), options } };
           })
@@ -604,17 +1052,25 @@ export default function ClipArtStudioRoute() {
 
     if (target.type === "OPTION" && target.fieldId != null && target.optionIndex != null) {
       const url = files[0].url || files[0].thumbnailUrl;
-      const thumb = files[0].thumbnailUrl || url;
+      const fileName = files[0].fileName as string | undefined;
+      const swatch = await makeSquareThumb(url);
       setFields((prev) =>
         prev.map((f) => {
           if (f.id !== target.fieldId) return f;
           const options = [...(f.config?.options || [])];
           if (!options[target.optionIndex!]) return f;
+          const current = options[target.optionIndex!];
+          const nextLabel = fileName ? cleanImportedName(fileName, current.label || "Option") : current.label;
           options[target.optionIndex!] = {
-            ...options[target.optionIndex!],
+            ...current,
             ...(target.optionTargetType === "SWATCH"
-              ? { swatchImageUrl: thumb }
-              : { assetImageUrl: url, swatchImageUrl: thumb }),
+              ? { swatchImageUrl: swatch || url }
+              : {
+                  assetImageUrl: url,
+                  swatchImageUrl: swatch || url,
+                  label: nextLabel,
+                  value: slugValue(nextLabel || current.label || "option", target.optionIndex! + 1),
+                }),
           };
           return { ...f, config: { ...(f.config || {}), options } };
         })
@@ -628,7 +1084,7 @@ export default function ClipArtStudioRoute() {
     }
 
     if (target.type === "BATCH_OPTIONS" && target.fieldId) {
-      addVariantsToGroup(target.fieldId, files);
+      await addVariantsToGroup(target.fieldId, files);
       return;
     }
 
@@ -660,124 +1116,147 @@ export default function ClipArtStudioRoute() {
     }
   };
 
-  // ---- Flatten selected layers into one image (rasterize + upload) ----
-  const uploadDataUrl = async (dataUrl: string, fileName: string): Promise<{ url: string; key: string } | null> => {
-    try {
-      const file = dataUrlToFile(dataUrl, fileName);
-      const fd = new FormData();
-      fd.append("file", file);
-      fd.append("folder", "cliparts");
-      const res = await fetch("/api/upload", { method: "POST", body: fd });
-      const data = await res.json();
-      if (data.success && data.url) return { url: data.url, key: data.key || fileName };
-    } catch (e) {
-      console.error("Upload failed", e);
-    }
-    return null;
-  };
-
-  const handleFlatten = async (ids?: string[]) => {
-    const targetIds = ids && ids.length >= 2 ? ids : selectedLayerIds;
-    if (targetIds.length < 2) {
+  const openMergeModal = () => {
+    if (selectedLayerIds.length < 2) {
       setStatusMsg("Select 2+ layers to merge.");
       setTimeout(() => setStatusMsg(""), 2500);
       return;
     }
-    const fc = getActiveFabricCanvas();
-    if (!fc) return;
-    setStatusMsg("Merging…");
+    setMergeProgress("");
+    setMergeOpen(true);
+  };
 
-    const sel = layers.filter((l) => targetIds.includes(l.id));
-    const minX = Math.min(...sel.map((l) => l.posX));
-    const minY = Math.min(...sel.map((l) => l.posY));
-    const maxX = Math.max(...sel.map((l) => l.posX + l.width));
-    const maxY = Math.max(...sel.map((l) => l.posY + l.height));
-    const bboxW = Math.max(1, Math.round(maxX - minX));
-    const bboxH = Math.max(1, Math.round(maxY - minY));
-
-    const objs = fc.getObjects();
-    const hidden: any[] = [];
-    fc.discardActiveObject();
-    objs.forEach((o: any) => {
-      if (o.layerId && !targetIds.includes(o.layerId)) {
-        if (o.visible !== false) {
-          hidden.push(o);
-          o.visible = false;
-        }
-      }
-      if (o.layerId && o.type === "group" && typeof o.getObjects === "function") {
-        const frame = o.getObjects()[0];
-        if (frame) frame.set({ stroke: "transparent" });
-      }
-    });
-    const origBg = fc.backgroundColor;
-    fc.backgroundColor = "transparent";
-    fc.renderAll();
-
-    let dataUrl = "";
-    try {
-      dataUrl = fc.toDataURL({ format: "png", left: minX, top: minY, width: bboxW, height: bboxH, multiplier: 1 });
-    } catch (e) {
-      console.error("Flatten export failed", e);
-    }
-
-    hidden.forEach((o) => (o.visible = true));
-    fc.backgroundColor = origBg;
-    fc.renderAll();
-
-    if (!dataUrl) {
-      setStatusMsg("Merge failed.");
-      setTimeout(() => setStatusMsg(""), 2500);
+  const handleMergeOptions = async (payload: MergeOptionsSubmit) => {
+    const groups = mergeGroups;
+    if (groups.length < 2) {
+      setMergeOpen(false);
       return;
     }
 
-    const uploaded = await uploadDataUrl(dataUrl, `clipart_flat_${Date.now()}.png`);
-    const finalUrl = uploaded?.url || dataUrl;
+    const combos = buildMergeCombos(groups, payload.mergeType, {
+      useFirstOption: payload.useFirstOption,
+      newOptionName: payload.newOptionName,
+    });
+    if (combos.length === 0) {
+      setStatusMsg("Nothing to merge.");
+      setTimeout(() => setStatusMsg(""), 2500);
+      setMergeOpen(false);
+      return;
+    }
+
+    setMergeBusy(true);
     const stamp = Date.now();
     const fieldId = `field_${stamp}_merged`;
-    const opt = {
-      id: `opt_${stamp}`,
-      label: "Merged",
-      value: "merged",
-      assetImageUrl: finalUrl,
-      swatchImageUrl: finalUrl,
-      isVisible: true,
-    };
-    const removedFieldIds = sel.map((l) => l.linkedFieldId).filter(Boolean) as string[];
+    const targetIds = groups.map((g) => g.layer.id);
+    const removedFieldIds = groups
+      .map((g) => layers.find((l) => l.id === g.layer.id)?.linkedFieldId)
+      .filter(Boolean) as string[];
+    const allPlacements = combos.flatMap((c) => c.placements);
+    const bbox =
+      allPlacements.length > 0
+        ? unionBBox(allPlacements)
+        : { minX: groups[0].layer.posX, minY: groups[0].layer.posY, width: groups[0].layer.width, height: groups[0].layer.height };
 
-    const flatLayer: CanvasLayerItem = {
-      id: `layer_${stamp}_flat`,
-      name: "Merged",
-      layerType: "ASSET",
-      zIndex: Math.max(...sel.map((l) => l.zIndex)),
-      posX: Math.round(minX),
-      posY: Math.round(minY),
-      width: bboxW,
-      height: bboxH,
-      rotation: 0,
-      isVisible: true,
-      isLocked: false,
-      linkedFieldId: fieldId,
-      properties: { assetUrl: finalUrl, opacity: 1, naturalWidth: bboxW, naturalHeight: bboxH, aspectRatio: bboxW / bboxH },
-    };
-    setFields((prev) => [
-      ...prev.filter((f) => !removedFieldIds.includes(f.id)),
-      {
-        id: fieldId,
-        label: "Merged",
-        fieldType: "FIELD_ASSET",
-        displayType: "THUMBNAIL",
-        sortOrder: prev.length,
-        isRequired: false,
-        allowPersonalized: true,
-        activeOptionId: opt.id,
-        config: { options: [opt] },
-      },
-    ]);
-    setLayers((prev) => [...prev.filter((l) => !targetIds.includes(l.id)), flatLayer]);
-    setSelectedLayerIds([flatLayer.id]);
-    setStatusMsg("Merged into one layer.");
-    setTimeout(() => setStatusMsg(""), 2500);
+    try {
+      let done = 0;
+      const built = await mapPool(combos, 3, async (combo, i) => {
+        let url = combo.sourceOptions[0]?.assetImageUrl || combo.placements[0]?.url || "";
+        if (payload.mergeType !== "concat") {
+          const dataUrl = await rasterizePlacements(combo.placements);
+          if (!dataUrl) throw new Error("Rasterize failed");
+          const uploaded = await uploadDataUrl(dataUrl, `clipart_merge_${stamp}_${i}.png`);
+          url = uploaded?.url || dataUrl;
+        }
+        const swatch = url ? await makeSquareThumb(url) : "";
+        done += 1;
+        setMergeProgress(`Merging ${done} / ${combos.length}…`);
+        const first = combo.placements[0];
+        return {
+          id: `opt_${stamp}_${i}`,
+          label: combo.label || `Option ${i + 1}`,
+          value: slugValue(combo.label || `option_${i + 1}`, i + 1),
+          assetImageUrl: url,
+          swatchImageUrl: swatch || url,
+          isVisible: true,
+          posX: payload.mergeType === "concat" ? first.posX : bbox.minX,
+          posY: payload.mergeType === "concat" ? first.posY : bbox.minY,
+          width: payload.mergeType === "concat" ? first.width : bbox.width,
+          height: payload.mergeType === "concat" ? first.height : bbox.height,
+        };
+      });
+
+      if (groups.some((g) => g.hasEmpty)) {
+        built.push({
+          id: `opt_empty_${stamp}`,
+          label: "None",
+          value: "none",
+          assetImageUrl: "",
+          swatchImageUrl: "",
+          isVisible: true,
+          isEmpty: true,
+        } as any);
+      }
+
+      const firstOpt = built.find((o) => !(o as any).isEmpty) || built[0];
+      const layerGeom =
+        payload.mergeType === "concat" && firstOpt
+          ? {
+              posX: firstOpt.posX ?? bbox.minX,
+              posY: firstOpt.posY ?? bbox.minY,
+              width: firstOpt.width ?? bbox.width,
+              height: firstOpt.height ?? bbox.height,
+            }
+          : { posX: bbox.minX, posY: bbox.minY, width: bbox.width, height: bbox.height };
+
+      const flatLayer: CanvasLayerItem = {
+        id: `layer_${stamp}_flat`,
+        name: payload.fieldName,
+        layerType: "ASSET",
+        zIndex: Math.max(...groups.map((g) => g.layer.zIndex)),
+        posX: Math.round(layerGeom.posX),
+        posY: Math.round(layerGeom.posY),
+        width: Math.max(1, Math.round(layerGeom.width)),
+        height: Math.max(1, Math.round(layerGeom.height)),
+        rotation: 0,
+        isVisible: true,
+        isLocked: false,
+        linkedFieldId: fieldId,
+        properties: {
+          assetUrl: firstOpt?.assetImageUrl || "",
+          opacity: 1,
+          naturalWidth: layerGeom.width,
+          naturalHeight: layerGeom.height,
+          aspectRatio: layerGeom.width / Math.max(1, layerGeom.height),
+        },
+      };
+
+      setFields((prev) => [
+        ...prev.filter((f) => !removedFieldIds.includes(f.id)),
+        {
+          id: fieldId,
+          label: payload.fieldName,
+          fieldType: "FIELD_ASSET",
+          displayType: "THUMBNAIL",
+          sortOrder: prev.length,
+          isRequired: false,
+          allowPersonalized: true,
+          activeOptionId: firstOpt?.id,
+          config: { options: built },
+        },
+      ]);
+      setLayers((prev) => [...prev.filter((l) => !targetIds.includes(l.id)), flatLayer]);
+      setSelectedLayerIds([flatLayer.id]);
+      setMergeOpen(false);
+      setStatusMsg(`Merged ${combos.length} options into “${payload.fieldName}”.`);
+      setTimeout(() => setStatusMsg(""), 3000);
+    } catch (e) {
+      console.error("Merge options failed", e);
+      setStatusMsg("Merge failed.");
+      setTimeout(() => setStatusMsg(""), 2500);
+    } finally {
+      setMergeBusy(false);
+      setMergeProgress("");
+    }
   };
 
   // ---- Save (export transparent composite + thumbnail) ----
@@ -813,8 +1292,23 @@ export default function ClipArtStudioRoute() {
     }
     setIsSaving(true);
     try {
-      const compositeDataUrl = exportComposite(1);
-      const thumbDataUrl = exportComposite(Math.min(1, 400 / Math.max(widthPx, heightPx)));
+      let compositeDataUrl = exportComposite(1);
+      if (!compositeDataUrl) {
+        try {
+          compositeDataUrl = await rasterizeClipArtFrame(
+            buildClipArtInstance({
+              id: clipArtId || "draft",
+              name,
+              widthPx,
+              heightPx,
+              layers,
+              fields: encodeClipArtFields(fields, clipArtRules),
+            })
+          );
+        } catch (e) {
+          console.warn("Clip art raster fallback failed", e);
+        }
+      }
 
       let compositeUrl = "";
       let compositeKey = "";
@@ -825,10 +1319,17 @@ export default function ClipArtStudioRoute() {
           compositeUrl = up.url;
           compositeKey = up.key;
         }
-      }
-      if (thumbDataUrl) {
-        const upt = await uploadDataUrl(thumbDataUrl, `clipart_thumb_${Date.now()}.png`);
-        if (upt) thumbnailUrl = upt.url;
+        try {
+          const trimmed = await autoGenerateSquareThumbnail(compositeDataUrl, 400);
+          if (trimmed.startsWith("data:")) {
+            const upt = await uploadDataUrl(trimmed, `clipart_thumb_${Date.now()}.png`);
+            thumbnailUrl = upt?.url || trimmed;
+          } else if (trimmed) {
+            thumbnailUrl = trimmed;
+          }
+        } catch (e) {
+          console.warn("Trimmed clip art thumb failed", e);
+        }
       }
 
       const res = await fetch("/api/cliparts", {
@@ -842,7 +1343,7 @@ export default function ClipArtStudioRoute() {
           widthPx,
           heightPx,
           layers,
-          fields,
+          fields: encodeClipArtFields(fields, clipArtRules),
           compositeUrl,
           compositeKey,
           thumbnailUrl: thumbnailUrl || compositeUrl,
@@ -1037,7 +1538,7 @@ export default function ClipArtStudioRoute() {
                     type="button"
                     onClick={() => {
                       setHeaderMenuOpen(false);
-                      handleFlatten();
+                      openMergeModal();
                     }}
                     className="w-full px-3 py-1.5 text-left hover:bg-slate-50 cursor-pointer text-slate-700"
                   >
@@ -1063,21 +1564,25 @@ export default function ClipArtStudioRoute() {
           <div className="flex-1 h-full flex flex-col overflow-hidden bg-slate-200/60 relative">
             <StudioTopToolbar
               selectedLayer={selectedLayer}
+              selectedCount={selectedLayerIds.length}
               fields={fields}
               fonts={fonts}
               onUpdateLayer={handleUpdateLayer}
               onUpdateField={handleUpdateField}
               onOpenMediaPickerForLayer={handleOpenMediaPickerForLayer}
+              onFlipSelected={handleFlipSelected}
+              onMergeSelected={openMergeModal}
             />
             <div className="flex-1 relative overflow-auto">
               <StudioCanvas
                 widthPx={widthPx}
                 heightPx={heightPx}
-                layers={layers}
+                layers={canvasLayers}
                 fields={fields}
                 selectedLayerId={selectedLayerId}
                 selectedLayerIds={selectedLayerIds}
                 onSelectLayer={handleSelectLayer}
+                onSelectLayers={handleSelectLayers}
                 onUpdateLayer={handleUpdateLayer}
                 onUpdateField={handleUpdateField}
                 zoom={zoom}
@@ -1085,6 +1590,10 @@ export default function ClipArtStudioRoute() {
                 workspaceBgColor="#ffffff"
                 fonts={fonts}
                 doodlePacks={[]}
+                onResizeCanvas={(w, h) => {
+                  setWidthPx(w);
+                  setHeightPx(h);
+                }}
               />
             </div>
           </div>
@@ -1126,13 +1635,57 @@ export default function ClipArtStudioRoute() {
                   ({widthPx}×{heightPx})
                 </span>
               </div>
-              <input
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
-                className="h-7 w-24 px-2 rounded-md border border-slate-200 text-[11px] font-medium text-slate-600 focus:outline-none focus:border-blue-500"
-                placeholder="Category"
-                title="Category"
-              />
+              {isAddingCategory ? (
+                <div className="flex items-center gap-1 shrink-0">
+                  <input
+                    type="text"
+                    autoFocus
+                    value={newCategoryText}
+                    onChange={(e) => setNewCategoryText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleAddNewCategory();
+                      if (e.key === "Escape") {
+                        setIsAddingCategory(false);
+                        setNewCategoryText("");
+                      }
+                    }}
+                    placeholder="New category"
+                    title="New category name"
+                    className="h-7 w-28 px-2 rounded-md border border-blue-500 text-[11px] font-medium text-slate-700 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddNewCategory}
+                    className="h-7 px-2 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-bold cursor-pointer"
+                  >
+                    Add
+                  </button>
+                </div>
+              ) : (
+                <select
+                  value={categoryList.includes(category) ? category : category || "General"}
+                  onChange={(e) => {
+                    if (e.target.value === "__ADD_NEW__") {
+                      setIsAddingCategory(true);
+                      setNewCategoryText("");
+                    } else {
+                      setCategory(e.target.value);
+                    }
+                  }}
+                  className="h-7 max-w-[150px] px-1.5 rounded-md border border-slate-200 text-[11px] font-medium text-slate-600 bg-white focus:outline-none focus:border-blue-500 cursor-pointer"
+                  title="Category"
+                >
+                  {categoryList.map((c) => (
+                    <option key={c} value={c}>
+                      {c}
+                    </option>
+                  ))}
+                  {!categoryList.includes(category) && category ? (
+                    <option value={category}>{category}</option>
+                  ) : null}
+                  <option value="__ADD_NEW__">+ New category…</option>
+                </select>
+              )}
             </div>
 
             <div className="flex-1 overflow-hidden">
@@ -1140,14 +1693,25 @@ export default function ClipArtStudioRoute() {
                 layers={layers}
                 fields={fields}
                 selectedLayerIds={selectedLayerIds}
-                onSelectLayer={(id) => handleSelectLayer(id)}
+                onSelectLayer={handleSelectGroup}
                 onAddGroup={() => openPicker({ type: "OPTGROUP" }, true)}
                 onAddVariants={handleAddVariants}
+                onAddEmptyOption={handleAddEmptyOption}
                 onSetActiveVariant={(fieldId, option) => {
-                  handleUpdateField(fieldId, { activeOptionId: option.id });
+                  setFields((prev) => {
+                    const next = prev.map((f) => (f.id === fieldId ? { ...f, activeOptionId: option.id } : f));
+                    const changed = next.find((f) => f.id === fieldId);
+                    const isDriven = Boolean(changed?.hiddenFromCustomer || changed?.allowPersonalized === false);
+                    if (!isDriven) queueMicrotask(() => applyDrivenOptions(next));
+                    return next;
+                  });
                   handlePreviewOptionChoice(fieldId, option);
                 }}
                 onRename={renameApartment}
+                onRenameOption={handleRenameOption}
+                onBulkRenameOptions={handleBulkRenameOptions}
+                onRegenerateThumbs={handleRegenerateThumbs}
+                onReorderOptions={handleReorderOptions}
                 onToggleVisible={(id) => {
                   const layer = layers.find((l) => l.id === id);
                   if (layer) handleUpdateLayer(id, { isVisible: !layer.isVisible });
@@ -1157,17 +1721,128 @@ export default function ClipArtStudioRoute() {
                 onDelete={handleDeleteLayer}
                 onDeleteVariant={handleDeleteVariant}
                 onReorder={(newLayers) => setLayers(newLayers)}
+                onAddSandwichFront={handleAddSandwichFront}
+                onSetKnockoutGroupIds={(layerId, ids) => {
+                  handleUpdateProps(layerId, { knockoutGroupIds: ids });
+                }}
+                onToggleHiddenField={(fieldId, hidden) => {
+                  handleUpdateField(fieldId, { hiddenFromCustomer: hidden, allowPersonalized: !hidden });
+                }}
+                onUpdateOption={(fieldId, optId, patch) => {
+                  setFields((prev) => {
+                    const next = prev.map((f) => {
+                      if (f.id !== fieldId) return f;
+                      const options = (f.config?.options || []).map((o: any) =>
+                        o.id === optId ? { ...o, ...patch } : o
+                      );
+                      return { ...f, config: { ...(f.config || {}), options } };
+                    });
+                    queueMicrotask(() => applyDrivenOptions(next));
+                    return next;
+                  });
+                }}
+                onOpenConditions={() => {
+                  setConditionDraft(JSON.parse(JSON.stringify(clipArtRules)));
+                  setConditionsOpen(true);
+                }}
+                conditionCount={clipArtRules.length}
+                hiddenGroupIds={
+                  new Set(
+                    clipArtPreview.groups
+                      .filter((g) => !isClipArtGroupVisible(g.id, clipArtPreview.groups, clipArtPreview.rules))
+                      .map((g) => g.id)
+                  )
+                }
               />
             </div>
           </div>
         </div>
       </div>
 
+      {conditionsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-3xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[90vh]">
+            <div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 bg-amber-50 text-amber-600 rounded-lg">
+                  <GitBranch className="w-4 h-4" />
+                </div>
+                <div>
+                  <h2 className="text-sm font-bold text-slate-900">Clip art conditions</h2>
+                  <p className="text-[11px] text-slate-500">
+                    Hide groups like Eyes when Skin and Body is a closed-eyes option.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConditionsOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                title="Cancel"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 overflow-y-auto flex-1">
+              <ClipArtConditionPanel
+                groups={clipArtPreview.groups.map((g) => ({
+                  id: g.id,
+                  name: g.name,
+                  options: g.options,
+                }))}
+                rules={conditionDraft}
+                onAddRule={(rule) => {
+                  setConditionDraft((prev) => [...prev, { ...rule, id: `clip_rule_${Date.now()}` }]);
+                }}
+                onUpdateRule={(rule) => {
+                  setConditionDraft((prev) => prev.map((r) => (r.id === rule.id ? rule : r)));
+                }}
+                onDeleteRule={(ruleId) => {
+                  setConditionDraft((prev) => prev.filter((r) => r.id !== ruleId));
+                }}
+              />
+            </div>
+            <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setConditionsOpen(false)}
+                className="h-9 px-4 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setClipArtRules(JSON.parse(JSON.stringify(conditionDraft)));
+                  setConditionsOpen(false);
+                }}
+                className="h-9 px-4 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs cursor-pointer"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <MergeOptionsModal
+        open={mergeOpen}
+        groups={mergeGroups}
+        busy={mergeBusy}
+        progress={mergeProgress}
+        onCancel={() => {
+          if (mergeBusy) return;
+          setMergeOpen(false);
+        }}
+        onConfirm={handleMergeOptions}
+      />
+
       <MediaSelectModal
         isOpen={pickerOpen}
         onClose={() => setPickerOpen(false)}
         multiSelect={pickerMultiSelect}
         allowedCategory="IMAGE"
+        defaultFolder="cliparts"
         title={pickerTitle}
         onSelect={handlePickerSelect}
       />

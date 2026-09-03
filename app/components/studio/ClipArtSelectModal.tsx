@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { X, Package, Layers, Check } from "lucide-react";
+import ClipArtThumb from "./ClipArtThumb";
 
 export interface ClipArtRecord {
   id: string;
@@ -57,7 +58,9 @@ export default function ClipArtSelectModal({ isOpen, onClose, onSelect }: ClipAr
     if (!raw) return 0;
     try {
       const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
-      return Array.isArray(arr) ? arr.length : 0;
+      if (Array.isArray(arr)) return arr.length;
+      if (arr && Array.isArray(arr.__clipArtFields)) return arr.__clipArtFields.length;
+      return 0;
     } catch {
       return 0;
     }
@@ -119,11 +122,7 @@ export default function ClipArtSelectModal({ isOpen, onClose, onSelect }: ClipAr
                     }`}
                   >
                     <span className="relative aspect-square bg-[repeating-conic-gradient(#f1f5f9_0%_25%,#ffffff_0%_50%)] bg-[length:18px_18px] flex items-center justify-center p-2 border-b border-gray-100">
-                      {c.thumbnailUrl || c.compositeUrl ? (
-                        <img src={c.thumbnailUrl || c.compositeUrl || ""} alt={c.name} className="w-full h-full object-contain" />
-                      ) : (
-                        <Layers className="w-7 h-7 text-slate-300" />
-                      )}
+                      <ClipArtThumb art={c} />
                       {isSel && (
                         <span className="absolute top-1.5 right-1.5 w-5 h-5 bg-emerald-600 text-white rounded-full flex items-center justify-center shadow">
                           <Check className="w-3 h-3 stroke-[3]" />

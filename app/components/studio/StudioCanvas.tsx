@@ -11,7 +11,7 @@ import {
   findLinkedPhotoLayer,
   getMaskLiveGeometry,
 } from "../../utils/photoMask";
-import { ZoomIn, ZoomOut, RotateCcw, Grid, Eye } from "lucide-react";
+import { ZoomIn, ZoomOut, RotateCcw, Grid, Eye, Scaling } from "lucide-react";
 import { ensureFontLoaded, FontItem } from "../../utils/fontLoader";
 import {
   applyTextCase,
@@ -21,13 +21,15 @@ import {
 } from "../../utils/studioText";
 import { generateWordSearchPuzzle } from "../../utils/wordSearchEngine";
 import { resolveDoodleStyleAssignments, loadAndTrimImage } from "../../utils/doodleAlphabetEngine";
+import { isEmptyOption } from "../../utils/fieldHelpers";
+import { clipArtFingerprint, rasterizeClipArtFrame, rasterizePunchedPlate, type ClipArtInstance, type ClipArtPartOption } from "../../utils/clipArtInstance";
 
 export { processCustomMaskImage, preloadCustomMaskImage, createFabricMaskObject };
 
 export interface CanvasLayerItem {
   id: string;
   name: string;
-  layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY" | "MASK" | "WORD_SEARCH_PUZZLE" | "DOODLE_ALPHABET";
+  layerType: "BACKGROUND" | "ASSET" | "TEXT" | "PHOTO_UPLOAD" | "OVERLAY" | "MASK" | "WORD_SEARCH_PUZZLE" | "DOODLE_ALPHABET" | "CLIPART";
   zIndex: number;
   posX: number;
   posY: number;
@@ -69,6 +71,49 @@ export function enforceZIndexOrder(fc: fabric.Canvas, visibleLayers: CanvasLayer
   fc.requestRenderAll();
 }
 
+function clampCanvasSize(n: number) {
+  return Math.max(100, Math.min(8000, Math.round(n)));
+}
+
+type FrameEdge = "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+
+function sizeFromFrameDrag(
+  edge: FrameEdge,
+  startW: number,
+  startH: number,
+  dx: number,
+  dy: number,
+  lockRatio: boolean
+): { width: number; height: number } {
+  let width = startW;
+  let height = startH;
+  if (edge.includes("e")) width = startW + dx;
+  if (edge.includes("w")) width = startW - dx;
+  if (edge.includes("s")) height = startH + dy;
+  if (edge.includes("n")) height = startH - dy;
+  if (lockRatio && startW > 0 && startH > 0) {
+    const ratio = startW / startH;
+    const fromW = Math.abs(width - startW) * startH >= Math.abs(height - startH) * startW;
+    if (edge === "n" || edge === "s" || !fromW && (edge === "ne" || edge === "nw" || edge === "se" || edge === "sw")) {
+      width = height * ratio;
+    } else {
+      height = width / ratio;
+    }
+  }
+  return { width: clampCanvasSize(width), height: clampCanvasSize(height) };
+}
+
+const FRAME_HANDLES: { edge: FrameEdge; className: string; cursor: string }[] = [
+  { edge: "n", className: "left-1/2 -top-1 -translate-x-1/2 w-10 h-2.5", cursor: "ns-resize" },
+  { edge: "s", className: "left-1/2 -bottom-1 -translate-x-1/2 w-10 h-2.5", cursor: "ns-resize" },
+  { edge: "e", className: "top-1/2 -right-1 -translate-y-1/2 w-2.5 h-10", cursor: "ew-resize" },
+  { edge: "w", className: "top-1/2 -left-1 -translate-y-1/2 w-2.5 h-10", cursor: "ew-resize" },
+  { edge: "ne", className: "-top-1.5 -right-1.5 w-3.5 h-3.5", cursor: "nesw-resize" },
+  { edge: "nw", className: "-top-1.5 -left-1.5 w-3.5 h-3.5", cursor: "nwse-resize" },
+  { edge: "se", className: "-bottom-1.5 -right-1.5 w-3.5 h-3.5", cursor: "nwse-resize" },
+  { edge: "sw", className: "-bottom-1.5 -left-1.5 w-3.5 h-3.5", cursor: "nesw-resize" },
+];
+
 interface StudioCanvasProps {
   widthPx: number;
   heightPx: number;
@@ -77,6 +122,7 @@ interface StudioCanvasProps {
   selectedLayerId: string | null;
   selectedLayerIds?: string[];
   onSelectLayer: (layerId: string | null, isMultiKey?: boolean) => void;
+  onSelectLayers?: (layerIds: string[]) => void;
   onUpdateLayer: (layerId: string, updatedProps: Partial<CanvasLayerItem>) => void;
   onUpdateField?: (fieldId: string, updatedProps: any) => void;
   bgUrl?: string | null;
@@ -90,6 +136,7 @@ interface StudioCanvasProps {
   onToggleGrid?: () => void;
   fonts?: FontItem[];
   doodlePacks?: any[];
+  onResizeCanvas?: (widthPx: number, heightPx: number) => void;
 }
 
 /**
@@ -178,6 +225,7 @@ export default function StudioCanvas({
   selectedLayerId,
   selectedLayerIds = [],
   onSelectLayer,
+  onSelectLayers,
   onUpdateLayer,
   onUpdateField,
   bgUrl,
@@ -191,6 +239,7 @@ export default function StudioCanvas({
   onToggleGrid,
   fonts = [],
   doodlePacks = [],
+  onResizeCanvas,
 }: StudioCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasElRef = useRef<HTMLCanvasElement>(null);
@@ -202,6 +251,11 @@ export default function StudioCanvas({
   useEffect(() => {
     layersRef.current = layers;
   }, [layers]);
+
+  const selectedLayerIdsRef = useRef(selectedLayerIds);
+  useEffect(() => {
+    selectedLayerIdsRef.current = selectedLayerIds;
+  }, [selectedLayerIds]);
 
   const fieldsRef = useRef(fields);
   useEffect(() => {
@@ -234,6 +288,60 @@ export default function StudioCanvas({
       }
     });
   }, [layers, fonts]);
+
+  const [frameResizeMode, setFrameResizeMode] = useState(false);
+  const [draftFrame, setDraftFrame] = useState<{ width: number; height: number } | null>(null);
+  const frameDragRef = useRef<{
+    edge: FrameEdge;
+    startX: number;
+    startY: number;
+    startW: number;
+    startH: number;
+    zoom: number;
+  } | null>(null);
+
+  const frameW = draftFrame?.width ?? widthPx;
+  const frameH = draftFrame?.height ?? heightPx;
+
+  const beginFrameResize = (edge: FrameEdge, e: React.PointerEvent) => {
+    if (!onResizeCanvas || isPreviewMode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const z = zoom || 1;
+    frameDragRef.current = {
+      edge,
+      startX: e.clientX,
+      startY: e.clientY,
+      startW: widthPx,
+      startH: heightPx,
+      zoom: z,
+    };
+    setDraftFrame({ width: widthPx, height: heightPx });
+    const handleMove = (ev: PointerEvent) => {
+      const drag = frameDragRef.current;
+      if (!drag) return;
+      const dx = (ev.clientX - drag.startX) / drag.zoom;
+      const dy = (ev.clientY - drag.startY) / drag.zoom;
+      setDraftFrame(sizeFromFrameDrag(drag.edge, drag.startW, drag.startH, dx, dy, ev.shiftKey));
+    };
+    const handleUp = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+      const drag = frameDragRef.current;
+      frameDragRef.current = null;
+      if (!drag) {
+        setDraftFrame(null);
+        return;
+      }
+      const dx = (ev.clientX - drag.startX) / drag.zoom;
+      const dy = (ev.clientY - drag.startY) / drag.zoom;
+      const next = sizeFromFrameDrag(drag.edge, drag.startW, drag.startH, dx, dy, ev.shiftKey);
+      setDraftFrame(null);
+      if (next.width !== drag.startW || next.height !== drag.startH) onResizeCanvas(next.width, next.height);
+    };
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp);
+  };
 
   // Global Event Listener when ANY font finishes downloading in browser
   useEffect(() => {
@@ -315,7 +423,7 @@ export default function StudioCanvas({
     };
   }, []);
 
-  // Auto-fit zoom on initial mount
+  // Auto-fit zoom on initial mount only — resizing the frame must not change zoom or layers.
   useEffect(() => {
     if (containerRef.current) {
       const containerWidth = containerRef.current.clientWidth - 100;
@@ -327,7 +435,8 @@ export default function StudioCanvas({
         setZoom(Math.max(0.2, Math.round(autoZoom * 100) / 100));
       }
     }
-  }, [widthPx, heightPx, setZoom]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Initialize Fabric.js Canvas
   useEffect(() => {
@@ -498,7 +607,7 @@ export default function StudioCanvas({
             const newX = Math.round(options.translateX - newW / 2);
             const newY = Math.round(options.translateY - newH / 2);
 
-            onUpdateLayer(obj.layerId, {
+            onUpdateLayerRef.current(obj.layerId, {
               posX: newX,
               posY: newY,
             });
@@ -562,15 +671,49 @@ export default function StudioCanvas({
       };
 
       // Handle Selection Events
+      const restoreMultiSelection = () => {
+        const current = selectedLayerIdsRef.current;
+        if (current.length < 2) return false;
+        const active = fabricCanvas.getActiveObject();
+        if (active instanceof fabric.ActiveSelection) {
+          const ids = active.getObjects().map((o: any) => o.layerId).filter(Boolean);
+          if (ids.length === current.length && current.every((id) => ids.includes(id))) {
+            return true;
+          }
+        }
+        isUpdatingFromFabricRef.current = true;
+        const objs = fabricCanvas.getObjects().filter((o: any) => o.layerId && current.includes(o.layerId));
+        if (objs.length > 1) {
+          fabricCanvas.setActiveObject(new fabric.ActiveSelection(objs, { canvas: fabricCanvas }));
+          fabricCanvas.requestRenderAll();
+        }
+        setTimeout(() => {
+          isUpdatingFromFabricRef.current = false;
+        }, 50);
+        return objs.length > 1;
+      };
+
       const handleSelectionCreated = (e: any) => {
         if (isUpdatingFromFabricRef.current) return;
         const selected = e.selected || [];
         const selectedIds = selected.map((o: any) => o.layerId).filter(Boolean);
+        const current = selectedLayerIdsRef.current;
+        const isMultiKey = e.e ? Boolean(e.e.ctrlKey || e.e.metaKey) : false;
+
+        if (selectedIds.length === 1 && current.length > 1 && current.includes(selectedIds[0])) {
+          if (isMultiKey) {
+            onSelectLayer(selectedIds[0], true);
+            return;
+          }
+          restoreMultiSelection();
+          return;
+        }
 
         if (selectedIds.length > 0) {
           if (selectedIds.length === 1) {
-            const isMultiKey = e.e ? Boolean(e.e.ctrlKey || e.e.metaKey) : false;
             onSelectLayer(selectedIds[0], isMultiKey);
+          } else if (onSelectLayers) {
+            onSelectLayers(selectedIds);
           } else {
             selectedIds.forEach((id) => onSelectLayer(id, true));
           }
@@ -579,8 +722,23 @@ export default function StudioCanvas({
 
       const handleSelectionCleared = () => {
         if (isUpdatingFromFabricRef.current) return;
+        if (selectedLayerIdsRef.current.length > 1) return;
         onSelectLayer(null);
       };
+
+      fabricCanvas.on("mouse:down", (opt: any) => {
+        const current = selectedLayerIdsRef.current;
+        if (!opt.target) {
+          if (current.length > 0) onSelectLayer(null);
+          return;
+        }
+        if (opt.e?.ctrlKey || opt.e?.metaKey) return;
+        if (opt.target instanceof fabric.ActiveSelection) return;
+        const clickedId = (opt.target as any).layerId as string | undefined;
+        if (current.length > 1 && clickedId && current.includes(clickedId)) {
+          restoreMultiSelection();
+        }
+      });
 
       // Keep the photo's clip window in stage space while mask/photo is dragged, scaled, or rotated.
       const handleLiveTransform = (e: any) => {
@@ -626,7 +784,9 @@ export default function StudioCanvas({
       fabricCanvas.dispose();
       fabricCanvasRef.current = null;
     };
-  }, [widthPx, heightPx]);
+    // Canvas is created once; size changes go through setDimensions in the sync effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Trigger immediate Fabric canvas re-render whenever dynamic web fonts finish downloading
   useEffect(() => {
@@ -648,7 +808,12 @@ export default function StudioCanvas({
     const fc = fabricCanvasRef.current;
     if (!fc) return;
 
+    if (Boolean((fc as any)._currentTransform)) return;
+
     isUpdatingFromFabricRef.current = true;
+    if (fc.getActiveObject() instanceof fabric.ActiveSelection) {
+      fc.discardActiveObject();
+    }
 
     // Preload any custom mask images that are not yet in cache
     layers.forEach((l) => {
@@ -1446,6 +1611,130 @@ export default function StudioCanvas({
           fc.add(shapeObj);
           obj = shapeObj;
         }
+      } else if (layer.layerType === "CLIPART") {
+        const instance: ClipArtInstance = {
+          clipArtId: props.clipArtId || "",
+          clipArtName: props.clipArtName || layer.name,
+          sourceWidth: Number(props.sourceWidth) || layer.width,
+          sourceHeight: Number(props.sourceHeight) || layer.height,
+          groups: props.clipArtGroups || [],
+          rules: props.clipArtRules || [],
+        };
+        const fp = `${layer.id}_${clipArtFingerprint(instance)}_${props.clipArtReloadedAt || 0}`;
+        const centerX = layer.posX + layer.width / 2;
+        const centerY = layer.posY + layer.height / 2;
+        const opacity = props.opacity !== undefined ? Number(props.opacity) : 1;
+
+        const applyClipArtTransform = (img: fabric.Image) => {
+          const nativeW = (img as any).nativeWidth || instance.sourceWidth || 100;
+          const nativeH = (img as any).nativeHeight || instance.sourceHeight || 100;
+          img.set({
+            left: centerX,
+            top: centerY,
+            originX: "center",
+            originY: "center",
+            angle: layer.rotation || 0,
+            scaleX: layer.width / nativeW,
+            scaleY: layer.height / nativeH,
+            opacity,
+            selectable: !layer.isLocked,
+            evented: !layer.isLocked,
+            lockUniScaling: true,
+            objectCaching: false,
+            dirty: true,
+          });
+          img.setControlsVisibility({
+            mt: false,
+            mb: false,
+            ml: false,
+            mr: false,
+            tl: true,
+            tr: true,
+            bl: true,
+            br: true,
+            mtr: true,
+          });
+          img.setCoords();
+        };
+
+        const existingImg = fc.getObjects().find((o: any) => o.layerId === layer.id && o instanceof fabric.Image) as
+          | fabric.Image
+          | undefined;
+
+        if (existingImg && (existingImg as any)._clipFp === fp) {
+          applyClipArtTransform(existingImg);
+          obj = existingImg;
+        } else {
+          const placeholder = existingImg
+            ? existingImg
+            : new fabric.Rect({
+                left: centerX,
+                top: centerY,
+                width: layer.width,
+                height: layer.height,
+                fill: "rgba(16, 185, 129, 0.06)",
+                stroke: "#10b981",
+                strokeDashArray: [6, 4],
+                originX: "center",
+                originY: "center",
+                angle: layer.rotation || 0,
+                selectable: !layer.isLocked,
+                evented: !layer.isLocked,
+                objectCaching: false,
+              });
+          if (!existingImg) {
+            (placeholder as any).layerId = layer.id;
+            (placeholder as any).layerType = "CLIPART";
+            fc.add(placeholder);
+          } else {
+            applyClipArtTransform(existingImg);
+          }
+          obj = placeholder as any;
+
+          rasterizeClipArtFrame(instance)
+            .then((dataUrl) => {
+              if (!dataUrl) return;
+              const still = layersRef.current.find((l) => l.id === layer.id);
+              if (!still || still.layerType !== "CLIPART") return;
+              const stillFp = `${still.id}_${clipArtFingerprint({
+                clipArtId: still.properties?.clipArtId || "",
+                clipArtName: still.properties?.clipArtName || still.name,
+                sourceWidth: Number(still.properties?.sourceWidth) || still.width,
+                sourceHeight: Number(still.properties?.sourceHeight) || still.height,
+                groups: still.properties?.clipArtGroups || [],
+                rules: still.properties?.clipArtRules || [],
+              })}_${still.properties?.clipArtReloadedAt || 0}`;
+              if (stillFp !== fp) return;
+
+              const imgEl = new Image();
+              imgEl.crossOrigin = "anonymous";
+              imgEl.onload = () => {
+                const liveFc = fabricCanvasRef.current;
+                if (!liveFc) return;
+                const stale = liveFc.getObjects().find((o: any) => o.layerId === layer.id);
+                if (stale) liveFc.remove(stale);
+                const fabImg = new fabric.Image(imgEl, {
+                  originX: "center",
+                  originY: "center",
+                });
+                (fabImg as any).layerId = layer.id;
+                (fabImg as any).layerType = "CLIPART";
+                (fabImg as any)._clipFp = fp;
+                (fabImg as any).nativeWidth = imgEl.naturalWidth || instance.sourceWidth;
+                (fabImg as any).nativeHeight = imgEl.naturalHeight || instance.sourceHeight;
+                applyClipArtTransform(fabImg);
+                liveFc.add(fabImg);
+                const vis = layersRef.current.filter((l) => l.isVisible);
+                enforceZIndexOrder(liveFc, vis);
+                if (selectedLayerIdsRef.current.includes(layer.id)) {
+                  liveFc.setActiveObject(fabImg);
+                }
+                liveFc.requestRenderAll();
+              };
+              imgEl.src = dataUrl;
+            })
+            .catch(() => {});
+        }
       } else if (
         layer.layerType === "ASSET" ||
         layer.layerType === "OVERLAY" ||
@@ -1471,7 +1760,7 @@ export default function StudioCanvas({
               const opts = config.options || [];
               const activeOpt = opts.find((o: any) => o.id === linkedF.activeOptionId) || opts[0];
               if (activeOpt && activeOpt.isVisible !== false) {
-                assetUrl = activeOpt.assetImageUrl || "";
+                assetUrl = isEmptyOption(activeOpt) ? "" : activeOpt.assetImageUrl || "";
                 if (activeOpt.posX !== undefined) renderPosX = activeOpt.posX;
                 if (activeOpt.posY !== undefined) renderPosY = activeOpt.posY;
                 if (activeOpt.width !== undefined) renderWidth = activeOpt.width;
@@ -1507,14 +1796,75 @@ export default function StudioCanvas({
         };
 
         if (assetUrl) {
+          const isSandwichFront = props.sandwichRole === "front";
+          const knockIds: string[] = Array.isArray(props.knockoutGroupIds) ? props.knockoutGroupIds : [];
+          const knockParts: ClipArtPartOption[] = isSandwichFront
+            ? visibleLayers
+                .filter(
+                  (l) =>
+                    l.id !== layer.id &&
+                    l.properties?.sandwichRole !== "front" &&
+                    (knockIds.includes(l.linkedFieldId || "") || knockIds.includes(l.id))
+                )
+                .map((l) => {
+                  const lf = (fields || []).find((f) => f.id === l.linkedFieldId);
+                  const opts = lf?.config?.options || [];
+                  const active = opts.find((o: any) => o.id === lf?.activeOptionId) || opts[0];
+                  const url = isEmptyOption(active)
+                    ? ""
+                    : active?.assetImageUrl || l.properties?.assetUrl || "";
+                  if (!url) return null;
+                  return {
+                    id: l.id,
+                    label: l.name,
+                    assetImageUrl: url,
+                    relX: l.posX,
+                    relY: l.posY,
+                    relW: l.width,
+                    relH: l.height,
+                    rotation: l.rotation || 0,
+                    flipH: Boolean(l.properties?.flipH),
+                    flipV: Boolean(l.properties?.flipV),
+                  } as ClipArtPartOption;
+                })
+                .filter((p): p is ClipArtPartOption => Boolean(p))
+            : [];
+          const sandwichFp = isSandwichFront
+            ? `${assetUrl}|${widthPx}x${heightPx}|${renderPosX},${renderPosY},${renderWidth},${renderHeight},${renderRotation},${flipHFlag},${flipVFlag}|${knockParts
+                .map((k) => `${k.id}:${k.assetImageUrl}:${k.relX},${k.relY},${k.relW},${k.relH}`)
+                .join(";")}`
+            : "";
+
           const existingImgObj = fc.getObjects().find(
             (o: any) => o.layerId === layer.id && o instanceof fabric.Image
           ) as fabric.Image | undefined;
 
-          if (existingImgObj && (existingImgObj as any).assetUrl === assetUrl) {
+          if (
+            existingImgObj &&
+            (isSandwichFront
+              ? (existingImgObj as any)._sandwichFp === sandwichFp
+              : (existingImgObj as any).assetUrl === assetUrl)
+          ) {
             restoreRawPhotoElement(existingImgObj);
             const currentW = (existingImgObj as any).nativeWidth || existingImgObj.width || 100;
             const currentH = (existingImgObj as any).nativeHeight || existingImgObj.height || 100;
+            if (isSandwichFront) {
+              existingImgObj.set({
+                left: widthPx / 2,
+                top: heightPx / 2,
+                originX: "center",
+                originY: "center",
+                angle: 0,
+                scaleX: widthPx / currentW,
+                scaleY: heightPx / currentH,
+                opacity,
+                selectable: false,
+                evented: false,
+                lockUniScaling: true,
+                objectCaching: false,
+                dirty: true,
+              });
+            } else {
             const flipH = flipHFlag ? -1 : 1;
             const flipV = flipVFlag ? -1 : 1;
             const baseScaleX = (renderWidth / currentW) * flipH;
@@ -1535,6 +1885,7 @@ export default function StudioCanvas({
               objectCaching: false,
               dirty: true,
             });
+            }
             applyLinkedMask(existingImgObj);
             existingImgObj.setControlsVisibility({
               mt: false,
@@ -1549,6 +1900,61 @@ export default function StudioCanvas({
             });
             existingImgObj.setCoords();
             obj = existingImgObj;
+          } else if (isSandwichFront) {
+            rasterizePunchedPlate({
+              width: widthPx,
+              height: heightPx,
+              plate: {
+                id: layer.id,
+                label: layer.name,
+                assetImageUrl: assetUrl,
+                relX: renderPosX,
+                relY: renderPosY,
+                relW: renderWidth,
+                relH: renderHeight,
+                rotation: renderRotation,
+                flipH: flipHFlag,
+                flipV: flipVFlag,
+              },
+              knockouts: knockParts,
+            })
+              .then((dataUrl) => {
+                if (!fc) return;
+                const imgEl = new Image();
+                imgEl.onload = () => {
+                  if (!fc) return;
+                  const oldObj = fc.getObjects().find((o: any) => o.layerId === layer.id);
+                  if (oldObj) fc.remove(oldObj);
+                  const nativeW = imgEl.naturalWidth || widthPx;
+                  const nativeH = imgEl.naturalHeight || heightPx;
+                  const fabricImg = new fabric.Image(imgEl, {
+                    left: widthPx / 2,
+                    top: heightPx / 2,
+                    originX: "center",
+                    originY: "center",
+                    angle: 0,
+                    scaleX: widthPx / nativeW,
+                    scaleY: heightPx / nativeH,
+                    opacity,
+                    selectable: false,
+                    evented: false,
+                    lockUniScaling: true,
+                    objectCaching: false,
+                    dirty: true,
+                  });
+                  (fabricImg as any).layerId = layer.id;
+                  (fabricImg as any).assetUrl = assetUrl;
+                  (fabricImg as any)._sandwichFp = sandwichFp;
+                  (fabricImg as any).nativeWidth = nativeW;
+                  (fabricImg as any).nativeHeight = nativeH;
+                  fc.add(fabricImg);
+                  const currentLayers = layersRef.current || visibleLayers;
+                  enforceZIndexOrder(fc, currentLayers);
+                  fc.requestRenderAll();
+                };
+                imgEl.src = dataUrl;
+              })
+              .catch(() => {});
           } else {
             const imgEl = new Image();
             imgEl.crossOrigin = "anonymous";
@@ -1685,40 +2091,6 @@ export default function StudioCanvas({
       }
     });
 
-      // Sync active selection highlight without triggering infinite selection event loops
-      isUpdatingFromFabricRef.current = true;
-      const allCanvasObjs = fc.getObjects();
-      const matchingObjs = allCanvasObjs.filter((o: any) => o.layerId && selectedLayerIds.includes(o.layerId));
-
-      if (selectedLayerIds.length > 1) {
-        if (matchingObjs.length > 1) {
-          const activeSel = new fabric.ActiveSelection(matchingObjs, { canvas: fc });
-          fc.setActiveObject(activeSel);
-        } else if (matchingObjs.length === 1) {
-          fc.setActiveObject(matchingObjs[0]);
-        }
-      } else if (selectedLayerIds.length === 1) {
-        const selectedId = selectedLayerIds[0];
-        const selectedLayerObj = layers.find((l) => l.id === selectedId);
-        const linkedF = selectedLayerObj ? fields.find((f) => f.id === selectedLayerObj.linkedFieldId) : null;
-        const isListSelectedWithoutOption = linkedF && !linkedF.activeOptionId;
-
-        if (isListSelectedWithoutOption) {
-          fc.discardActiveObject();
-        } else {
-          const matchingObj = matchingObjs[0] || allCanvasObjs.find((o: any) => o.layerId === selectedId);
-          if (matchingObj && fc.getActiveObject() !== matchingObj) {
-            fc.setActiveObject(matchingObj);
-          }
-        }
-      } else {
-        fc.discardActiveObject();
-      }
-    fc.requestRenderAll();
-    setTimeout(() => {
-      isUpdatingFromFabricRef.current = false;
-    }, 50);
-
     // Render Subtle Dashed Photo Reference Guide Box if a MASK layer is currently focused/selected
     const selectedLayerItem = visibleLayers.find((l) => l.id === selectedLayerId);
     if (selectedLayerItem && selectedLayerItem.layerType === "MASK") {
@@ -1809,16 +2181,39 @@ export default function StudioCanvas({
         }
       });
 
-      if (!selectedLayerId) {
+      const matchingObjs = fc.getObjects().filter((o: any) => o.layerId && selectedLayerIds.includes(o.layerId));
+      if (selectedLayerIds.length > 1) {
+        if (matchingObjs.length > 1) {
+          fc.setActiveObject(new fabric.ActiveSelection(matchingObjs, { canvas: fc }));
+        } else if (matchingObjs.length === 1) {
+          fc.setActiveObject(matchingObjs[0]);
+        }
+      } else if (selectedLayerIds.length === 1) {
+        const selectedId = selectedLayerIds[0];
+        const selectedLayerObj = layers.find((l) => l.id === selectedId);
+        const linkedF = selectedLayerObj ? fields.find((f) => f.id === selectedLayerObj.linkedFieldId) : null;
+        const isListSelectedWithoutOption = linkedF && !linkedF.activeOptionId;
+        if (isListSelectedWithoutOption) {
+          fc.discardActiveObject();
+        } else {
+          const matchingObj = matchingObjs[0] || fc.getObjects().find((o: any) => o.layerId === selectedId);
+          if (matchingObj && fc.getActiveObject() !== matchingObj) {
+            fc.setActiveObject(matchingObj);
+          }
+        }
+      } else {
         fc.discardActiveObject();
       }
     }
 
     fc.renderAll();
-  }, [layers, fields, selectedLayerId, widthPx, heightPx, onSelectLayer, isPreviewMode, maskCacheVersion]);
+    setTimeout(() => {
+      isUpdatingFromFabricRef.current = false;
+    }, 50);
+  }, [layers, fields, selectedLayerId, selectedLayerIds, widthPx, heightPx, onSelectLayer, onSelectLayers, isPreviewMode, maskCacheVersion]);
 
   return (
-    <div className="w-full h-full min-h-full bg-slate-200/70 overflow-auto p-4 relative select-none flex flex-col">
+    <div className={`w-full h-full min-h-full bg-slate-200/70 overflow-auto p-4 relative select-none flex flex-col ${onResizeCanvas && !isPreviewMode && frameResizeMode ? "pb-12" : ""}`}>
       {/* STOREFRONT PREVIEW BADGE */}
       {isPreviewMode && (
         <div className="absolute top-4 right-6 z-30 bg-amber-500 text-white font-bold text-xs px-3 py-1.5 rounded-full shadow-lg flex items-center gap-1.5 tracking-wide animate-pulse">
@@ -1827,56 +2222,102 @@ export default function StudioCanvas({
         </div>
       )}
 
-      {/* CANVAS CONTAINER CAROUSEL WRAPPER */}
+      {/* CANVAS CONTAINER */}
       <div
         ref={containerRef}
-        className="relative shadow-2xl rounded-lg overflow-hidden border border-slate-300 transition-all duration-150 ease-out m-auto shrink-0"
+        className={`relative m-auto shrink-0 ${draftFrame ? "" : "transition-all duration-150 ease-out"}`}
         style={{
-          width: widthPx * zoom,
-          height: heightPx * zoom,
-          backgroundColor: workspaceBgColor || "#ffffff",
+          width: frameW * zoom,
+          height: frameH * zoom,
         }}
       >
-        {/* CANVAS STAGE SOLID BACKDROP BACKGROUND */}
         <div
-          className="absolute inset-0 pointer-events-none"
-          style={{
-            backgroundColor: workspaceBgColor || "#ffffff",
-          }}
-        />
-
-        {/* SCREEN BACKGROUND IMAGE */}
-        {bgUrl && (
-          <img
-            src={bgUrl}
-            alt="Screen Background"
-            className="absolute inset-0 w-full h-full object-cover pointer-events-none z-0"
-          />
-        )}
-
-        {/* FABRIC.JS HTML5 CANVAS STAGE */}
-        <div
-          className="relative z-20 origin-top-left"
-          style={{
-            transform: `scale(${zoom})`,
-            width: widthPx,
-            height: heightPx,
-          }}
+          className={`absolute inset-0 overflow-hidden rounded-lg border shadow-2xl ${
+            draftFrame || frameResizeMode ? "border-indigo-500 border-2" : "border-slate-300"
+          }`}
+          style={{ backgroundColor: workspaceBgColor || "#ffffff" }}
         >
-          <canvas ref={canvasElRef} />
+          {/* CANVAS STAGE SOLID BACKDROP BACKGROUND */}
+          <div
+            className="absolute inset-0 pointer-events-none"
+            style={{
+              backgroundColor: workspaceBgColor || "#ffffff",
+            }}
+          />
 
-          {/* ALIGNMENT GRID OVERLAY ON TOP OF LAYERS (Suppressed in Preview Mode!) */}
-          {showGrid && !isPreviewMode && (
-            <div
-              className="absolute inset-0 pointer-events-none z-30 opacity-30"
-              style={{
-                backgroundImage:
-                  "linear-gradient(to right, #3b82f6 1px, transparent 1px), linear-gradient(to bottom, #3b82f6 1px, transparent 1px)",
-                backgroundSize: "50px 50px",
-              }}
+          {/* SCREEN BACKGROUND IMAGE */}
+          {bgUrl && (
+            <img
+              src={bgUrl}
+              alt="Screen Background"
+              className="absolute inset-0 w-full h-full object-cover pointer-events-none z-0"
             />
           )}
+
+          {/* FABRIC.JS HTML5 CANVAS STAGE — always original size so resize never scales layers */}
+          <div
+            className="relative z-20 origin-top-left"
+            style={{
+              transform: `scale(${zoom})`,
+              width: widthPx,
+              height: heightPx,
+            }}
+          >
+            <canvas ref={canvasElRef} />
+
+            {/* ALIGNMENT GRID OVERLAY ON TOP OF LAYERS (Suppressed in Preview Mode!) */}
+            {showGrid && !isPreviewMode && (
+              <div
+                className="absolute inset-0 pointer-events-none z-30 opacity-30"
+                style={{
+                  backgroundImage:
+                    "linear-gradient(to right, #3b82f6 1px, transparent 1px), linear-gradient(to bottom, #3b82f6 1px, transparent 1px)",
+                  backgroundSize: "50px 50px",
+                }}
+              />
+            )}
+          </div>
         </div>
+
+        {onResizeCanvas && !isPreviewMode && (
+          <>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setFrameResizeMode((on) => !on);
+              }}
+              title={frameResizeMode ? "Done resizing frame" : "Resize studio frame"}
+              className={`absolute -top-3 -right-3 z-50 w-8 h-8 rounded-full border shadow-md flex items-center justify-center cursor-pointer ${
+                frameResizeMode
+                  ? "bg-indigo-600 border-indigo-600 text-white"
+                  : "bg-white border-slate-200 text-slate-500 hover:text-indigo-600 hover:border-indigo-300"
+              }`}
+            >
+              <Scaling className="w-4 h-4" />
+            </button>
+            {frameResizeMode && (
+              <>
+                {FRAME_HANDLES.map((h) => (
+                  <div
+                    key={h.edge}
+                    role="separator"
+                    aria-label={`Resize canvas ${h.edge}`}
+                    title="Drag to resize studio frame (Shift = lock ratio)"
+                    onPointerDown={(e) => beginFrameResize(h.edge, e)}
+                    className={`absolute z-40 bg-white border-2 border-indigo-500 rounded-sm shadow-sm hover:bg-indigo-50 ${h.className}`}
+                    style={{ cursor: h.cursor, touchAction: "none" }}
+                  />
+                ))}
+                <div className="absolute left-1/2 -bottom-8 -translate-x-1/2 z-40 pointer-events-none">
+                  <span className="px-2 py-0.5 rounded-md bg-indigo-600 text-white text-[11px] font-bold font-mono shadow">
+                    {Math.round(frameW)} × {Math.round(frameH)} px
+                  </span>
+                </div>
+              </>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

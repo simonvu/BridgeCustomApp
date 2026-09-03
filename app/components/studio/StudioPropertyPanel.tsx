@@ -27,8 +27,14 @@ import {
   Copy,
   Grid,
   X,
+  Package,
+  Pencil,
+  RefreshCw,
 } from "lucide-react";
 import { autoGenerateSquareThumbnail } from "../../utils/thumbnailGenerator";
+import { isEmptyOption } from "../../utils/fieldHelpers";
+import type { ClipArtInstanceGroup } from "../../utils/clipArtInstance";
+import { clipArtGroupsForArtworkDisplay, resolveDrivenClipArtGroups } from "../../utils/clipArtInstance";
 import StudioFontPicker from "./StudioFontPicker";
 import TextGradientEditor from "./TextGradientEditor";
 
@@ -55,6 +61,8 @@ interface StudioPropertyPanelProps {
   onOpenPhotoUploadModal?: (layerId: string) => void;
   onAddMaskLayer?: (photoLayerId: string) => void;
   onDeleteLayer?: (layerId: string) => void;
+  onReloadClipArt?: (layerId: string) => void;
+  reloadingClipArtLayerId?: string | null;
 }
 
 export default function StudioPropertyPanel({
@@ -73,8 +81,12 @@ export default function StudioPropertyPanel({
   onOpenPhotoUploadModal,
   onAddMaskLayer,
   onDeleteLayer,
+  onReloadClipArt,
+  reloadingClipArtLayerId = null,
 }: StudioPropertyPanelProps) {
   const [isUploadingMask, setIsUploadingMask] = React.useState(false);
+  const [editingClipGroupId, setEditingClipGroupId] = React.useState<string | null>(null);
+  const [editingClipGroupName, setEditingClipGroupName] = React.useState("");
 
   if (selectedLayerIds.length > 1) {
     return (
@@ -182,6 +194,117 @@ export default function StudioPropertyPanel({
               onChange={(e) => onUpdateLayer(selectedLayer.id, { name: e.target.value })}
               className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none font-semibold text-slate-800"
             />
+          </div>
+        )}
+
+        {selectedLayer.layerType === "CLIPART" && (
+          <div className="space-y-3 pt-3 border-t border-slate-200">
+            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-2.5 flex items-start gap-2 text-emerald-900">
+              <Package className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <span className="font-bold text-[11px] block">
+                  {props.clipArtName || selectedLayer.name}
+                </span>
+                <span className="text-[10px] text-emerald-700 block leading-tight">
+                  One object on canvas. Rename groups for this artwork and pick the default option to show.
+                </span>
+              </div>
+              <button
+                type="button"
+                disabled={!props.clipArtId || reloadingClipArtLayerId === selectedLayer.id}
+                onClick={() => onReloadClipArt?.(selectedLayer.id)}
+                title="Reload the latest clip art. Keeps this artwork's group names and selected options."
+                className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md border border-emerald-300 bg-white text-emerald-800 text-[10px] font-bold hover:bg-emerald-100 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              >
+                <RefreshCw
+                  className={`w-3 h-3 ${reloadingClipArtLayerId === selectedLayer.id ? "animate-spin" : ""}`}
+                />
+                Reload
+              </button>
+            </div>
+
+            {clipArtGroupsForArtworkDisplay(
+              props.clipArtGroups || [],
+              props.clipArtRules || []
+            ).map((group) => {
+              const isEditing = editingClipGroupId === group.id;
+              return (
+                <section key={group.id} className="rounded-xl border border-slate-200 bg-slate-50/60 overflow-hidden">
+                  <header className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white border-b border-slate-100">
+                    {isEditing ? (
+                      <input
+                        autoFocus
+                        value={editingClipGroupName}
+                        onChange={(e) => setEditingClipGroupName(e.target.value)}
+                        onBlur={() => {
+                          const next = editingClipGroupName.trim();
+                          if (next && next !== group.name) {
+                            const groups = (props.clipArtGroups || []).map((g: ClipArtInstanceGroup) =>
+                              g.id === group.id ? { ...g, name: next } : g
+                            );
+                            handlePropChange("clipArtGroups", groups);
+                          }
+                          setEditingClipGroupId(null);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          if (e.key === "Escape") setEditingClipGroupId(null);
+                        }}
+                        className="flex-1 h-7 px-2 rounded-md border border-blue-400 text-[12px] font-bold text-slate-800 focus:outline-none"
+                      />
+                    ) : (
+                      <>
+                        <p className="flex-1 text-[12px] font-bold text-slate-800 truncate">{group.name}</p>
+                        <button
+                          type="button"
+                          title="Rename group for this artwork"
+                          onClick={() => {
+                            setEditingClipGroupId(group.id);
+                            setEditingClipGroupName(group.name);
+                          }}
+                          className="p-1 rounded-md text-slate-400 hover:text-blue-600 hover:bg-blue-50 cursor-pointer"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                      </>
+                    )}
+                  </header>
+                  <div className="p-2 flex flex-wrap gap-2">
+                    {group.options.map((opt) => {
+                      const active = opt.id === group.activeOptionId;
+                      const empty = isEmptyOption(opt);
+                      return (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          title={empty ? "None" : opt.label || "Option"}
+                          onClick={() => {
+                            const groups = (props.clipArtGroups || []).map((g: ClipArtInstanceGroup) =>
+                              g.id === group.id ? { ...g, activeOptionId: opt.id } : g
+                            );
+                            handlePropChange("clipArtGroups", resolveDrivenClipArtGroups(groups));
+                          }}
+                          className={`relative w-14 h-14 rounded-lg border bg-white overflow-hidden cursor-pointer flex items-center justify-center ${
+                            active ? "border-blue-500 ring-2 ring-blue-200" : "border-slate-200 hover:border-slate-300"
+                          }`}
+                        >
+                          {empty ? (
+                            <span className="text-[9px] font-bold text-slate-400">None</span>
+                          ) : opt.swatchImageUrl || opt.assetImageUrl ? (
+                            <img
+                              src={opt.swatchImageUrl || opt.assetImageUrl}
+                              alt=""
+                              className="w-full h-full object-contain"
+                              draggable={false}
+                            />
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              );
+            })}
           </div>
         )}
 

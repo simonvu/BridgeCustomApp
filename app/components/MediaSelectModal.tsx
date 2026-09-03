@@ -43,6 +43,8 @@ interface MediaSelectModalProps {
   initialSelectedUrl?: string;
   title?: string;
   allowedCategory?: "ALL" | "IMAGE" | "FONT" | "DOCUMENT";
+  /** Pre-select this media folder for browsing and uploads (e.g. "cliparts"). */
+  defaultFolder?: string;
   /** When true, adds a "Clip Art" source tab that lists reusable clip-art objects. */
   enableClipArts?: boolean;
 }
@@ -55,6 +57,7 @@ export default function MediaSelectModal({
   initialSelectedUrl = "",
   title = "Select file",
   allowedCategory = "ALL",
+  defaultFolder,
   enableClipArts = false,
 }: MediaSelectModalProps) {
   const [source, setSource] = useState<"MEDIA" | "CLIPART">("MEDIA");
@@ -64,11 +67,12 @@ export default function MediaSelectModal({
   const [folders, setFolders] = useState<FolderItem[]>([
     { id: "def-1", name: "general", label: "General" },
     { id: "def-2", name: "artworks", label: "Artworks" },
+    { id: "def-3", name: "cliparts", label: "Cliparts" },
   ]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedFolderFilter, setSelectedFolderFilter] = useState("ALL");
-  const [destinationFolder, setDestinationFolder] = useState("general");
+  const [destinationFolder, setDestinationFolder] = useState(defaultFolder || "general");
   const [selectedCategory, setSelectedCategory] = useState<string>(allowedCategory);
   const [selectedFiles, setSelectedFiles] = useState<MediaFileItem[]>([]);
   const [isUploading, setIsUploading] = useState(false);
@@ -124,7 +128,21 @@ export default function MediaSelectModal({
       if (foldersRes.ok) {
         const fData = await foldersRes.json();
         if (fData.folders) {
-          setFolders(fData.folders);
+          setFolders((prev) => {
+            const incoming: FolderItem[] = fData.folders;
+            const byName = new Map(incoming.map((f) => [f.name, f]));
+            prev.forEach((f) => {
+              if (!byName.has(f.name)) byName.set(f.name, f);
+            });
+            if (defaultFolder && !byName.has(defaultFolder)) {
+              byName.set(defaultFolder, {
+                id: `def-${defaultFolder}`,
+                name: defaultFolder,
+                label: defaultFolder.charAt(0).toUpperCase() + defaultFolder.slice(1),
+              });
+            }
+            return Array.from(byName.values());
+          });
         }
       }
     } catch (err) {
@@ -136,7 +154,15 @@ export default function MediaSelectModal({
 
   useEffect(() => {
     if (isOpen) {
-      fetchMediaFilesAndFolders();
+      setSelectedCategory(allowedCategory);
+      setDestinationFolder(defaultFolder || "general");
+      setSelectedFolderFilter("ALL");
+      setSelectedFiles([]);
+      setSearchQuery("");
+      setPage(1);
+      setShowCreateFolderModal(false);
+      setNewFolderName("");
+      setSource("MEDIA");
     } else {
       setSelectedFiles([]);
       setSearchQuery("");
@@ -144,6 +170,12 @@ export default function MediaSelectModal({
       setShowCreateFolderModal(false);
       setNewFolderName("");
       setSource("MEDIA");
+    }
+  }, [isOpen, allowedCategory, defaultFolder]);
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchMediaFilesAndFolders();
     }
   }, [isOpen, fetchMediaFilesAndFolders]);
 

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Page, Layout, Card, TextField, Select } from "@shopify/polaris";
 import { Layers, Copy, Pencil, Trash2, Package, Search } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
+import ClipArtThumb from "../components/studio/ClipArtThumb";
 import prisma from "../db.server";
 import { requireTeamUserId } from "../services/auth.server";
 
@@ -133,15 +134,7 @@ export default function ClipArtsRoute() {
                           className="relative w-full aspect-square bg-[repeating-conic-gradient(#f1f5f9_0%_25%,#ffffff_0%_50%)] bg-[length:20px_20px] flex items-center justify-center p-3 border-b border-gray-100 overflow-hidden cursor-pointer"
                           title="Open in Clip Art Builder"
                         >
-                          {art.thumbnailUrl || art.compositeUrl ? (
-                            <img
-                              src={art.thumbnailUrl || art.compositeUrl}
-                              alt={art.name}
-                              className="w-full h-full object-contain group-hover:scale-105 transition-transform"
-                            />
-                          ) : (
-                            <Layers className="w-8 h-8 text-slate-300" />
-                          )}
+                          <ClipArtThumb art={art} />
                         </button>
 
                         <div className="p-3 space-y-1.5 flex-1 flex flex-col justify-between">

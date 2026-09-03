@@ -34,6 +34,7 @@ import StudioConditionPanel from "../components/studio/StudioConditionPanel";
 import StudioStorefrontPreviewModal from "../components/studio/StudioStorefrontPreviewModal";
 import ClipArtSelectModal, { type ClipArtRecord } from "../components/studio/ClipArtSelectModal";
 import MediaSelectModal from "../components/MediaSelectModal";
+import { buildClipArtInstance, mergeClipArtInstance, type ClipArtInstance } from "../utils/clipArtInstance";
 
 import { injectFontStylesheets, type FontItem } from "../utils/fontLoader";
 import {
@@ -513,6 +514,82 @@ export default function ArtworkStudioRoute() {
     }
   }, [screens]);
 
+  const clipArtHydratedRef = useRef<Set<string>>(new Set());
+  const clipArtSyncKey = screens
+    .map((scr) =>
+      (scr.layers || [])
+        .filter((l) => l.layerType === "CLIPART" && l.properties?.clipArtId)
+        .map((l) => `${scr.id}:${l.id}:${l.properties?.clipArtId}`)
+        .join(",")
+    )
+    .join("|");
+
+  useEffect(() => {
+    const jobs: { screenId: string; layerId: string; clipArtId: string }[] = [];
+    screens.forEach((scr) => {
+      (scr.layers || []).forEach((l) => {
+        const clipArtId = l.properties?.clipArtId;
+        if (l.layerType !== "CLIPART" || !clipArtId) return;
+        const key = `${l.id}:${clipArtId}`;
+        if (clipArtHydratedRef.current.has(key)) return;
+        jobs.push({ screenId: scr.id, layerId: l.id, clipArtId });
+      });
+    });
+    if (jobs.length === 0) return;
+    let live = true;
+    (async () => {
+      for (const job of jobs) {
+        const key = `${job.layerId}:${job.clipArtId}`;
+        let clipart: any = null;
+        for (let attempt = 0; attempt < 3 && live && !clipart; attempt++) {
+          try {
+            const res = await fetch(`/api/cliparts?id=${encodeURIComponent(job.clipArtId)}`);
+            const data = await res.json();
+            if (data?.clipart) clipart = data.clipart;
+          } catch {
+            /* retry */
+          }
+          if (!clipart && attempt < 2) await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+        }
+        if (!live || !clipart) continue;
+        const fresh = buildClipArtInstance(clipart);
+        clipArtHydratedRef.current.add(key);
+        setScreens((prev) =>
+          prev.map((scr) => {
+            if (scr.id !== job.screenId) return scr;
+            return {
+              ...scr,
+              layers: (scr.layers || []).map((l) => {
+                if (l.id !== job.layerId) return l;
+                const previous: ClipArtInstance = {
+                  clipArtId: l.properties?.clipArtId || job.clipArtId,
+                  clipArtName: l.properties?.clipArtName || l.name,
+                  sourceWidth: Number(l.properties?.sourceWidth) || l.width,
+                  sourceHeight: Number(l.properties?.sourceHeight) || l.height,
+                  groups: l.properties?.clipArtGroups || [],
+                  rules: l.properties?.clipArtRules || [],
+                };
+                const merged = mergeClipArtInstance(previous, fresh);
+                return {
+                  ...l,
+                  properties: {
+                    ...(l.properties || {}),
+                    clipArtGroups: merged.groups,
+                    clipArtRules: merged.rules?.length ? merged.rules : l.properties?.clipArtRules,
+                  },
+                };
+              }),
+            };
+          })
+        );
+      }
+    })();
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clipArtSyncKey]);
+
   // Push snapshot into history stack
   const pushHistorySnapshot = (newScreens: StudioScreenItem[]) => {
     if (isUndoRedoActionRef.current) return;
@@ -631,91 +708,95 @@ export default function ArtworkStudioRoute() {
     });
   };
 
-  // Insert a reusable Clip Art object. Modular clip art (with option groups)
-  // is expanded into layers + customer fields; static clip art is added as one
-  // composite image layer.
+  // Insert a reusable Clip Art as ONE canvas object. Option groups live on the
+  // layer properties (artwork-local names + default option) instead of exploding
+  // into separate layers.
   const [clipArtInsertOpen, setClipArtInsertOpen] = useState(false);
+  const [reloadingClipArtLayerId, setReloadingClipArtLayerId] = useState<string | null>(null);
 
   const handleInsertClipArt = (clip: ClipArtRecord) => {
-    const parseArr = (raw: any) => {
-      if (!raw) return [];
-      try {
-        const a = typeof raw === "string" ? JSON.parse(raw) : raw;
-        return Array.isArray(a) ? a : [];
-      } catch {
-        return [];
-      }
-    };
-    const caLayers = parseArr(clip.layers).map((l: any) => ({
-      ...l,
-      properties: typeof l.properties === "string" ? JSON.parse(l.properties) : l.properties || {},
-    }));
-    const caFields = parseArr(clip.fields).map((f: any) => ({
-      ...f,
-      config: typeof f.config === "string" ? JSON.parse(f.config) : f.config || {},
-    }));
-
+    const instance = buildClipArtInstance(clip);
     const stamp = Date.now();
-    const rnd = () => Math.random().toString(36).slice(2, 6);
+    const rnd = Math.random().toString(36).slice(2, 6);
     const baseZ = layers.length > 0 ? Math.max(...layers.map((l) => l.zIndex)) + 1 : 0;
-
-    // Static clip art (no option groups): drop the whole composite as one layer.
-    if (caLayers.length === 0 || (caFields.length === 0 && clip.compositeUrl)) {
-      const caW = clip.widthPx || 1000;
-      const caH = clip.heightPx || 1000;
-      const maxDim = Math.min(widthPx, heightPx) * 0.6;
-      const s = Math.min(maxDim / caW, maxDim / caH, 1);
-      const w = Math.round(caW * s);
-      const h = Math.round(caH * s);
-      const layer: CanvasLayerItem = {
-        id: `layer_${stamp}_${rnd()}`,
-        name: clip.name || "Clip Art",
-        layerType: "ASSET",
-        zIndex: baseZ,
-        posX: Math.round((widthPx - w) / 2),
-        posY: Math.round((heightPx - h) / 2),
-        width: w,
-        height: h,
-        rotation: 0,
-        isVisible: true,
-        isLocked: false,
-        properties: { assetUrl: clip.compositeUrl || "", opacity: 1 },
-      };
-      setLayers((prev) => [...prev, layer]);
-      setIsDirty(true);
-      return;
-    }
-
-    // Modular clip art: expand layers + option-group fields (id-remapped, scaled).
-    const caW = clip.widthPx || 1000;
-    const caH = clip.heightPx || 1000;
-    const scale = Math.min((widthPx * 0.6) / caW, (heightPx * 0.6) / caH, 1);
-    const offX = (widthPx - caW * scale) / 2;
-    const offY = (heightPx - caH * scale) / 2;
-
-    const fieldIdMap: Record<string, string> = {};
-    caFields.forEach((f: any, i: number) => (fieldIdMap[f.id] = `field_${stamp}_${i}_${rnd()}`));
-
-    const newFields = caFields.map((f: any, i: number) => ({
-      ...f,
-      id: fieldIdMap[f.id],
-      sortOrder: (fields?.length || 0) + i,
-    }));
-
-    const newLayers = caLayers.map((l: any, i: number) => ({
-      ...l,
-      id: `layer_${stamp}_${i}_${rnd()}`,
-      linkedFieldId: l.linkedFieldId ? fieldIdMap[l.linkedFieldId] || l.linkedFieldId : undefined,
-      posX: Math.round(offX + (l.posX || 0) * scale),
-      posY: Math.round(offY + (l.posY || 0) * scale),
-      width: Math.max(4, Math.round((l.width || 100) * scale)),
-      height: Math.max(4, Math.round((l.height || 100) * scale)),
-      zIndex: baseZ + i,
-    }));
-
-    if (newFields.length > 0) setFields((prev) => [...prev, ...newFields]);
-    setLayers((prev) => [...prev, ...newLayers]);
+    const srcW = instance.sourceWidth || 1000;
+    const srcH = instance.sourceHeight || 1000;
+    const maxDim = Math.min(widthPx, heightPx) * 0.6;
+    const s = Math.min(maxDim / srcW, maxDim / srcH, 1);
+    const w = Math.max(20, Math.round(srcW * s));
+    const h = Math.max(20, Math.round(srcH * s));
+    const layer: CanvasLayerItem = {
+      id: `layer_${stamp}_${rnd}`,
+      name: instance.clipArtName || "Clip Art",
+      layerType: "CLIPART",
+      zIndex: baseZ,
+      posX: Math.round((widthPx - w) / 2),
+      posY: Math.round((heightPx - h) / 2),
+      width: w,
+      height: h,
+      rotation: 0,
+      isVisible: true,
+      isLocked: false,
+      properties: {
+        opacity: 1,
+        clipArtId: instance.clipArtId,
+        clipArtName: instance.clipArtName,
+        sourceWidth: srcW,
+        sourceHeight: srcH,
+        clipArtGroups: instance.groups,
+        clipArtRules: instance.rules || [],
+      },
+    };
+    setLayers((prev) => [...prev, layer]);
+    setSelectedLayerId(layer.id);
     setIsDirty(true);
+  };
+
+  const handleReloadClipArt = async (layerId: string) => {
+    const layer = layers.find((l) => l.id === layerId);
+    const clipArtId = layer?.properties?.clipArtId as string | undefined;
+    if (!layer || layer.layerType !== "CLIPART" || !clipArtId || reloadingClipArtLayerId) return;
+
+    setReloadingClipArtLayerId(layerId);
+    try {
+      const res = await fetch(`/api/cliparts?id=${encodeURIComponent(clipArtId)}`);
+      const data = await res.json();
+      if (!res.ok || !data.clipart) {
+        alert(data.error || "Clip art not found. It may have been deleted.");
+        return;
+      }
+
+      const fresh = buildClipArtInstance(data.clipart);
+      const previous: ClipArtInstance = {
+        clipArtId: layer.properties?.clipArtId || "",
+        clipArtName: layer.properties?.clipArtName || layer.name,
+        sourceWidth: Number(layer.properties?.sourceWidth) || layer.width,
+        sourceHeight: Number(layer.properties?.sourceHeight) || layer.height,
+        groups: layer.properties?.clipArtGroups || [],
+        rules: layer.properties?.clipArtRules || [],
+      };
+      const merged = mergeClipArtInstance(previous, fresh);
+      clipArtHydratedRef.current.add(`${layerId}:${clipArtId}`);
+      const keepCustomName = Boolean(layer.name && layer.name !== previous.clipArtName);
+
+      handleUpdateLayer(layerId, {
+        ...(keepCustomName ? {} : { name: merged.clipArtName }),
+        properties: {
+          ...(layer.properties || {}),
+          clipArtId: merged.clipArtId,
+          clipArtName: merged.clipArtName,
+          sourceWidth: merged.sourceWidth,
+          sourceHeight: merged.sourceHeight,
+          clipArtGroups: merged.groups,
+          clipArtRules: merged.rules || [],
+          clipArtReloadedAt: Date.now(),
+        },
+      });
+    } catch (e: any) {
+      alert("Could not reload clip art: " + (e?.message || "network error"));
+    } finally {
+      setReloadingClipArtLayerId(null);
+    }
   };
 
   // Screen Management Handlers
@@ -969,7 +1050,11 @@ export default function ArtworkStudioRoute() {
   };
 
   // Layer Handlers
-  const handleAddLayer = (type: CanvasLayerItem["layerType"] | "DROPDOWN") => {
+  const handleAddLayer = (type: CanvasLayerItem["layerType"] | "DROPDOWN" | "CLIPART") => {
+    if (type === "CLIPART") {
+      setClipArtInsertOpen(true);
+      return;
+    }
     const newZ = layers.length > 0 ? Math.max(...layers.map((l) => l.zIndex)) + 1 : 0;
     const nowStamp = Date.now();
 
@@ -1846,7 +1931,7 @@ function detectCleanNameFromFileName(fileName: string): string {
                 type="button"
                 onClick={() => setClipArtInsertOpen(true)}
                 className="px-2 h-6 rounded flex items-center justify-center transition cursor-pointer text-emerald-700 hover:bg-emerald-50 bg-emerald-50/50 border border-emerald-200"
-                title="Insert a Clip Art object (modular ones add customer options)"
+                title="Insert a Clip Art asset as one layer"
               >
                 <Package className="w-3.5 h-3.5" />
               </button>
@@ -2136,6 +2221,8 @@ function detectCleanNameFromFileName(fileName: string): string {
                   onDuplicateLayer={handleDuplicateLayer}
                   onDeleteLayer={handleDeleteLayer}
                   onReorderLayers={(newLayers) => setLayers(() => newLayers)}
+                  onReloadClipArt={handleReloadClipArt}
+                  reloadingClipArtLayerId={reloadingClipArtLayerId}
                 />
               </div>
 
@@ -2165,6 +2252,8 @@ function detectCleanNameFromFileName(fileName: string): string {
                   onOpenPhotoUploadModal={handleOpenPhotoUploadModal}
                   onAddMaskLayer={handleAddMaskLayer}
                   onDeleteLayer={handleDeleteLayer}
+                  onReloadClipArt={handleReloadClipArt}
+                  reloadingClipArtLayerId={reloadingClipArtLayerId}
                 />
               </div>
             </div>
