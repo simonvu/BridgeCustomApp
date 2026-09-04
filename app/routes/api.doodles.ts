@@ -1,7 +1,7 @@
 import { json, type LoaderFunctionArgs, type ActionFunctionArgs } from "@remix-run/node";
-import { PrismaClient } from "@prisma/client";
 import prisma from "../db.server";
-import { getTeamUserId } from "../services/auth.server";
+import { rethrowHttpResponse } from "../services/rbac.server";
+import { requireTeamPage } from "../services/team.server";
 import { uploadToR2 } from "../services/r2.server";
 
 // Auto-parse filename to letter character preserving uppercase, lowercase, and digits
@@ -41,6 +41,7 @@ export function getFileNumberIndex(fileName: string): number | null {
 // GET /api/doodles - List all Doodle Packs with Styles & Letters
 export async function loader({ request }: LoaderFunctionArgs) {
   try {
+    await requireTeamPage(request, "doodles:packs:read");
     const url = new URL(request.url);
     const packId = url.searchParams.get("packId");
 
@@ -73,6 +74,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
 
     return json({ packs });
   } catch (err: any) {
+    rethrowHttpResponse(err);
     console.error("Error fetching doodle packs:", err);
     return json({ error: err.message || "Failed to load doodle packs" }, { status: 500 });
   }
@@ -81,14 +83,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
 // POST /api/doodles - Create Pack, Create Style, Bulk Upload Letters, Delete
 export async function action({ request }: ActionFunctionArgs) {
   try {
-    const userId = await getTeamUserId(request);
-    const currentUser = userId ? await prisma.user.findUnique({ where: { id: userId } }) : null;
-    const authorName = currentUser?.name || "Super Admin";
-
     const contentType = request.headers.get("Content-Type") || "";
 
     // Handle Multipart Form Data (Bulk PNG File Upload)
     if (contentType.includes("multipart/form-data")) {
+      await requireTeamPage(request, "doodles:packs:update");
       const formData = await request.formData();
       const actionType = formData.get("_action") as string;
 
@@ -207,6 +206,14 @@ export async function action({ request }: ActionFunctionArgs) {
     // Handle JSON Payload Action Requests
     const body = await request.json();
     const actionType = body._action || body.action;
+    const perm =
+      actionType === "DELETE_PACK" || actionType === "DELETE_STYLE"
+        ? "doodles:packs:delete"
+        : actionType === "CREATE_PACK" || actionType === "CREATE_STYLE"
+          ? "doodles:packs:create"
+          : "doodles:packs:update";
+    const { user } = await requireTeamPage(request, perm);
+    const authorName = user?.name || "Super Admin";
 
     if (actionType === "CLEAR_STYLE_LETTERS") {
       const styleId = body.styleId;
@@ -310,6 +317,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
     return json({ error: "Unknown action" }, { status: 400 });
   } catch (err: any) {
+    rethrowHttpResponse(err);
     console.error("Error in /api/doodles action:", err);
     return json({ error: err.message || "Failed to process doodle action" }, { status: 500 });
   }

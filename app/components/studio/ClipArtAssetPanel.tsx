@@ -16,6 +16,7 @@ import {
   GitBranch,
   Link2,
   Layers,
+  FlipHorizontal,
 } from "lucide-react";
 import type { CanvasLayerItem } from "./StudioCanvas";
 import {
@@ -55,6 +56,11 @@ interface ClipArtAssetPanelProps {
   fields: ClipField[];
   selectedLayerIds: string[];
   onSelectLayer: (layerId: string, mode?: { multi?: boolean; range?: boolean }) => void;
+  onSelectAll?: () => void;
+  onClearSelection?: () => void;
+  onFlipSelected?: () => void;
+  onDuplicateSelected?: () => void;
+  onDeleteSelected?: () => void;
   onAddGroup: () => void;
   onAddVariants: (layerId: string) => void;
   onAddEmptyOption: (layerId: string) => void;
@@ -114,6 +120,11 @@ export default function ClipArtAssetPanel({
   fields,
   selectedLayerIds,
   onSelectLayer,
+  onSelectAll,
+  onClearSelection,
+  onFlipSelected,
+  onDuplicateSelected,
+  onDeleteSelected,
   onAddGroup,
   onAddVariants,
   onAddEmptyOption,
@@ -273,7 +284,25 @@ export default function ClipArtAssetPanel({
   return (
     <div className="flex flex-col h-full bg-[#f4f6f8] w-full overflow-hidden">
       <div className="h-9 px-3 border-b border-slate-200 bg-white flex items-center justify-between shrink-0">
-        <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider">
+        <h3 className="font-bold text-slate-800 text-xs uppercase tracking-wider flex items-center gap-1.5">
+          {onSelectAll && apartments.length > 0 && (
+            <input
+              type="checkbox"
+              checked={apartments.length > 0 && apartments.every((a) => selectedLayerIds.includes(a.layer.id))}
+              ref={(el) => {
+                if (!el) return;
+                const some = selectedLayerIds.length > 0 && selectedLayerIds.length < apartments.length;
+                el.indeterminate = some;
+              }}
+              onChange={() => {
+                const allOn = apartments.every((a) => selectedLayerIds.includes(a.layer.id));
+                if (allOn) onClearSelection?.();
+                else onSelectAll();
+              }}
+              className="w-3.5 h-3.5 rounded border-slate-300 text-blue-600 cursor-pointer accent-blue-600"
+              title={selectedLayerIds.length === apartments.length ? "Clear selection" : "Select all groups"}
+            />
+          )}
           Assets <span className="text-slate-500 font-semibold">({apartments.length})</span>
         </h3>
         <div className="flex items-center gap-1">
@@ -304,6 +333,58 @@ export default function ClipArtAssetPanel({
           </button>
         </div>
       </div>
+
+      {selectedLayerIds.length > 0 && (
+        <div className="px-3 py-1.5 border-b border-blue-100 bg-blue-50/80 flex items-center justify-between gap-2 shrink-0">
+          <span className="text-[11px] font-bold text-blue-800">
+            {selectedLayerIds.length} selected
+          </span>
+          <div className="flex items-center gap-1">
+            {onFlipSelected && (
+              <button
+                type="button"
+                onClick={onFlipSelected}
+                className="h-6 px-1.5 rounded-md border border-blue-200 bg-white text-slate-700 hover:border-indigo-300 text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                title="Flip selected horizontally"
+              >
+                <FlipHorizontal className="w-3 h-3" />
+                Flip
+              </button>
+            )}
+            {onDuplicateSelected && (
+              <button
+                type="button"
+                onClick={onDuplicateSelected}
+                className="h-6 px-1.5 rounded-md border border-blue-200 bg-white text-slate-700 hover:border-indigo-300 text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                title="Duplicate selected"
+              >
+                <Copy className="w-3 h-3" />
+                Duplicate
+              </button>
+            )}
+            {onDeleteSelected && (
+              <button
+                type="button"
+                onClick={onDeleteSelected}
+                className="h-6 px-1.5 rounded-md border border-rose-200 bg-white text-rose-700 hover:border-rose-300 text-[10px] font-bold flex items-center gap-1 cursor-pointer"
+                title="Delete selected"
+              >
+                <Trash2 className="w-3 h-3" />
+                Delete
+              </button>
+            )}
+            {onClearSelection && (
+              <button
+                type="button"
+                onClick={onClearSelection}
+                className="h-6 px-1.5 rounded-md text-[10px] font-bold text-slate-500 hover:text-slate-800 cursor-pointer"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto p-2.5 space-y-2.5">
         {apartments.length === 0 ? (

@@ -1,10 +1,11 @@
 import { json, type LoaderFunctionArgs, type ActionFunctionArgs } from "@remix-run/node";
-import { getTeamUserId } from "../services/auth.server";
+import { requireTeamPage } from "../services/team.server";
 import prisma from "../db.server";
 
 // GET /api/cliparts            -> list all clip arts (newest first)
 // GET /api/cliparts?id=<id>    -> one clip art (with layers JSON)
 export async function loader({ request }: LoaderFunctionArgs) {
+  await requireTeamPage(request, "cliparts:items:read");
   const url = new URL(request.url);
   const id = url.searchParams.get("id");
   const model = (prisma as any).clipArt;
@@ -29,13 +30,6 @@ export async function action({ request }: ActionFunctionArgs) {
   const model = (prisma as any).clipArt;
   if (!model) return json({ error: "ClipArt model not available" }, { status: 500 });
 
-  const userId = await getTeamUserId(request);
-  const currentUser = userId ? await prisma.user.findUnique({ where: { id: userId } }) : null;
-  const uploaderName = currentUser?.name || "Super Admin";
-  const uploaderAvatar =
-    currentUser?.avatarUrl ||
-    "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80";
-
   let body: any;
   try {
     body = await request.json();
@@ -44,6 +38,19 @@ export async function action({ request }: ActionFunctionArgs) {
   }
 
   const intent = body?.intent || "SAVE";
+  const perm =
+    intent === "DELETE"
+      ? "cliparts:items:delete"
+      : intent === "DUPLICATE"
+        ? "cliparts:items:create"
+        : body?.id
+          ? "cliparts:items:update"
+          : "cliparts:items:create";
+  const { user: currentUser } = await requireTeamPage(request, perm);
+  const uploaderName = currentUser?.name || "Super Admin";
+  const uploaderAvatar =
+    currentUser?.avatarUrl ||
+    "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80";
 
   try {
     if (intent === "DELETE") {

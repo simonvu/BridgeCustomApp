@@ -1,9 +1,15 @@
 import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import prisma from "../db.server";
+import { requireAnyPage } from "../services/team.server";
 import { GENERATED_MEDIA_WHERE_NOT } from "../utils/generatedMedia";
 
 // GET /api/assets?page=1&limit=20&folder=ALL&category=ALL&search=...
 export async function loader({ request }: LoaderFunctionArgs) {
+  await requireAnyPage(request, [
+    "media:files:read",
+    "artworks:items:read",
+    "cliparts:items:read",
+  ]);
   const url = new URL(request.url);
   const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
   const limit = Math.max(1, Math.min(100, parseInt(url.searchParams.get("limit") || "20", 10)));

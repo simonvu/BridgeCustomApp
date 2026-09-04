@@ -41,18 +41,10 @@ import {
   X,
 } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
+import { FileSizeLabel } from "../components/FileSizeLabel";
 import prisma from "../db.server";
-import { requireTeamUserId } from "../services/auth.server";
-
-// Helper to format bytes to human readable string (KB / MB)
-function formatBytes(bytes: number, decimals = 1) {
-  if (bytes === 0) return "0 Bytes";
-  const k = 1024;
-  const dm = decimals < 0 ? 0 : decimals;
-  const sizes = ["Bytes", "KB", "MB", "GB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i];
-}
+import { requireTeamPage } from "../services/team.server";
+import { formatBytes } from "../utils/mediaMeta";
 
 interface UploadProgressItem {
   id: string;
@@ -65,11 +57,7 @@ interface UploadProgressItem {
 
 // Loader: Fetch Media Files & Current User
 export async function loader({ request }: LoaderFunctionArgs) {
-  const currentUserId = await requireTeamUserId(request);
-  const currentUser = await prisma.user.findUnique({
-    where: { id: currentUserId },
-    include: { userRoles: { include: { role: true } } },
-  });
+  const { currentUser } = await requireTeamPage(request, "media:files:read");
 
   const mediaModel = (prisma as any).mediaFile;
   const mediaFiles = mediaModel
@@ -79,21 +67,20 @@ export async function loader({ request }: LoaderFunctionArgs) {
     : [];
 
   return json({
-    currentUser: {
-      email: currentUser?.email || "admin@bridgecustom.com",
-      name: currentUser?.name || "Super Admin",
-      roleName: currentUser?.userRoles?.[0]?.role?.code?.toUpperCase() || "SUPER_ADMIN",
-      avatarUrl: currentUser?.avatarUrl || null,
-    },
+    currentUser,
     mediaFiles,
   });
 }
 
 // Action: Delete Files / Update Alt Text
 export async function action({ request }: ActionFunctionArgs) {
-  await requireTeamUserId(request);
   const formData = await request.formData();
   const intent = formData.get("intent");
+  const perm =
+    intent === "UPDATE_ALT_TEXT"
+      ? "media:files:update"
+      : "media:files:delete";
+  await requireTeamPage(request, perm);
 
   const mediaModel = (prisma as any).mediaFile;
   if (!mediaModel) {
@@ -629,9 +616,13 @@ export default function MediaRoute() {
                           </IndexTable.Cell>
 
                           <IndexTable.Cell>
-                            <span className="text-xs text-gray-700 font-medium">
-                              {formatBytes(file.fileSize)}
-                            </span>
+                            <FileSizeLabel
+                              className="text-xs text-gray-700 font-medium"
+                              fileSize={file.fileSize}
+                              dimensions={file.dimensions}
+                              url={file.url}
+                              isImage={file.category === "IMAGE"}
+                            />
                           </IndexTable.Cell>
 
                           <IndexTable.Cell>
@@ -775,9 +766,15 @@ export default function MediaRoute() {
                               {file.fileName}
                             </h4>
 
-                            <div className="flex items-center justify-between text-[11px] text-gray-500">
-                              <span>{formatBytes(file.fileSize)}</span>
-                              <span className="bg-gray-100 px-1.5 py-0.5 rounded text-[10px] uppercase border border-gray-200">
+                            <div className="flex items-center justify-between gap-1 text-[11px] text-gray-500">
+                              <FileSizeLabel
+                                className="truncate min-w-0"
+                                fileSize={file.fileSize}
+                                dimensions={file.dimensions}
+                                url={file.url}
+                                isImage={file.category === "IMAGE"}
+                              />
+                              <span className="bg-gray-100 px-1.5 py-0.5 rounded text-[10px] uppercase border border-gray-200 shrink-0">
                                 {file.folder}
                               </span>
                             </div>
@@ -1068,6 +1065,18 @@ export default function MediaRoute() {
                     <span className="text-gray-500 block">File size:</span>
                     <span className="font-semibold text-gray-800">{formatBytes(selectedFile.fileSize)}</span>
                   </div>
+                  {selectedFile.category === "IMAGE" && (
+                  <div>
+                    <span className="text-gray-500 block">Dimensions:</span>
+                    <FileSizeLabel
+                      className="font-semibold text-gray-800"
+                      fileSize={0}
+                      dimensions={selectedFile.dimensions}
+                      url={selectedFile.url}
+                      isImage
+                    />
+                  </div>
+                  )}
                   <div>
                     <span className="text-gray-500 block">Mimetype:</span>
                     <span className="font-semibold text-gray-800">{selectedFile.fileType}</span>

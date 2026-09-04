@@ -1,9 +1,10 @@
 import { json, type ActionFunctionArgs, type LoaderFunctionArgs } from "@remix-run/node";
 import prisma from "../db.server";
-import { getTeamUserId } from "../services/auth.server";
+import { rethrowHttpResponse } from "../services/rbac.server";
+import { requireTeamPage } from "../services/team.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const currentUserId = await getTeamUserId(request);
+  await requireTeamPage(request, "fonts:items:read");
   const fontModel = (prisma as any).font || (prisma as any).Font;
   if (!fontModel) return json({ fonts: [] });
 
@@ -15,8 +16,6 @@ export async function loader({ request }: LoaderFunctionArgs) {
 }
 
 export async function action({ request }: ActionFunctionArgs) {
-  const currentUserId = await getTeamUserId(request);
-  const user = await prisma.user.findUnique({ where: { id: currentUserId } });
   const fontModel = (prisma as any).font || (prisma as any).Font;
 
   if (!fontModel) {
@@ -25,6 +24,13 @@ export async function action({ request }: ActionFunctionArgs) {
 
   const body = await request.json();
   const { action: fontAction, id, name, family, fontType, sourceUrl, fileKey } = body;
+  const perm =
+    fontAction === "DELETE_FONT"
+      ? "fonts:items:delete"
+      : fontAction === "SET_DEFAULT_FONT"
+        ? "fonts:items:update"
+        : "fonts:items:create";
+  const { user } = await requireTeamPage(request, perm);
 
   try {
     if (fontAction === "ADD_GOOGLE_FONT") {
@@ -87,6 +93,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
     return json({ error: "Invalid action" }, { status: 400 });
   } catch (error: any) {
+    rethrowHttpResponse(error);
     console.error("Font API Error:", error);
     return json({ error: error.message || "Failed to process font action" }, { status: 500 });
   }

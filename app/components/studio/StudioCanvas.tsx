@@ -141,6 +141,7 @@ interface StudioCanvasProps {
   onSelectLayer: (layerId: string | null, isMultiKey?: boolean) => void;
   onSelectLayers?: (layerIds: string[]) => void;
   onUpdateLayer: (layerId: string, updatedProps: Partial<CanvasLayerItem>) => void;
+  onUpdateLayers?: (updates: { layerId: string; patch: Partial<CanvasLayerItem> }[]) => void;
   onUpdateField?: (fieldId: string, updatedProps: any) => void;
   bgUrl?: string | null;
   zoom?: number;
@@ -236,6 +237,48 @@ function positionTextInFrame(
   });
 }
 
+function applyFabricMultiSelection(
+  fc: fabric.Canvas,
+  layers: CanvasLayerItem[],
+  fields: any[] | undefined,
+  selectedIds: string[]
+) {
+  const matchingObjs = fc.getObjects().filter((o: any) => o.layerId && selectedIds.includes(o.layerId));
+  const active = fc.getActiveObject();
+
+  if (selectedIds.length > 1) {
+    if (matchingObjs.length > 1) {
+      if (active instanceof fabric.ActiveSelection) {
+        const ids = active.getObjects().map((o: any) => o.layerId).filter(Boolean);
+        if (ids.length === selectedIds.length && selectedIds.every((id) => ids.includes(id))) {
+          return;
+        }
+      }
+      fc.setActiveObject(new fabric.ActiveSelection(matchingObjs, { canvas: fc }));
+    } else if (matchingObjs.length === 1 && active !== matchingObjs[0]) {
+      fc.setActiveObject(matchingObjs[0]);
+    }
+    return;
+  }
+
+  if (selectedIds.length === 1) {
+    const selectedId = selectedIds[0];
+    const selectedLayerObj = layers.find((l) => l.id === selectedId);
+    const linkedF = selectedLayerObj ? fields?.find((f) => f.id === selectedLayerObj.linkedFieldId) : null;
+    if (linkedF && !linkedF.activeOptionId) {
+      if (active) fc.discardActiveObject();
+      return;
+    }
+    const matchingObj = matchingObjs[0] || fc.getObjects().find((o: any) => o.layerId === selectedId);
+    if (matchingObj && active !== matchingObj) {
+      fc.setActiveObject(matchingObj);
+    }
+    return;
+  }
+
+  if (active) fc.discardActiveObject();
+}
+
 export default function StudioCanvas({
   widthPx,
   heightPx,
@@ -246,6 +289,7 @@ export default function StudioCanvas({
   onSelectLayer,
   onSelectLayers,
   onUpdateLayer,
+  onUpdateLayers,
   onUpdateField,
   bgUrl,
   zoom: propZoom,
@@ -287,6 +331,11 @@ export default function StudioCanvas({
   useEffect(() => {
     onUpdateLayerRef.current = onUpdateLayer;
   }, [onUpdateLayer]);
+
+  const onUpdateLayersRef = useRef(onUpdateLayers);
+  useEffect(() => {
+    onUpdateLayersRef.current = onUpdateLayers;
+  }, [onUpdateLayers]);
 
   const [internalZoom, setInternalZoom] = useState(1);
   const [internalShowGrid, setInternalShowGrid] = useState(true);
@@ -629,23 +678,32 @@ export default function StudioCanvas({
         if (!target) return;
 
         if (target instanceof fabric.ActiveSelection) {
+          if (isUpdatingFromFabricRef.current) return;
           isUpdatingFromFabricRef.current = true;
-          const groupObjects = target.getObjects();
-          groupObjects.forEach((obj: any) => {
+          const updates: { layerId: string; patch: Partial<CanvasLayerItem> }[] = [];
+          target.getObjects().forEach((obj: any) => {
             if (!obj.layerId) return;
             const matrix = obj.calcTransformMatrix();
             const options = fabric.util.qrDecompose(matrix);
-
-            const newW = Math.round((obj.width || 100) * (obj.scaleX || 1));
-            const newH = Math.round((obj.height || 100) * (obj.scaleY || 1));
-            const newX = Math.round(options.translateX - newW / 2);
-            const newY = Math.round(options.translateY - newH / 2);
-
-            onUpdateLayerRef.current(obj.layerId, {
-              posX: newX,
-              posY: newY,
+            const worldScaleX = Math.abs(options.scaleX || 1);
+            const worldScaleY = Math.abs(options.scaleY || 1);
+            const newW = Math.max(10, Math.round((obj.width || 100) * worldScaleX));
+            const newH = Math.max(10, Math.round((obj.height || 100) * worldScaleY));
+            updates.push({
+              layerId: obj.layerId,
+              patch: {
+                posX: Math.round(options.translateX - newW / 2),
+                posY: Math.round(options.translateY - newH / 2),
+              },
             });
           });
+          if (updates.length > 0) {
+            if (onUpdateLayersRef.current) {
+              onUpdateLayersRef.current(updates);
+            } else {
+              updates.forEach((u) => onUpdateLayerRef.current(u.layerId, u.patch));
+            }
+          }
 
           setTimeout(() => {
             isUpdatingFromFabricRef.current = false;
@@ -657,8 +715,8 @@ export default function StudioCanvas({
 
         isUpdatingFromFabricRef.current = true;
         const layerId = target.layerId;
-        const scaleX = target.scaleX || 1;
-        const scaleY = target.scaleY || 1;
+        const scaleX = Math.abs(target.scaleX || 1);
+        const scaleY = Math.abs(target.scaleY || 1);
 
         let newWidth = 0;
         let newHeight = 0;
@@ -1992,10 +2050,8 @@ export default function StudioCanvas({
                 dirty: true,
               });
             } else {
-            const flipH = flipHFlag ? -1 : 1;
-            const flipV = flipVFlag ? -1 : 1;
-            const baseScaleX = (renderWidth / currentW) * flipH;
-            const baseScaleY = (renderHeight / currentH) * flipV;
+            const baseScaleX = renderWidth / currentW;
+            const baseScaleY = renderHeight / currentH;
 
             existingImgObj.set({
               left: centerX,
@@ -2005,6 +2061,8 @@ export default function StudioCanvas({
               angle: renderRotation,
               scaleX: baseScaleX,
               scaleY: baseScaleY,
+              flipX: flipHFlag,
+              flipY: flipVFlag,
               opacity: opacity,
               selectable: !layer.isLocked,
               evented: !layer.isLocked,
@@ -2095,10 +2153,8 @@ export default function StudioCanvas({
                   ? fc.getObjects().find((o: any) => o.layerId === freshLinkedMaskLayer.id)
                   : undefined;
 
-                const flipH = flipHFlag ? -1 : 1;
-                const flipV = flipVFlag ? -1 : 1;
-                const baseScaleX = (renderWidth / nativeW) * flipH;
-                const baseScaleY = (renderHeight / nativeH) * flipV;
+                const baseScaleX = renderWidth / nativeW;
+                const baseScaleY = renderHeight / nativeH;
 
                 const fabricImg = new fabric.Image(imgEl, {
                   left: centerX,
@@ -2108,6 +2164,8 @@ export default function StudioCanvas({
                   angle: renderRotation,
                   scaleX: baseScaleX,
                   scaleY: baseScaleY,
+                  flipX: flipHFlag,
+                  flipY: flipVFlag,
                   opacity: opacity,
                   selectable: !layer.isLocked,
                   evented: !layer.isLocked,
@@ -2303,37 +2361,27 @@ export default function StudioCanvas({
           (fabObj as any).hasBorders = !layer.isLocked;
         }
       });
-
-      const matchingObjs = fc.getObjects().filter((o: any) => o.layerId && selectedLayerIds.includes(o.layerId));
-      if (selectedLayerIds.length > 1) {
-        if (matchingObjs.length > 1) {
-          fc.setActiveObject(new fabric.ActiveSelection(matchingObjs, { canvas: fc }));
-        } else if (matchingObjs.length === 1) {
-          fc.setActiveObject(matchingObjs[0]);
-        }
-      } else if (selectedLayerIds.length === 1) {
-        const selectedId = selectedLayerIds[0];
-        const selectedLayerObj = layers.find((l) => l.id === selectedId);
-        const linkedF = selectedLayerObj ? fields.find((f) => f.id === selectedLayerObj.linkedFieldId) : null;
-        const isListSelectedWithoutOption = linkedF && !linkedF.activeOptionId;
-        if (isListSelectedWithoutOption) {
-          fc.discardActiveObject();
-        } else {
-          const matchingObj = matchingObjs[0] || fc.getObjects().find((o: any) => o.layerId === selectedId);
-          if (matchingObj && fc.getActiveObject() !== matchingObj) {
-            fc.setActiveObject(matchingObj);
-          }
-        }
-      } else {
-        fc.discardActiveObject();
-      }
+      applyFabricMultiSelection(fc, layers, fields, selectedLayerIdsRef.current);
     }
 
     fc.renderAll();
     setTimeout(() => {
       isUpdatingFromFabricRef.current = false;
     }, 50);
-  }, [layers, fields, selectedLayerId, selectedLayerIds, widthPx, heightPx, onSelectLayer, onSelectLayers, isPreviewMode, maskCacheVersion, useOptionGeometry, doodlePacks]);
+  }, [layers, fields, widthPx, heightPx, onSelectLayer, onSelectLayers, isPreviewMode, maskCacheVersion, useOptionGeometry, doodlePacks]);
+
+  useEffect(() => {
+    const fc = fabricCanvasRef.current;
+    if (!fc || Boolean((fc as any)._currentTransform)) return;
+    if (isPreviewMode) return;
+    isUpdatingFromFabricRef.current = true;
+    applyFabricMultiSelection(fc, layersRef.current, fieldsRef.current, selectedLayerIds);
+    fc.requestRenderAll();
+    const t = window.setTimeout(() => {
+      isUpdatingFromFabricRef.current = false;
+    }, 50);
+    return () => window.clearTimeout(t);
+  }, [selectedLayerIds, isPreviewMode]);
 
   return (
     <div className={`w-full h-full min-h-full bg-slate-200/70 overflow-auto p-4 relative select-none flex flex-col ${onResizeCanvas && !isPreviewMode && frameResizeMode ? "pb-12" : ""}`}>

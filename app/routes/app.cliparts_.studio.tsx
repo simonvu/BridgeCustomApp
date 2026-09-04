@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import prisma from "../db.server";
-import { requireTeamUserId } from "../services/auth.server";
+import { requireAnyPage } from "../services/team.server";
 import StudioCanvas, { type CanvasLayerItem, getActiveFabricCanvas } from "../components/studio/StudioCanvas";
 import StudioTopToolbar from "../components/studio/StudioTopToolbar";
 import ClipArtAssetPanel from "../components/studio/ClipArtAssetPanel";
@@ -66,14 +66,13 @@ async function mapPool<T, R>(items: T[], limit: number, fn: (item: T, i: number)
 }
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const currentUserId = await requireTeamUserId(request);
-  const currentUser = await prisma.user.findUnique({
-    where: { id: currentUserId },
-    include: { userRoles: { include: { role: true } } },
-  });
-
   const url = new URL(request.url);
   const id = url.searchParams.get("id");
+  const { currentUser } = await requireAnyPage(
+    request,
+    id ? ["cliparts:items:read", "cliparts:items:update"] : ["cliparts:items:create"]
+  );
+
   const model = (prisma as any).clipArt;
   const clipart = id && model ? await model.findUnique({ where: { id } }) : null;
   const dbCategories: string[] = model
@@ -92,12 +91,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     : [];
 
   return json({
-    currentUser: {
-      email: currentUser?.email || "admin@bridgecustom.com",
-      name: currentUser?.name || "Super Admin",
-      roleName: currentUser?.userRoles?.[0]?.role?.code?.toUpperCase() || "SUPER_ADMIN",
-      avatarUrl: currentUser?.avatarUrl || null,
-    },
+    currentUser,
     clipart,
     dbCategories,
     fonts,
@@ -116,6 +110,38 @@ function parseLayers(raw: any): CanvasLayerItem[] {
   } catch {
     return [];
   }
+}
+
+/** Visual geometry: Free size groups store pos/size on the active option, not the layer. */
+function layerVisualGeom(layer: CanvasLayerItem, fieldList: StudioFieldItem[]) {
+  const field = fieldList.find((f) => f.id === layer.linkedFieldId);
+  if (
+    isFreeTransformField(field) &&
+    field?.activeOptionId &&
+    layer.properties?.sandwichRole !== "front"
+  ) {
+    const opt = (field.config?.options || []).find((o: any) => o.id === field.activeOptionId);
+    if (opt) {
+      return {
+        posX: opt.posX ?? layer.posX,
+        posY: opt.posY ?? layer.posY,
+        width: opt.width ?? layer.width,
+        height: opt.height ?? layer.height,
+        rotation: opt.rotation ?? layer.rotation,
+        flipH: opt.flipH ?? layer.properties?.flipH,
+        flipV: opt.flipV ?? layer.properties?.flipV,
+      };
+    }
+  }
+  return {
+    posX: layer.posX,
+    posY: layer.posY,
+    width: layer.width,
+    height: layer.height,
+    rotation: layer.rotation,
+    flipH: layer.properties?.flipH,
+    flipV: layer.properties?.flipV,
+  };
 }
 
 export default function ClipArtStudioRoute() {
@@ -355,7 +381,19 @@ export default function ClipArtStudioRoute() {
         return;
       }
 
+      if (cmd && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        setSelectedLayerIds(layers.map((l) => l.id));
+        return;
+      }
+
       if (selectedLayerIds.length === 0) return;
+
+      if (cmd && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        handleDuplicateSelectedLayers();
+        return;
+      }
 
       if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) {
         e.preventDefault();
@@ -366,15 +404,20 @@ export default function ClipArtStudioRoute() {
         if (e.key === "ArrowDown") dy = step;
         if (e.key === "ArrowLeft") dx = -step;
         if (e.key === "ArrowRight") dx = step;
-        selectedLayerIds.forEach((id) => {
-          const layer = layers.find((l) => l.id === id);
-          if (!layer || layer.isLocked) return;
-          handleUpdateLayer(id, { posX: layer.posX + dx, posY: layer.posY + dy });
-        });
+        const ids = new Set(selectedLayerIds);
+        const updates = layers
+          .filter((layer) => ids.has(layer.id) && !layer.isLocked)
+          .map((layer) => {
+            const geom = layerVisualGeom(layer, fields);
+            return {
+              layerId: layer.id,
+              patch: { posX: geom.posX + dx, posY: geom.posY + dy },
+            };
+          });
+        handleUpdateLayers(updates);
       } else if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
-        selectedLayerIds.forEach((id) => handleDeleteLayer(id));
-        setSelectedLayerIds([]);
+        handleDeleteSelectedLayers(false);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -449,23 +492,88 @@ export default function ClipArtStudioRoute() {
   const handleFlipSelected = () => {
     const ids = new Set(selectedLayerIds);
     if (ids.size === 0) return;
+
+    const skipFrontIds = new Set<string>();
     layers.forEach((l) => {
-      if (!ids.has(l.id) || l.isLocked) return;
       const srcId = l.properties?.sandwichSourceLayerId;
-      if (l.properties?.sandwichRole === "front" && srcId && ids.has(srcId)) return;
-      handleUpdateLayer(l.id, {
-        properties: { flipH: !Boolean(l.properties?.flipH) },
-      });
+      if (l.properties?.sandwichRole === "front" && srcId && ids.has(srcId) && ids.has(l.id)) {
+        skipFrontIds.add(l.id);
+      }
     });
+
+    const movers = layers.filter((l) => ids.has(l.id) && !l.isLocked);
+    if (movers.length === 0) return;
+
+    let minX = Infinity;
+    let maxX = -Infinity;
+    movers.forEach((l) => {
+      const g = layerVisualGeom(l, fields);
+      minX = Math.min(minX, g.posX);
+      maxX = Math.max(maxX, g.posX + g.width);
+    });
+    const cx = (minX + maxX) / 2;
+
+    const patchMap = new Map<string, { posX: number; rotation: number; flipH?: boolean }>();
+    movers.forEach((l) => {
+      const g = layerVisualGeom(l, fields);
+      const posX = 2 * cx - g.posX - g.width;
+      const rotation = -((g.rotation || 0) as number);
+      if (skipFrontIds.has(l.id)) {
+        patchMap.set(l.id, { posX, rotation });
+        return;
+      }
+      patchMap.set(l.id, { posX, rotation, flipH: !Boolean(g.flipH) });
+    });
+
+    setLayers((prev) =>
+      prev.map((l) => {
+        const patch = patchMap.get(l.id);
+        if (!patch) return l;
+        return {
+          ...l,
+          posX: patch.posX,
+          rotation: patch.rotation,
+          properties:
+            patch.flipH === undefined
+              ? l.properties
+              : { ...(l.properties || {}), flipH: patch.flipH },
+        };
+      })
+    );
+    setFields((prev) =>
+      prev.map((f) => {
+        const owner = layers.find((l) => l.linkedFieldId === f.id && patchMap.has(l.id));
+        if (!owner || !isFreeTransformField(f) || !f.activeOptionId) return f;
+        const patch = patchMap.get(owner.id);
+        if (!patch) return f;
+        return {
+          ...f,
+          config: {
+            ...(f.config || {}),
+            options: (f.config?.options || []).map((o: any) =>
+              o.id === f.activeOptionId
+                ? {
+                    ...o,
+                    posX: patch.posX,
+                    rotation: patch.rotation,
+                    ...(patch.flipH === undefined ? {} : { flipH: patch.flipH }),
+                  }
+                : o
+            ),
+          },
+        };
+      })
+    );
   };
 
-  const handleUpdateLayer = (
-    layerId: string,
-    patch: Partial<CanvasLayerItem>,
+  const handleUpdateLayers = (
+    updates: { layerId: string; patch: Partial<CanvasLayerItem> }[],
     opts?: { persistOptionGeom?: boolean }
   ) => {
+    if (updates.length === 0) return;
     const persistOptionGeom = opts?.persistOptionGeom !== false;
-    const geomTouched =
+    const patchMap = new Map(updates.map((u) => [u.layerId, u.patch]));
+    const geomTouched = (patch: Partial<CanvasLayerItem>) =>
       patch.posX !== undefined ||
       patch.posY !== undefined ||
       patch.width !== undefined ||
@@ -475,48 +583,20 @@ export default function ClipArtStudioRoute() {
       patch.properties?.flipV !== undefined;
 
     setLayers((prev) => {
-      const next = prev.map((l) => {
-        if (l.id !== layerId) return l;
-        const merged = { ...l, ...patch };
+      const merged = prev.map((l) => {
+        const patch = patchMap.get(l.id);
+        if (!patch) return l;
+        const next = { ...l, ...patch };
         if (patch.properties) {
-          merged.properties = { ...(l.properties || {}), ...patch.properties };
+          next.properties = { ...(l.properties || {}), ...patch.properties };
         }
-        return merged;
+        return next;
       });
-      const src = next.find((l) => l.id === layerId);
-      if (
-        src &&
-        persistOptionGeom &&
-        geomTouched &&
-        src.linkedFieldId &&
-        src.properties?.sandwichRole !== "front"
-      ) {
-        setFields((prevFields) => {
-          const field = prevFields.find((f) => f.id === src.linkedFieldId);
-          if (!field || !isFreeTransformField(field) || !field.activeOptionId) return prevFields;
-          return prevFields.map((f) => {
-            if (f.id !== field.id) return f;
-            const options = (f.config?.options || []).map((o: any) =>
-              o.id === f.activeOptionId
-                ? {
-                    ...o,
-                    posX: src.posX,
-                    posY: src.posY,
-                    width: src.width,
-                    height: src.height,
-                    rotation: src.rotation,
-                    flipH: src.properties?.flipH,
-                    flipV: src.properties?.flipV,
-                  }
-                : o
-            );
-            return { ...f, config: { ...(f.config || {}), options } };
-          });
-        });
-      }
-      if (!src) return next;
-      return next.map((l) => {
-        if (l.properties?.sandwichSourceLayerId !== layerId) return l;
+      return merged.map((l) => {
+        const srcId = l.properties?.sandwichSourceLayerId;
+        if (!srcId || !patchMap.has(srcId)) return l;
+        const src = merged.find((s) => s.id === srcId);
+        if (!src) return l;
         return {
           ...l,
           posX: src.posX,
@@ -534,6 +614,51 @@ export default function ClipArtStudioRoute() {
         };
       });
     });
+
+    if (!persistOptionGeom) return;
+
+    setFields((prevFields) =>
+      prevFields.map((f) => {
+        if (!isFreeTransformField(f) || !f.activeOptionId) return f;
+        const owner = layers.find((l) => l.linkedFieldId === f.id && patchMap.has(l.id));
+        if (!owner || owner.properties?.sandwichRole === "front") return f;
+        const patch = patchMap.get(owner.id);
+        if (!patch || !geomTouched(patch)) return f;
+        const merged = {
+          ...owner,
+          ...patch,
+          properties: patch.properties
+            ? { ...(owner.properties || {}), ...patch.properties }
+            : owner.properties,
+        };
+        return {
+          ...f,
+          config: {
+            ...(f.config || {}),
+            options: (f.config?.options || []).map((o: any) => {
+              if (o.id !== f.activeOptionId) return o;
+              const next = { ...o };
+              if (patch.posX !== undefined) next.posX = merged.posX;
+              if (patch.posY !== undefined) next.posY = merged.posY;
+              if (patch.width !== undefined) next.width = merged.width;
+              if (patch.height !== undefined) next.height = merged.height;
+              if (patch.rotation !== undefined) next.rotation = merged.rotation;
+              if (patch.properties?.flipH !== undefined) next.flipH = merged.properties?.flipH;
+              if (patch.properties?.flipV !== undefined) next.flipV = merged.properties?.flipV;
+              return next;
+            }),
+          },
+        };
+      })
+    );
+  };
+
+  const handleUpdateLayer = (
+    layerId: string,
+    patch: Partial<CanvasLayerItem>,
+    opts?: { persistOptionGeom?: boolean }
+  ) => {
+    handleUpdateLayers([{ layerId, patch }], opts);
   };
 
   const handleUpdateProps = (layerId: string, propsPatch: Record<string, any>) => {
@@ -541,69 +666,91 @@ export default function ClipArtStudioRoute() {
   };
 
   const handleDeleteLayer = (layerId: string) => {
-    const target = layers.find((l) => l.id === layerId);
-    const removeIds = new Set<string>([layerId]);
-    if (target && target.properties?.sandwichRole !== "front") {
-      layers.forEach((l) => {
-        if (l.properties?.sandwichSourceLayerId === layerId) removeIds.add(l.id);
-      });
-    }
-    const remaining = layers.filter((l) => !removeIds.has(l.id));
+    handleDeleteSelectedLayers(false, [layerId]);
+  };
+
+  const handleDeleteSelectedLayers = (confirm = true, explicitIds?: string[]) => {
+    const ids = new Set(explicitIds || selectedLayerIds);
+    if (ids.size === 0) return;
+    if (confirm && ids.size > 1 && !window.confirm(`Delete ${ids.size} selected groups?`)) return;
+
+    layers.forEach((l) => {
+      if (ids.has(l.id) && l.properties?.sandwichRole !== "front") {
+        layers.forEach((other) => {
+          if (other.properties?.sandwichSourceLayerId === l.id) ids.add(other.id);
+        });
+      }
+    });
+    const remaining = layers.filter((l) => !ids.has(l.id));
     const remainingIds = remaining.map((l) => l.linkedFieldId || l.id);
+    const removedFieldIds = layers
+      .filter((l) => ids.has(l.id) && l.linkedFieldId)
+      .map((l) => l.linkedFieldId as string)
+      .filter((fid) => !remaining.some((l) => l.linkedFieldId === fid));
     setLayers(remaining);
-    const fieldStillUsed =
-      target?.linkedFieldId && remaining.some((l) => l.linkedFieldId === target.linkedFieldId);
-    if (target?.linkedFieldId && !fieldStillUsed) {
-      setFields((prev) => prev.filter((f) => f.id !== target.linkedFieldId));
+    if (removedFieldIds.length > 0) {
+      setFields((prev) => prev.filter((f) => !removedFieldIds.includes(f.id)));
     }
     setClipArtRules((prev) => pruneClipArtRules(prev, remainingIds));
-    setSelectedLayerIds((prev) => prev.filter((id) => !removeIds.has(id)));
+    setSelectedLayerIds((prev) => prev.filter((id) => !ids.has(id)));
   };
 
   const handleDuplicateLayer = (layerId: string) => {
-    const src = layers.find((l) => l.id === layerId);
-    if (!src) return;
+    handleDuplicateSelectedLayers([layerId]);
+  };
+
+  const handleDuplicateSelectedLayers = (explicitIds?: string[]) => {
+    const selected = layers
+      .filter((l) => (explicitIds || selectedLayerIds).includes(l.id))
+      .sort((a, b) => a.zIndex - b.zIndex);
+    if (selected.length === 0) return;
+
+    let z = nextZ();
     const stamp = Date.now();
-    const rnd = Math.random().toString(36).slice(2, 6);
-    let newLinkedFieldId = src.linkedFieldId;
-    if (src.linkedFieldId) {
-      const srcField = fields.find((f) => f.id === src.linkedFieldId);
-      if (srcField) {
-        const newFieldId = `field_${stamp}_${rnd}`;
-        const srcOpts = srcField.config?.options || [];
-        const options = srcOpts.map((o: any, i: number) => ({
-          ...o,
-          id: `opt_${stamp}_${i}_${rnd}`,
-          value: `${o.value || "v"}_copy_${rnd}`,
-        }));
-        const srcActiveIdx = srcOpts.findIndex((o: any) => o.id === srcField.activeOptionId);
-        const activeOptionId = (srcActiveIdx >= 0 ? options[srcActiveIdx]?.id : options[0]?.id) as string | undefined;
-        setFields((prev) => [
-          ...prev,
-          {
+    const newFields: any[] = [];
+    const copies: CanvasLayerItem[] = [];
+
+    selected.forEach((src, i) => {
+      const rnd = Math.random().toString(36).slice(2, 6);
+      let newLinkedFieldId = src.linkedFieldId;
+      if (src.linkedFieldId) {
+        const srcField = fields.find((f) => f.id === src.linkedFieldId);
+        if (srcField) {
+          const newFieldId = `field_${stamp}_${i}_${rnd}`;
+          const srcOpts = srcField.config?.options || [];
+          const options = srcOpts.map((o: any, oi: number) => ({
+            ...o,
+            id: `opt_${stamp}_${i}_${oi}_${rnd}`,
+            value: `${o.value || "v"}_copy_${rnd}`,
+          }));
+          const srcActiveIdx = srcOpts.findIndex((o: any) => o.id === srcField.activeOptionId);
+          const activeOptionId = (srcActiveIdx >= 0 ? options[srcActiveIdx]?.id : options[0]?.id) as string | undefined;
+          newFields.push({
             ...srcField,
             id: newFieldId,
             label: `${srcField.label || src.name} (Copy)`,
-            sortOrder: prev.length,
+            sortOrder: fields.length + newFields.length,
             activeOptionId,
             config: { ...(srcField.config || {}), options },
-          },
-        ]);
-        newLinkedFieldId = newFieldId;
+          });
+          newLinkedFieldId = newFieldId;
+        }
       }
-    }
-    const copy: CanvasLayerItem = {
-      ...src,
-      id: `layer_${stamp}_${rnd}`,
-      name: `${src.name} (Copy)`,
-      posX: src.posX + 20,
-      posY: src.posY + 20,
-      zIndex: nextZ(),
-      linkedFieldId: newLinkedFieldId,
-      properties: JSON.parse(JSON.stringify(src.properties || {})),
-    };
-    setLayers((prev) => [...prev, copy]);
-    setSelectedLayerIds([copy.id]);
+      copies.push({
+        ...src,
+        id: `layer_${stamp}_${i}_${rnd}`,
+        name: `${src.name} (Copy)`,
+        posX: src.posX + 20,
+        posY: src.posY + 20,
+        zIndex: z++,
+        linkedFieldId: newLinkedFieldId,
+        properties: JSON.parse(JSON.stringify(src.properties || {})),
+      });
+    });
+
+    if (newFields.length > 0) setFields((prev) => [...prev, ...newFields]);
+    setLayers((prev) => [...prev, ...copies]);
+    setSelectedLayerIds(copies.map((c) => c.id));
   };
 
   const openPicker = (target: NonNullable<typeof pickerTarget>, multi = true) => {
@@ -1798,6 +1945,8 @@ export default function ClipArtStudioRoute() {
               onOpenMediaPickerForLayer={handleOpenMediaPickerForLayer}
               onFlipSelected={handleFlipSelected}
               onMergeSelected={openMergeModal}
+              onDuplicateSelected={() => handleDuplicateSelectedLayers()}
+              onDeleteSelected={() => handleDeleteSelectedLayers(true)}
               lockOptionGeometry={
                 Boolean(selectedLayer?.linkedFieldId) &&
                 !isFreeTransformField(fields.find((f) => f.id === selectedLayer?.linkedFieldId))
@@ -1814,6 +1963,7 @@ export default function ClipArtStudioRoute() {
                 onSelectLayer={handleSelectLayer}
                 onSelectLayers={handleSelectLayers}
                 onUpdateLayer={handleUpdateLayer}
+                onUpdateLayers={handleUpdateLayers}
                 onUpdateField={handleUpdateField}
                 zoom={zoom}
                 showGrid={true}
@@ -1925,6 +2075,11 @@ export default function ClipArtStudioRoute() {
                 fields={fields}
                 selectedLayerIds={selectedLayerIds}
                 onSelectLayer={handleSelectGroup}
+                onSelectAll={() => setSelectedLayerIds(layers.map((l) => l.id))}
+                onClearSelection={() => setSelectedLayerIds([])}
+                onFlipSelected={handleFlipSelected}
+                onDuplicateSelected={() => handleDuplicateSelectedLayers()}
+                onDeleteSelected={() => handleDeleteSelectedLayers(true)}
                 onAddGroup={() => openPicker({ type: "OPTGROUP" }, true)}
                 onAddVariants={handleAddVariants}
                 onAddEmptyOption={handleAddEmptyOption}

@@ -17,17 +17,10 @@ import {
   Box,
 } from "@shopify/polaris";
 import DashboardLayout from "../components/DashboardLayout";
-import prisma from "../db.server";
-import { requireTeamUserId } from "../services/auth.server";
+import { loadTeamActor } from "../services/team.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const currentUserId = await requireTeamUserId(request);
-  const currentUser = await prisma.user.findUnique({
-    where: { id: currentUserId },
-    include: { userRoles: { include: { role: true } } },
-  });
-
-  const roleName = currentUser?.userRoles?.[0]?.role?.code?.toUpperCase() || "SUPER_ADMIN";
+  const { currentUser } = await loadTeamActor(request);
 
   // Demo Shopify Orders Data
   const mockOrders = [
@@ -58,11 +51,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   ];
 
   return json({
-    currentUser: {
-      email: currentUser?.email || "admin@bridgecustom.com",
-      name: currentUser?.name || "Super Admin",
-      roleName,
-    },
+    currentUser,
     orders: mockOrders,
   });
 }

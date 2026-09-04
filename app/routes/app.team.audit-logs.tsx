@@ -1,35 +1,33 @@
 import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData } from "@remix-run/react";
-import { useState } from "react";
-import { Page, Layout, Card, Tabs, Box } from "@shopify/polaris";
-import { History, Search, Clock, Filter } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Page, Layout, Card, Box } from "@shopify/polaris";
+import { Search, Clock, Filter } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
+import UserManagementTabs from "../components/team/UserManagementTabs";
 import prisma from "../db.server";
-import { requireTeamUserId } from "../services/auth.server";
+import { requireTeamPage } from "../services/team.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const currentUserId = await requireTeamUserId(request);
-  const currentUser = await prisma.user.findUnique({
-    where: { id: currentUserId },
-    include: { userRoles: { include: { role: true } } },
-  });
+  const { currentUser } = await requireTeamPage(request, "system:audit_logs:read");
 
   const auditLogs = await prisma.auditLog.findMany({
-    include: {
-      user: true,
-    },
+    include: { user: { select: { id: true, name: true, email: true, avatarUrl: true } } },
     orderBy: { createdAt: "desc" },
-    take: 100,
+    take: 200,
   });
 
-  return json({
-    currentUser: {
-      email: currentUser?.email || "admin@bridgecustom.com",
-      name: currentUser?.name || "Super Admin",
-      roleName: currentUser?.userRoles?.[0]?.role?.code?.toUpperCase() || "SUPER_ADMIN",
-    },
-    auditLogs,
-  });
+  return json({ currentUser, auditLogs });
+}
+
+function parsePayload(raw: string | null) {
+  if (!raw) return "—";
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "string" ? parsed : JSON.stringify(parsed);
+  } catch {
+    return raw;
+  }
 }
 
 export default function AuditLogsRoute() {
@@ -37,21 +35,15 @@ export default function AuditLogsRoute() {
   const [searchTerm, setSearchTerm] = useState("");
   const [filterAction, setFilterAction] = useState("ALL");
 
-  const tabs = [
-    { id: "team-users", content: "Team Members", url: "/app/team/users" },
-    { id: "team-roles", content: "Roles & Permissions", url: "/app/team/roles" },
-    { id: "team-audit-logs", content: "Audit Logs", url: "/app/team/audit-logs" },
-  ];
+  const actionOptions = useMemo(() => {
+    const unique = Array.from(new Set(auditLogs.map((log) => log.action))).sort();
+    return unique;
+  }, [auditLogs]);
 
   const filteredLogs = auditLogs.filter((log) => {
-    const matchesSearch =
-      log.action.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      log.resource.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (log.user?.email || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (log.user?.name || "").toLowerCase().includes(searchTerm.toLowerCase());
-
+    const haystack = `${log.action} ${log.resource} ${log.user?.email || ""} ${log.user?.name || ""}`.toLowerCase();
+    const matchesSearch = haystack.includes(searchTerm.toLowerCase());
     const matchesAction = filterAction === "ALL" || log.action === filterAction;
-
     return matchesSearch && matchesAction;
   });
 
@@ -60,26 +52,24 @@ export default function AuditLogsRoute() {
       <Page
         fullWidth
         title="User Management"
-        subtitle="Manage team members, assign access roles, and configure security credentials"
+        subtitle="Manage team members, assign roles, and review account activity"
       >
         <Layout>
           <Layout.Section>
             <Card padding="0">
-              <Tabs tabs={tabs} selected={2}>
+              <UserManagementTabs>
                 <Box padding="400">
-                  {/* Filter & Search Bar */}
                   <div className="flex flex-col md:flex-row gap-3 items-center justify-between mb-4">
                     <div className="relative flex-1 w-full">
                       <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                       <input
                         type="text"
-                        placeholder="Search by user name, email, action, resource..."
+                        placeholder="Search by user, action, or resource..."
                         value={searchTerm}
                         onChange={(e) => setSearchTerm(e.target.value)}
                         className="w-full pl-9 pr-4 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                       />
                     </div>
-
                     <div className="flex items-center gap-2 w-full md:w-auto">
                       <Filter className="w-4 h-4 text-slate-400" />
                       <select
@@ -87,18 +77,16 @@ export default function AuditLogsRoute() {
                         onChange={(e) => setFilterAction(e.target.value)}
                         className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                       >
-                        <option value="ALL">All Actions</option>
-                        <option value="CREATE_USER">CREATE_USER</option>
-                        <option value="UPDATE_USER">UPDATE_USER</option>
-                        <option value="CREATE_ROLE">CREATE_ROLE</option>
-                        <option value="UPDATE_ROLE">UPDATE_ROLE</option>
-                        <option value="DISABLE_USER">DISABLE_USER</option>
-                        <option value="ENABLE_USER">ENABLE_USER</option>
+                        <option value="ALL">All actions</option>
+                        {actionOptions.map((action) => (
+                          <option key={action} value={action}>
+                            {action}
+                          </option>
+                        ))}
                       </select>
                     </div>
                   </div>
 
-                  {/* Audit Logs Table */}
                   <div className="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden">
                     <div className="overflow-x-auto">
                       <table className="w-full text-left text-sm border-collapse">
@@ -108,14 +96,14 @@ export default function AuditLogsRoute() {
                             <th className="p-4">User</th>
                             <th className="p-4">Action</th>
                             <th className="p-4">Resource</th>
-                            <th className="p-4">Payload Details</th>
+                            <th className="p-4">Details</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                           {filteredLogs.length === 0 ? (
                             <tr>
                               <td colSpan={5} className="p-8 text-center text-slate-400 text-sm">
-                                No matching audit logs found
+                                No audit logs yet. Create or edit a team member to generate the first entry.
                               </td>
                             </tr>
                           ) : (
@@ -132,9 +120,17 @@ export default function AuditLogsRoute() {
                                 </td>
                                 <td className="p-4">
                                   <div className="flex items-center gap-2">
-                                    <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center font-bold text-[10px]">
-                                      {log.user?.name?.[0]?.toUpperCase() || "S"}
-                                    </div>
+                                    {log.user?.avatarUrl ? (
+                                      <img
+                                        src={log.user.avatarUrl}
+                                        alt=""
+                                        className="w-6 h-6 rounded-full object-cover border border-slate-200"
+                                      />
+                                    ) : (
+                                      <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center font-bold text-[10px]">
+                                        {log.user?.name?.[0]?.toUpperCase() || "S"}
+                                      </div>
+                                    )}
                                     <div>
                                       <p className="font-semibold text-slate-900 text-xs">{log.user?.name || "System"}</p>
                                       <p className="text-[10px] text-slate-400">{log.user?.email || "system@internal"}</p>
@@ -147,8 +143,8 @@ export default function AuditLogsRoute() {
                                   </span>
                                 </td>
                                 <td className="p-4 text-xs font-mono text-slate-700">{log.resource}</td>
-                                <td className="p-4 text-xs font-mono text-slate-500 max-w-xs truncate">
-                                  {log.payload || "—"}
+                                <td className="p-4 text-xs font-mono text-slate-500 max-w-xs truncate" title={parsePayload(log.payload)}>
+                                  {parsePayload(log.payload)}
                                 </td>
                               </tr>
                             ))
@@ -158,7 +154,7 @@ export default function AuditLogsRoute() {
                     </div>
                   </div>
                 </Box>
-              </Tabs>
+              </UserManagementTabs>
             </Card>
           </Layout.Section>
         </Layout>

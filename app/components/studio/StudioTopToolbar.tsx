@@ -22,6 +22,8 @@ import {
   Eye,
   ListFilter,
   GitBranch,
+  Copy,
+  Trash2,
 } from "lucide-react";
 
 import { StudioFieldItem } from "./StudioFieldPanel";
@@ -39,6 +41,8 @@ interface StudioTopToolbarProps {
   onOpenMediaPickerForLayer?: (layerId: string) => void;
   onFlipSelected?: () => void;
   onMergeSelected?: () => void;
+  onDuplicateSelected?: () => void;
+  onDeleteSelected?: () => void;
   /** When true, X/Y/W/H on a linked option group edit the layer only (shared by all options). */
   lockOptionGeometry?: boolean;
 }
@@ -53,6 +57,8 @@ export default function StudioTopToolbar({
   onOpenMediaPickerForLayer,
   onFlipSelected,
   onMergeSelected,
+  onDuplicateSelected,
+  onDeleteSelected,
   lockOptionGeometry = false,
 }: StudioTopToolbarProps) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -66,7 +72,7 @@ export default function StudioTopToolbar({
             {selectedCount} groups
           </span>
           <span className="text-slate-500 truncate hidden sm:inline">
-            Drag on canvas to move together · Shift/⌘-click in Assets to add
+            Drag to move together · Flip / Duplicate / Delete apply to all selected
           </span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
@@ -79,6 +85,28 @@ export default function StudioTopToolbar({
             >
               <FlipHorizontal className="w-3.5 h-3.5" />
               Flip
+            </button>
+          )}
+          {onDuplicateSelected && (
+            <button
+              type="button"
+              onClick={onDuplicateSelected}
+              className="h-7 px-2 rounded-md border border-slate-300 bg-slate-100 text-slate-700 hover:border-indigo-300 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+              title="Duplicate all selected groups"
+            >
+              <Copy className="w-3.5 h-3.5" />
+              Duplicate
+            </button>
+          )}
+          {onDeleteSelected && (
+            <button
+              type="button"
+              onClick={onDeleteSelected}
+              className="h-7 px-2 rounded-md border border-rose-200 bg-rose-50 text-rose-700 hover:border-rose-300 text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+              title="Delete all selected groups"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Delete
             </button>
           )}
           {onMergeSelected && (

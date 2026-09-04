@@ -12,6 +12,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { ProgressBar } from "@shopify/polaris";
+import { FileSizeLabel } from "./FileSizeLabel";
 
 export interface MediaFileItem {
   id: string;
@@ -27,6 +28,7 @@ export interface MediaFileItem {
   uploadedBy?: string;
   createdAt: string;
   clipArtId?: string;
+  dimensions?: string | null;
 }
 
 export interface FolderItem {
@@ -203,6 +205,7 @@ export default function MediaSelectModal({
             createdByAvatar: c.createdByAvatar,
             createdAt: c.updatedAt || c.createdAt,
             clipArtId: c.id,
+            dimensions: c.widthPx && c.heightPx ? `${c.widthPx}x${c.heightPx}` : null,
           }));
         setCliparts(mapped);
       })
@@ -324,6 +327,7 @@ export default function MediaSelectModal({
             url: result.url,
             thumbnailUrl: result.thumbnailUrl || result.url,
             folder: destinationFolder,
+            dimensions: result.fileRecord?.dimensions || result.dimensions || null,
           };
           newlyUploadedRecords.push(record);
         }
@@ -611,9 +615,15 @@ export default function MediaSelectModal({
                       <p className="text-xs font-semibold text-slate-800 truncate" title={file.fileName}>
                         {file.fileName}
                       </p>
-                      <div className="flex items-center justify-between text-[10px] text-gray-500">
-                        <span className="uppercase">{file.fileType.split("/")[1] || "FILE"}</span>
-                        <span className="bg-slate-100 px-1 py-0.2 rounded text-[9px] font-medium text-slate-600 border border-slate-200">
+                      <div className="flex items-center justify-between gap-1 text-[10px] text-gray-500">
+                        <FileSizeLabel
+                          className="truncate min-w-0"
+                          fileSize={file.fileSize}
+                          dimensions={file.dimensions}
+                          url={file.url}
+                          isImage={file.category === "IMAGE"}
+                        />
+                        <span className="bg-slate-100 px-1 py-0.2 rounded text-[9px] font-medium text-slate-600 border border-slate-200 shrink-0 uppercase">
                           {file.folder}
                         </span>
                       </div>

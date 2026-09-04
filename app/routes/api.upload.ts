@@ -1,21 +1,28 @@
 import { json, type ActionFunctionArgs } from "@remix-run/node";
 import { uploadToR2 } from "../services/r2.server";
-import { getTeamUserId } from "../services/auth.server";
-import { generateThumbnail } from "../services/thumbnail.server";
+import { generateThumbnail, getImageDimensions } from "../services/thumbnail.server";
+import { rethrowHttpResponse } from "../services/rbac.server";
+import { requireAnyPage } from "../services/team.server";
 import prisma from "../db.server";
+
+const UPLOAD_PERMISSIONS = [
+  "media:files:upload",
+  "artworks:items:create",
+  "artworks:items:update",
+  "cliparts:items:create",
+  "cliparts:items:update",
+  "fonts:items:create",
+  "doodles:packs:create",
+  "doodles:packs:update",
+  "system:users:update",
+];
 
 export async function action({ request }: ActionFunctionArgs) {
   if (request.method !== "POST") {
     return json({ error: "Method not allowed" }, { status: 405 });
   }
 
-  // Lấy thông tin user hiện tại đang thao tác
-  let userId = await getTeamUserId(request);
-  let currentUser = userId ? await prisma.user.findUnique({ where: { id: userId } }) : null;
-
-  if (!currentUser) {
-    currentUser = await prisma.user.findFirst({ where: { email: "admin@bridgecustom.com" } });
-  }
+  const { user: currentUser } = await requireAnyPage(request, UPLOAD_PERMISSIONS);
 
   const uploaderEmail = currentUser?.email || "admin@bridgecustom.com";
   const uploaderName = currentUser?.name || "Super Admin";
@@ -75,9 +82,17 @@ export async function action({ request }: ActionFunctionArgs) {
     // Tự động tạo ảnh thu nhỏ (Thumbnail WebP) nếu là file ảnh đưa vào thư viện media
     let thumbnailUrl: string | null = null;
     let thumbnailKey: string | null = null;
+    let dimensions: string | null = null;
+    const isImageFile = category === "IMAGE" || file.type.startsWith("image/");
 
-    if (!skipLibrary && (category === "IMAGE" || file.type.startsWith("image/"))) {
+    if (isImageFile && !skipLibrary) {
       const thumb = await generateThumbnail(fileBuffer);
+      if (thumb?.originalWidth && thumb?.originalHeight) {
+        dimensions = `${thumb.originalWidth}x${thumb.originalHeight}`;
+      } else {
+        const probed = await getImageDimensions(fileBuffer);
+        if (probed) dimensions = `${probed.width}x${probed.height}`;
+      }
       if (thumb) {
         const thumbKey = `${folder}/thumbnails/${timestamp}-${randomSuffix}_thumb.${thumb.extension}`;
         const thumbResult = await uploadToR2({
@@ -110,6 +125,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
       if (thumbnailUrl) createData.thumbnailUrl = thumbnailUrl;
       if (thumbnailKey) createData.thumbnailKey = thumbnailKey;
+      if (dimensions) createData.dimensions = dimensions;
 
       try {
         fileRecord = await mediaModel.create({ data: createData });
@@ -117,7 +133,12 @@ export async function action({ request }: ActionFunctionArgs) {
         console.warn("⚠️ Prisma insert retry without thumbnail fields:", dbErr.message);
         delete createData.thumbnailUrl;
         delete createData.thumbnailKey;
-        fileRecord = await mediaModel.create({ data: createData });
+        try {
+          fileRecord = await mediaModel.create({ data: createData });
+        } catch {
+          delete createData.dimensions;
+          fileRecord = await mediaModel.create({ data: createData });
+        }
       }
     }
 
@@ -127,9 +148,11 @@ export async function action({ request }: ActionFunctionArgs) {
       thumbnailUrl: thumbnailUrl || result.url,
       key: result.key,
       fileName: file.name,
+      dimensions,
       fileRecord,
     });
   } catch (error: any) {
+    rethrowHttpResponse(error);
     console.error("❌ Error uploading file in api.upload.ts:", error);
     return json({ error: error.message || "Failed to upload file" }, { status: 500 });
   }

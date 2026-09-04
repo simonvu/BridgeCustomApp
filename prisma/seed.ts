@@ -3,55 +3,56 @@ import bcrypt from "bcryptjs";
 
 const prisma = new PrismaClient();
 
-// Granular System Permissions List in US English
+// Permissions map 1:1 to screens that exist in the app today.
+// Do not add Reviews / Upsell / Orders / Settings until those modules ship.
 const PERMISSIONS = [
-  // A. System Management
-  { module: "system", resource: "users", action: "read", code: "system:users:read", name: "View Team Users", description: "View team staff members and user accounts" },
-  { module: "system", resource: "users", action: "create", code: "system:users:create", name: "Create Team User", description: "Create and invite new team members" },
-  { module: "system", resource: "users", action: "update", code: "system:users:update", name: "Update Team User", description: "Edit user profile information and assign roles" },
-  { module: "system", resource: "users", action: "delete", code: "system:users:delete", name: "Delete / Disable User", description: "Disable or remove team accounts" },
-  { module: "system", resource: "roles", action: "read", code: "system:roles:read", name: "View Roles", description: "View list of roles and assigned permissions" },
-  { module: "system", resource: "roles", action: "manage", code: "system:roles:manage", name: "Manage Roles & Permissions", description: "Create, edit, delete roles and configure permission matrix" },
-  { module: "system", resource: "audit_logs", action: "read", code: "system:audit_logs:read", name: "View Audit Logs", description: "View detailed audit log history of team actions" },
-  { module: "system", resource: "settings", action: "read", code: "system:settings:read", name: "View System Settings", description: "View Shopify API keys, Cloud Storage, and S3 settings" },
-  { module: "system", resource: "settings", action: "update", code: "system:settings:update", name: "Update System Settings", description: "Modify integration settings and secrets" },
+  // Media
+  { module: "Media", resource: "files", action: "read", code: "media:files:read", name: "View Media", description: "Browse the media library and folders" },
+  { module: "Media", resource: "files", action: "upload", code: "media:files:upload", name: "Upload Media", description: "Upload files and create media folders" },
+  { module: "Media", resource: "files", action: "update", code: "media:files:update", name: "Edit Media", description: "Update file details such as alt text" },
+  { module: "Media", resource: "files", action: "delete", code: "media:files:delete", name: "Delete Media", description: "Delete media files from the library" },
 
-  // B. Personalization & Assets
-  { module: "personalization", resource: "templates", action: "read", code: "personalization:templates:read", name: "View Design Templates", description: "View list of product personalization templates" },
-  { module: "personalization", resource: "templates", action: "create", code: "personalization:templates:create", name: "Create Design Template", description: "Create canvas layers, print areas, and text/image fields" },
-  { module: "personalization", resource: "templates", action: "update", code: "personalization:templates:update", name: "Update Design Template", description: "Modify design layers and canvas rules" },
-  { module: "personalization", resource: "templates", action: "delete", code: "personalization:templates:delete", name: "Delete Design Template", description: "Delete product personalization templates" },
-  { module: "personalization", resource: "assets", action: "read", code: "personalization:assets:read", name: "View Asset Library", description: "Browse fonts, cliparts, and background assets" },
-  { module: "personalization", resource: "assets", action: "upload", code: "personalization:assets:upload", name: "Upload Asset", description: "Upload new font files, cliparts, and vector assets" },
-  { module: "personalization", resource: "assets", action: "delete", code: "personalization:assets:delete", name: "Delete Asset", description: "Delete design assets from library" },
-  { module: "personalization", resource: "orders", action: "read", code: "personalization:orders:read", name: "View Custom Orders", description: "View orders containing personalized products" },
-  { module: "personalization", resource: "orders", action: "render", code: "personalization:orders:render", name: "Re-render Print Files", description: "Trigger re-rendering of high-resolution print files" },
-  { module: "personalization", resource: "orders", action: "download", code: "personalization:orders:download", name: "Download Print Files", description: "Download High-DPI PDF/PNG print-ready production files" },
+  // Artworks
+  { module: "Artworks", resource: "items", action: "read", code: "artworks:items:read", name: "View Artworks", description: "View the artwork library and open studio in read mode" },
+  { module: "Artworks", resource: "items", action: "create", code: "artworks:items:create", name: "Create Artworks", description: "Create and duplicate artworks" },
+  { module: "Artworks", resource: "items", action: "update", code: "artworks:items:update", name: "Edit Artworks", description: "Save artwork studio layers, screens, fields, and rules" },
+  { module: "Artworks", resource: "items", action: "delete", code: "artworks:items:delete", name: "Delete Artworks", description: "Delete artworks from the library" },
 
-  // C. Reviews & Rating
-  { module: "reviews", resource: "items", action: "read", code: "reviews:items:read", name: "View Product Reviews", description: "Browse customer reviews and star ratings" },
-  { module: "reviews", resource: "items", action: "moderate", code: "reviews:items:moderate", name: "Moderate Reviews", description: "Approve, hide, or feature product reviews" },
-  { module: "reviews", resource: "items", action: "reply", code: "reviews:items:reply", name: "Reply to Reviews", description: "Post official merchant replies to customer reviews" },
-  { module: "reviews", resource: "items", action: "import_export", code: "reviews:items:import_export", name: "Import / Export Reviews", description: "Import or export CSV review data" },
-  { module: "reviews", resource: "settings", action: "read", code: "reviews:settings:read", name: "View Review Settings", description: "View auto-approval rules and email request templates" },
-  { module: "reviews", resource: "settings", action: "update", code: "reviews:settings:update", name: "Update Review Settings", description: "Configure auto-moderation rules and review rewards" },
+  // Clip Art
+  { module: "Clip Art", resource: "items", action: "read", code: "cliparts:items:read", name: "View Clip Art", description: "View the clip art library" },
+  { module: "Clip Art", resource: "items", action: "create", code: "cliparts:items:create", name: "Create Clip Art", description: "Create and duplicate clip art objects" },
+  { module: "Clip Art", resource: "items", action: "update", code: "cliparts:items:update", name: "Edit Clip Art", description: "Save clip art studio layers and variants" },
+  { module: "Clip Art", resource: "items", action: "delete", code: "cliparts:items:delete", name: "Delete Clip Art", description: "Delete clip art objects" },
 
-  // D. Upsell & Cross-sell
-  { module: "upsell", resource: "campaigns", action: "read", code: "upsell:campaigns:read", name: "View Upsell Campaigns", description: "View upsell, cross-sell, and bundle campaigns" },
-  { module: "upsell", resource: "campaigns", action: "create", code: "upsell:campaigns:create", name: "Create Upsell Campaign", description: "Create frequently bought together and post-purchase offers" },
-  { module: "upsell", resource: "campaigns", action: "update", code: "upsell:campaigns:update", name: "Update Upsell Campaign", description: "Edit trigger conditions and toggle active status" },
-  { module: "upsell", resource: "campaigns", action: "delete", code: "upsell:campaigns:delete", name: "Delete Upsell Campaign", description: "Remove upsell campaigns" },
-  { module: "upsell", resource: "analytics", action: "read", code: "upsell:analytics:read", name: "View Upsell Analytics", description: "Track upsell revenue and conversion rate reports" },
+  // Font Library
+  { module: "Font Library", resource: "items", action: "read", code: "fonts:items:read", name: "View Fonts", description: "Browse the font library" },
+  { module: "Font Library", resource: "items", action: "create", code: "fonts:items:create", name: "Add Fonts", description: "Add Google fonts or upload custom font files" },
+  { module: "Font Library", resource: "items", action: "update", code: "fonts:items:update", name: "Edit Fonts", description: "Set the default font" },
+  { module: "Font Library", resource: "items", action: "delete", code: "fonts:items:delete", name: "Delete Fonts", description: "Remove fonts from the library" },
+
+  // Doodle Alphabets
+  { module: "Doodle Alphabets", resource: "packs", action: "read", code: "doodles:packs:read", name: "View Doodle Packs", description: "Browse doodle alphabet packs and letter sets" },
+  { module: "Doodle Alphabets", resource: "packs", action: "create", code: "doodles:packs:create", name: "Create Doodle Packs", description: "Create packs and styles" },
+  { module: "Doodle Alphabets", resource: "packs", action: "update", code: "doodles:packs:update", name: "Edit Doodle Packs", description: "Upload or replace doodle letters" },
+  { module: "Doodle Alphabets", resource: "packs", action: "delete", code: "doodles:packs:delete", name: "Delete Doodle Packs", description: "Delete packs, styles, or letter sets" },
+
+  // User Management
+  { module: "User Management", resource: "users", action: "read", code: "system:users:read", name: "View Team Members", description: "View team staff members and user accounts" },
+  { module: "User Management", resource: "users", action: "create", code: "system:users:create", name: "Create Team Member", description: "Create new team members" },
+  { module: "User Management", resource: "users", action: "update", code: "system:users:update", name: "Update Team Member", description: "Edit profile information and assign roles" },
+  { module: "User Management", resource: "users", action: "delete", code: "system:users:delete", name: "Disable Team Member", description: "Disable or remove team accounts" },
+  { module: "User Management", resource: "roles", action: "read", code: "system:roles:read", name: "View Roles", description: "View roles and assigned permissions" },
+  { module: "User Management", resource: "roles", action: "manage", code: "system:roles:manage", name: "Manage Roles", description: "Create, edit, and delete roles and the permission matrix" },
+  { module: "User Management", resource: "audit_logs", action: "read", code: "system:audit_logs:read", name: "View Audit Logs", description: "View team action history" },
 ];
 
-// Default Preset Roles in US English
+const CONTENT_MODULES = ["Media", "Artworks", "Clip Art", "Font Library", "Doodle Alphabets"];
+
 const ROLES = [
-  { code: "super_admin", name: "Super Admin", description: "Full access to all system features, settings, and team management", isSystem: true },
-  { code: "operations_manager", name: "Operations Manager", description: "Access to all operational modules except system settings and user management", isSystem: false },
-  { code: "designer", name: "Designer / Fulfillment", description: "Manages personalization templates, asset library, and print file downloads", isSystem: false },
-  { code: "review_moderator", name: "CS & Review Moderator", description: "Moderates product reviews, posts replies, and views custom orders", isSystem: false },
-  { code: "marketing_specialist", name: "Marketing Specialist", description: "Manages Upsell & Cross-sell campaigns and views conversion analytics", isSystem: false },
-  { code: "auditor", name: "Auditor (Read Only)", description: "Read-only access across all system modules", isSystem: false },
+  { code: "super_admin", name: "Super Admin", description: "Full access to every shipped module, including roles and team members", isSystem: true },
+  { code: "admin", name: "Admin", description: "Manages content libraries and team members. Cannot edit the permission matrix.", isSystem: false },
+  { code: "designer", name: "Designer", description: "Creates and edits artworks, clip art, fonts, doodles, and media", isSystem: false },
+  { code: "viewer", name: "Viewer", description: "Read-only access to media and personalization libraries", isSystem: false },
 ];
 
 async function main() {
@@ -65,12 +66,18 @@ async function main() {
       update: {
         code: perm.code,
         name: perm.name,
+        module: perm.module,
+        resource: perm.resource,
+        action: perm.action,
         category: perm.module || "General",
         description: perm.description,
       },
       create: {
         code: perm.code,
         name: perm.name,
+        module: perm.module,
+        resource: perm.resource,
+        action: perm.action,
         category: perm.module || "General",
         description: perm.description,
       },
@@ -92,16 +99,12 @@ async function main() {
     let assignedCodes: string[] = [];
     if (role.code === "super_admin") {
       assignedCodes = PERMISSIONS.map((p) => p.code);
-    } else if (role.code === "operations_manager") {
-      assignedCodes = PERMISSIONS.filter((p) => !p.code.startsWith("system:users") && !p.code.startsWith("system:roles")).map((p) => p.code);
+    } else if (role.code === "admin") {
+      assignedCodes = PERMISSIONS.filter((p) => p.code !== "system:roles:manage").map((p) => p.code);
     } else if (role.code === "designer") {
-      assignedCodes = PERMISSIONS.filter((p) => p.code.startsWith("personalization:")).map((p) => p.code);
-    } else if (role.code === "review_moderator") {
-      assignedCodes = PERMISSIONS.filter((p) => p.code.startsWith("reviews:") || p.code === "personalization:orders:read").map((p) => p.code);
-    } else if (role.code === "marketing_specialist") {
-      assignedCodes = PERMISSIONS.filter((p) => p.code.startsWith("upsell:") || p.code === "reviews:items:read").map((p) => p.code);
-    } else if (role.code === "auditor") {
-      assignedCodes = PERMISSIONS.filter((p) => p.action === "read").map((p) => p.code);
+      assignedCodes = PERMISSIONS.filter((p) => CONTENT_MODULES.includes(p.module)).map((p) => p.code);
+    } else if (role.code === "viewer") {
+      assignedCodes = PERMISSIONS.filter((p) => CONTENT_MODULES.includes(p.module) && p.action === "read").map((p) => p.code);
     }
 
     const rolePerms = assignedCodes.map((code) => ({
@@ -116,13 +119,39 @@ async function main() {
     console.log(`✅ Role "${role.name}" (${role.code}): assigned ${rolePerms.length} permissions`);
   }
 
+  const keepPermissionCodes = PERMISSIONS.map((p) => p.code);
+  const stalePerms = await prisma.permission.findMany({
+    where: { code: { notIn: keepPermissionCodes } },
+    select: { id: true, code: true },
+  });
+  if (stalePerms.length > 0) {
+    await prisma.rolePermission.deleteMany({ where: { permissionId: { in: stalePerms.map((p) => p.id) } } });
+    await prisma.permission.deleteMany({ where: { id: { in: stalePerms.map((p) => p.id) } } });
+    console.log(`🧹 Removed ${stalePerms.length} permissions for features that are not in the app yet`);
+  }
+
+  const keepRoleCodes = ROLES.map((r) => r.code);
+  const staleRoles = await prisma.role.findMany({
+    where: { code: { notIn: keepRoleCodes } },
+    include: { userRoles: true },
+  });
+  for (const stale of staleRoles) {
+    if (stale.userRoles.length > 0) {
+      console.log(`⚠️ Kept unused role "${stale.code}" because it still has assigned users`);
+      continue;
+    }
+    await prisma.rolePermission.deleteMany({ where: { roleId: stale.id } });
+    await prisma.role.delete({ where: { id: stale.id } });
+    console.log(`🧹 Removed unused role "${stale.code}"`);
+  }
+
   // 3. Create Default Super Admin Account
   const adminRole = await prisma.role.findUnique({ where: { code: "super_admin" } });
   if (adminRole) {
     const passwordHash = bcrypt.hashSync("admin123", 10);
     const adminUser = await prisma.user.upsert({
       where: { email: "admin@bridgecustom.com" },
-      update: { name: "Super Admin", passwordHash },
+      update: { name: "Super Admin" },
       create: {
         email: "admin@bridgecustom.com",
         name: "Super Admin",

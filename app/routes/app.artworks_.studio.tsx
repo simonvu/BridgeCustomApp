@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import prisma from "../db.server";
-import { requireTeamUserId } from "../services/auth.server";
+import { requireAnyPage } from "../services/team.server";
 import StudioCanvas, { CanvasLayerItem, generateScreenThumbnailDataUrl, exportActiveScreenPNG, getActiveFabricCanvas } from "../components/studio/StudioCanvas";
 import StudioPhotoUploadModal, { PhotoCustomizationData } from "../components/studio/StudioPhotoUploadModal";
 import StudioLayerPanel from "../components/studio/StudioLayerPanel";
@@ -49,14 +49,12 @@ import {
 } from "../utils/fieldHelpers";
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const currentUserId = await requireTeamUserId(request);
-  const currentUser = await prisma.user.findUnique({
-    where: { id: currentUserId },
-    include: { userRoles: { include: { role: true } } },
-  });
-
   const url = new URL(request.url);
   const artworkId = url.searchParams.get("id");
+  const { currentUser } = await requireAnyPage(
+    request,
+    artworkId ? ["artworks:items:read", "artworks:items:update"] : ["artworks:items:create"]
+  );
 
   let artworkData = null;
   const studioModel = (prisma as any).studioArtwork;
@@ -100,12 +98,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   });
 
   return json({
-    currentUser: {
-      email: currentUser?.email || "admin@bridgecustom.com",
-      name: currentUser?.name || "Super Admin",
-      roleName: currentUser?.userRoles?.[0]?.role?.code?.toUpperCase() || "SUPER_ADMIN",
-      avatarUrl: currentUser?.avatarUrl || null,
-    },
+    currentUser,
     artworkData,
     dbNiches,
     dbCategories,

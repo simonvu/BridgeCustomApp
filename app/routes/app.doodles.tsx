@@ -1,9 +1,8 @@
 import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import { useLoaderData, useRevalidator } from "@remix-run/react";
 import React, { useState, useRef } from "react";
-import { PrismaClient } from "@prisma/client";
 import DashboardLayout from "../components/DashboardLayout";
-import { getTeamUserId } from "../services/auth.server";
+import { requireTeamPage } from "../services/team.server";
 import prisma from "../db.server";
 import {
   Sparkles,
@@ -26,13 +25,7 @@ import {
 } from "lucide-react";
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const userId = await getTeamUserId(request);
-  const currentUser = userId
-    ? await prisma.user.findUnique({
-        where: { id: userId },
-        select: { email: true, name: true, avatarUrl: true },
-      })
-    : null;
+  const { currentUser } = await requireTeamPage(request, "doodles:packs:read");
 
   const packs = await prisma.doodlePack.findMany({
     orderBy: { createdAt: "desc" },

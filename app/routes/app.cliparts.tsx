@@ -6,34 +6,25 @@ import { Layers, Copy, Pencil, Trash2, Package, Search } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import ClipArtThumb from "../components/studio/ClipArtThumb";
 import prisma from "../db.server";
-import { requireTeamUserId } from "../services/auth.server";
+import { requireTeamPage } from "../services/team.server";
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const currentUserId = await requireTeamUserId(request);
-  const currentUser = await prisma.user.findUnique({
-    where: { id: currentUserId },
-    include: { userRoles: { include: { role: true } } },
-  });
+  const { currentUser } = await requireTeamPage(request, "cliparts:items:read");
 
   const model = (prisma as any).clipArt;
   const cliparts = model ? await model.findMany({ orderBy: { updatedAt: "desc" } }) : [];
 
   return json({
-    currentUser: {
-      email: currentUser?.email || "admin@bridgecustom.com",
-      name: currentUser?.name || "Super Admin",
-      roleName: currentUser?.userRoles?.[0]?.role?.code?.toUpperCase() || "SUPER_ADMIN",
-      avatarUrl: currentUser?.avatarUrl || null,
-    },
+    currentUser,
     cliparts,
   });
 }
 
 export async function action({ request }: ActionFunctionArgs) {
-  await requireTeamUserId(request);
-  const model = (prisma as any).clipArt;
   const formData = await request.formData();
   const intent = formData.get("intent");
+  await requireTeamPage(request, intent === "DELETE" ? "cliparts:items:delete" : "cliparts:items:create");
+  const model = (prisma as any).clipArt;
   const id = formData.get("id") as string;
 
   if (intent === "DELETE" && id && model) {

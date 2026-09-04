@@ -1,6 +1,6 @@
 import { json, type LoaderFunctionArgs, type ActionFunctionArgs } from "@remix-run/node";
-import { useLoaderData, useSubmit, useNavigation, Link } from "@remix-run/react";
-import { useState, useCallback } from "react";
+import { useActionData, useLoaderData, useNavigation, useSubmit } from "@remix-run/react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Page,
   Layout,
@@ -16,30 +16,20 @@ import {
   InlineStack,
   BlockStack,
   Box,
-  Tabs,
+  Banner,
 } from "@shopify/polaris";
 import bcrypt from "bcryptjs";
 import DashboardLayout from "../components/DashboardLayout";
+import UserManagementTabs from "../components/team/UserManagementTabs";
 import prisma from "../db.server";
 import { logActivity } from "../services/rbac.server";
-import { requireTeamUserId } from "../services/auth.server";
+import { isSuperAdminUser, requestIp, requireTeamPage } from "../services/team.server";
 
-// Loader: Fetch Users & Roles
 export async function loader({ request }: LoaderFunctionArgs) {
-  const currentUserId = await requireTeamUserId(request);
-  const currentUser = await prisma.user.findUnique({
-    where: { id: currentUserId },
-    include: { userRoles: { include: { role: true } } },
-  });
+  const { currentUser, userId: currentUserId } = await requireTeamPage(request, "system:users:read");
 
   const users = await prisma.user.findMany({
-    include: {
-      userRoles: {
-        include: {
-          role: true,
-        },
-      },
-    },
+    include: { userRoles: { include: { role: true } } },
     orderBy: { createdAt: "desc" },
   });
 
@@ -47,100 +37,141 @@ export async function loader({ request }: LoaderFunctionArgs) {
     orderBy: { name: "asc" },
   });
 
-  return json({
-    currentUser: {
-      email: currentUser?.email || "admin@bridgecustom.com",
-      name: currentUser?.name || "Super Admin",
-      roleName: currentUser?.userRoles?.[0]?.role?.code?.toUpperCase() || "SUPER_ADMIN",
-      avatarUrl: currentUser?.avatarUrl || null,
-    },
-    users,
-    roles,
-  });
+  return json({ currentUser, currentUserId, users, roles });
 }
 
-// Action: Create / Edit / Toggle User Status
 export async function action({ request }: ActionFunctionArgs) {
   const formData = await request.formData();
-  const intent = formData.get("intent");
+  const intent = String(formData.get("intent") || "");
+  const perm =
+    intent === "TOGGLE_ACTIVE"
+      ? "system:users:delete"
+      : formData.get("userId")
+        ? "system:users:update"
+        : "system:users:create";
+  const { userId: actorId } = await requireTeamPage(request, perm);
+  const ipAddress = requestIp(request);
 
   if (intent === "SAVE_USER") {
-    const userId = formData.get("userId") as string;
-    const email = formData.get("email") as string;
-    const name = formData.get("name") as string;
-    const password = formData.get("password") as string;
-    const roleId = formData.get("roleId") as string;
-    const avatarUrl = formData.get("avatarUrl") as string;
+    const userId = String(formData.get("userId") || "");
+    const email = String(formData.get("email") || "").trim().toLowerCase();
+    const name = String(formData.get("name") || "").trim();
+    const password = String(formData.get("password") || "");
+    const roleId = String(formData.get("roleId") || "");
+    const avatarUrl = String(formData.get("avatarUrl") || "").trim();
 
     if (!email || !name) {
-      return json({ error: "Email and Full Name are required" }, { status: 400 });
+      return json({ error: "Email and full name are required." }, { status: 400 });
+    }
+    if (!userId && password.trim().length < 8) {
+      return json({ error: "Password must be at least 8 characters." }, { status: 400 });
+    }
+    if (userId && password.trim() && password.trim().length < 8) {
+      return json({ error: "New password must be at least 8 characters." }, { status: 400 });
     }
 
-    let user;
-    if (userId) {
-      // Update User
-      const updateData: any = { email, name, avatarUrl: avatarUrl || null };
-      if (password && password.trim() !== "") {
-        updateData.passwordHash = bcrypt.hashSync(password, 10);
-      }
-      user = await prisma.user.update({
-        where: { id: userId },
-        data: updateData,
-      });
+    const existingEmail = await prisma.user.findUnique({ where: { email } });
+    if (existingEmail && existingEmail.id !== userId) {
+      return json({ error: "A team member with this email already exists." }, { status: 400 });
+    }
 
-      await prisma.userRole.deleteMany({ where: { userId } });
-      if (roleId) {
-        await prisma.userRole.create({ data: { userId, roleId } });
-      }
+    try {
+      let savedId = userId;
+      if (userId) {
+        const target = await prisma.user.findUnique({
+          where: { id: userId },
+          include: { userRoles: { include: { role: true } } },
+        });
+        if (!target) return json({ error: "User not found." }, { status: 404 });
 
-      await logActivity({
-        action: "UPDATE_USER",
-        resource: `user:${userId}`,
-        payload: { email, name, roleId, avatarUrl },
-      });
-    } else {
-      // Create User
-      const passwordHash = bcrypt.hashSync(password || "admin123", 10);
-      user = await prisma.user.create({
-        data: {
+        if (userId === actorId && isSuperAdminUser(target) && roleId) {
+          const nextRole = await prisma.role.findUnique({ where: { id: roleId } });
+          if (nextRole && nextRole.code.toLowerCase() !== "super_admin") {
+            return json({ error: "You cannot remove your own Super Admin role." }, { status: 400 });
+          }
+        }
+
+        const updateData: { email: string; name: string; avatarUrl: string | null; passwordHash?: string } = {
           email,
           name,
-          passwordHash,
           avatarUrl: avatarUrl || null,
-          isActive: true,
-        },
-      });
+        };
+        if (password.trim()) updateData.passwordHash = bcrypt.hashSync(password, 10);
 
-      if (roleId) {
-        await prisma.userRole.create({ data: { userId: user.id, roleId } });
+        await prisma.user.update({ where: { id: userId }, data: updateData });
+        await prisma.userRole.deleteMany({ where: { userId } });
+        if (roleId) await prisma.userRole.create({ data: { userId, roleId } });
+
+        await logActivity({
+          userId: actorId,
+          action: "UPDATE_USER",
+          resource: `user:${userId}`,
+          payload: { email, name, roleId },
+          ipAddress,
+        });
+      } else {
+        const user = await prisma.user.create({
+          data: {
+            email,
+            name,
+            passwordHash: bcrypt.hashSync(password, 10),
+            avatarUrl: avatarUrl || null,
+            isActive: true,
+          },
+        });
+        savedId = user.id;
+        if (roleId) await prisma.userRole.create({ data: { userId: user.id, roleId } });
+        await logActivity({
+          userId: actorId,
+          action: "CREATE_USER",
+          resource: `user:${user.id}`,
+          payload: { email, name, roleId },
+          ipAddress,
+        });
       }
 
-      await logActivity({
-        action: "CREATE_USER",
-        resource: `user:${user.id}`,
-        payload: { email, name, roleId, avatarUrl },
-      });
+      return json({ success: true, savedId });
+    } catch (error) {
+      console.error("SAVE_USER failed", error);
+      return json({ error: "Could not save team member. Check email uniqueness and try again." }, { status: 400 });
     }
-
-    return json({ success: true });
   }
 
   if (intent === "TOGGLE_ACTIVE") {
-    const userId = formData.get("userId") as string;
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-
-    if (user) {
-      await prisma.user.update({
-        where: { id: userId },
-        data: { isActive: !user.isActive },
-      });
-
-      await logActivity({
-        action: user.isActive ? "DISABLE_USER" : "ENABLE_USER",
-        resource: `user:${userId}`,
-      });
+    const targetId = String(formData.get("userId") || "");
+    if (!targetId) return json({ error: "Missing user." }, { status: 400 });
+    if (targetId === actorId) {
+      return json({ error: "You cannot disable your own account." }, { status: 400 });
     }
 
+    const user = await prisma.user.findUnique({
+      where: { id: targetId },
+      include: { userRoles: { include: { role: true } } },
+    });
+    if (!user) return json({ error: "User not found." }, { status: 404 });
+
+    if (user.isActive && isSuperAdminUser(user)) {
+      const otherAdmins = await prisma.userRole.count({
+        where: {
+          role: { code: "super_admin" },
+          user: { isActive: true, id: { not: targetId } },
+        },
+      });
+      if (otherAdmins === 0) {
+        return json({ error: "Cannot disable the last Super Admin." }, { status: 400 });
+      }
+    }
+
+    await prisma.user.update({
+      where: { id: targetId },
+      data: { isActive: !user.isActive },
+    });
+    await logActivity({
+      userId: actorId,
+      action: user.isActive ? "DISABLE_USER" : "ENABLE_USER",
+      resource: `user:${targetId}`,
+      ipAddress,
+    });
     return json({ success: true });
   }
 
@@ -148,7 +179,8 @@ export async function action({ request }: ActionFunctionArgs) {
 }
 
 export default function TeamUsersRoute() {
-  const { currentUser, users, roles } = useLoaderData<typeof loader>();
+  const { currentUser, currentUserId, users, roles } = useLoaderData<typeof loader>();
+  const actionData = useActionData<typeof action>();
   const submit = useSubmit();
   const navigation = useNavigation();
 
@@ -163,8 +195,20 @@ export default function TeamUsersRoute() {
   const [selectedRoleId, setSelectedRoleId] = useState(roles[0]?.id || "");
   const [queryValue, setQueryValue] = useState("");
   const [roleFilter, setRoleFilter] = useState("ALL");
+  const [formError, setFormError] = useState<string | null>(null);
 
   const isSubmitting = navigation.state === "submitting";
+
+  useEffect(() => {
+    if (navigation.state !== "idle") return;
+    if (actionData && "success" in actionData && actionData.success) {
+      setModalOpen(false);
+      setFormError(null);
+    }
+    if (actionData && "error" in actionData && actionData.error) {
+      setFormError(actionData.error);
+    }
+  }, [navigation.state, actionData]);
 
   const handleOpenCreateModal = useCallback(() => {
     setEditingUserId(null);
@@ -174,6 +218,7 @@ export default function TeamUsersRoute() {
     setAvatarUrl("");
     setAvatarPreview("");
     setSelectedRoleId(roles[0]?.id || "");
+    setFormError(null);
     setModalOpen(true);
   }, [roles]);
 
@@ -185,92 +230,78 @@ export default function TeamUsersRoute() {
     setAvatarUrl(user.avatarUrl || "");
     setAvatarPreview(user.avatarUrl || "");
     setSelectedRoleId(user.userRoles[0]?.roleId || roles[0]?.id || "");
+    setFormError(null);
     setModalOpen(true);
   };
 
   const handleAvatarFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    // Hiển thị ngay lập tức hình ảnh preview phía client bằng Blob URL (0ms trễ)
     const localBlobUrl = URL.createObjectURL(file);
     setAvatarPreview(localBlobUrl);
     setIsUploading(true);
-
     try {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("folder", "avatars");
-
-      const response = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-      });
-
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("folder", "avatars");
+      const response = await fetch("/api/upload", { method: "POST", body: fd });
       const data = await response.json();
       if (data.success && data.url) {
         setAvatarUrl(data.url);
         setAvatarPreview(data.url);
       } else {
-        alert(data.error || "Failed to upload image");
+        setFormError(data.error || "Failed to upload image");
       }
     } catch (error) {
       console.error("Upload avatar error:", error);
-      alert("Error uploading avatar");
+      setFormError("Error uploading avatar");
     } finally {
       setIsUploading(false);
     }
   };
 
   const handleSaveUser = () => {
-    const formData = new FormData();
-    formData.append("intent", "SAVE_USER");
-    if (editingUserId) formData.append("userId", editingUserId);
-    formData.append("email", email);
-    formData.append("name", name);
-    formData.append("password", password);
-    formData.append("avatarUrl", avatarUrl);
-    formData.append("roleId", selectedRoleId);
-
-    submit(formData, { method: "post" });
-    setModalOpen(false);
+    setFormError(null);
+    if (!name.trim() || !email.trim()) {
+      setFormError("Email and full name are required.");
+      return;
+    }
+    if (!editingUserId && password.trim().length < 8) {
+      setFormError("Password must be at least 8 characters.");
+      return;
+    }
+    const fd = new FormData();
+    fd.append("intent", "SAVE_USER");
+    if (editingUserId) fd.append("userId", editingUserId);
+    fd.append("email", email);
+    fd.append("name", name);
+    fd.append("password", password);
+    fd.append("avatarUrl", avatarUrl);
+    fd.append("roleId", selectedRoleId);
+    submit(fd, { method: "post" });
   };
 
   const handleToggleActive = (userId: string) => {
+    setFormError(null);
     submit({ intent: "TOGGLE_ACTIVE", userId }, { method: "post" });
   };
 
   const filteredUsers = users.filter((u) => {
-    const matchesSearch =
-      u.name.toLowerCase().includes(queryValue.toLowerCase()) ||
-      u.email.toLowerCase().includes(queryValue.toLowerCase());
-
-    const matchesRole =
-      roleFilter === "ALL" || u.userRoles.some((ur) => ur.role.id === roleFilter);
-
+    const q = queryValue.toLowerCase();
+    const matchesSearch = u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q);
+    const matchesRole = roleFilter === "ALL" || u.userRoles.some((ur) => ur.role.id === roleFilter);
     return matchesSearch && matchesRole;
   });
-
-  const resourceName = {
-    singular: "user",
-    plural: "users",
-  };
 
   const roleFilterOptions = [
     { label: "All Roles", value: "ALL" },
     ...roles.map((r) => ({ label: r.name, value: r.id })),
   ];
-
   const roleOptions = roles.map((r) => ({ label: `${r.name} (${r.code})`, value: r.id }));
-
-  const tabs = [
-    { id: "team-users", content: "Team Members", url: "/app/team/users" },
-    { id: "team-roles", content: "Roles & Permissions", url: "/app/team/roles" },
-    { id: "team-audit-logs", content: "Audit Logs", url: "/app/team/audit-logs" },
-  ];
 
   const rowMarkup = filteredUsers.map((user, index) => {
     const assignedRoles = user.userRoles.map((ur) => ur.role);
+    const isSelf = user.id === currentUserId;
     return (
       <IndexTable.Row id={user.id} key={user.id} position={index}>
         <IndexTable.Cell>
@@ -289,16 +320,15 @@ export default function TeamUsersRoute() {
             <BlockStack gap="050">
               <Text variant="bodyMd" fontWeight="bold" as="span">
                 {user.name}
+                {isSelf ? " (you)" : ""}
               </Text>
-              <Text variant="bodyXs" tone="subdued" as="span">
+              <Text variant="bodySm" tone="subdued" as="span">
                 ID: {user.id.slice(0, 8)}
               </Text>
             </BlockStack>
           </InlineStack>
         </IndexTable.Cell>
-
         <IndexTable.Cell>{user.email}</IndexTable.Cell>
-
         <IndexTable.Cell>
           <InlineStack gap="100">
             {assignedRoles.length === 0 ? (
@@ -314,13 +344,9 @@ export default function TeamUsersRoute() {
             )}
           </InlineStack>
         </IndexTable.Cell>
-
         <IndexTable.Cell>
-          <Badge tone={user.isActive ? "success" : "critical"}>
-            {user.isActive ? "Active" : "Disabled"}
-          </Badge>
+          <Badge tone={user.isActive ? "success" : "critical"}>{user.isActive ? "Active" : "Disabled"}</Badge>
         </IndexTable.Cell>
-
         <IndexTable.Cell>
           {new Date(user.createdAt).toLocaleDateString("en-US", {
             year: "numeric",
@@ -328,7 +354,6 @@ export default function TeamUsersRoute() {
             day: "numeric",
           })}
         </IndexTable.Cell>
-
         <IndexTable.Cell>
           <InlineStack gap="200" align="end">
             <Button size="micro" onClick={() => handleOpenEditModal(user)}>
@@ -337,6 +362,7 @@ export default function TeamUsersRoute() {
             <Button
               size="micro"
               tone={user.isActive ? "critical" : "success"}
+              disabled={isSelf}
               onClick={() => handleToggleActive(user.id)}
             >
               {user.isActive ? "Disable" : "Enable"}
@@ -352,16 +378,20 @@ export default function TeamUsersRoute() {
       <Page
         fullWidth
         title="User Management"
-        subtitle="Manage team members, assign access roles, and configure security credentials"
-        primaryAction={{
-          content: "Add Team Member",
-          onAction: handleOpenCreateModal,
-        }}
+        subtitle="Manage team members, assign roles, and review account activity"
+        primaryAction={{ content: "Add Team Member", onAction: handleOpenCreateModal }}
       >
         <Layout>
           <Layout.Section>
+            {formError && !modalOpen && (
+              <Box paddingBlockEnd="400">
+                <Banner tone="critical" onDismiss={() => setFormError(null)}>
+                  <p>{formError}</p>
+                </Banner>
+              </Box>
+            )}
             <Card padding="0">
-              <Tabs tabs={tabs} selected={0}>
+              <UserManagementTabs>
                 <Box padding="400">
                   <InlineStack gap="300" align="space-between">
                     <div className="flex-1">
@@ -370,7 +400,7 @@ export default function TeamUsersRoute() {
                         labelHidden
                         value={queryValue}
                         onChange={setQueryValue}
-                        placeholder="Search by user name or email..."
+                        placeholder="Search by name or email..."
                         autoComplete="off"
                       />
                     </div>
@@ -385,28 +415,26 @@ export default function TeamUsersRoute() {
                     </div>
                   </InlineStack>
                 </Box>
-
                 <IndexTable
-                  resourceName={resourceName}
+                  resourceName={{ singular: "user", plural: "users" }}
                   itemCount={filteredUsers.length}
                   selectable={false}
                   headings={[
-                    { title: "User Member" },
+                    { title: "Team member" },
                     { title: "Email" },
-                    { title: "Assigned Roles" },
+                    { title: "Role" },
                     { title: "Status" },
-                    { title: "Created Date" },
+                    { title: "Created" },
                     { title: "Actions", alignment: "end" },
                   ]}
                 >
                   {rowMarkup}
                 </IndexTable>
-              </Tabs>
+              </UserManagementTabs>
             </Card>
           </Layout.Section>
         </Layout>
 
-        {/* Modal Add / Edit User */}
         <Modal
           open={modalOpen}
           onClose={() => setModalOpen(false)}
@@ -416,24 +444,20 @@ export default function TeamUsersRoute() {
             onAction: handleSaveUser,
             loading: isSubmitting || isUploading,
           }}
-          secondaryActions={[
-            {
-              content: "Cancel",
-              onAction: () => setModalOpen(false),
-            },
-          ]}
+          secondaryActions={[{ content: "Cancel", onAction: () => setModalOpen(false) }]}
         >
           <Modal.Section>
             <FormLayout>
-              {/* Avatar Upload Preview */}
+              {formError && (
+                <Banner tone="critical">
+                  <p>{formError}</p>
+                </Banner>
+              )}
               <div className="flex items-center gap-4 p-3 bg-slate-50 border border-slate-200 rounded-lg">
                 {avatarPreview || avatarUrl ? (
                   <img
                     src={avatarPreview || avatarUrl}
                     alt="Avatar preview"
-                    onError={(e) => {
-                      console.warn("Avatar image preview failed to load, falling back to initials");
-                    }}
                     className="w-14 h-14 rounded-full object-cover border-2 border-blue-500 shadow-xs shrink-0 bg-white"
                   />
                 ) : (
@@ -441,14 +465,11 @@ export default function TeamUsersRoute() {
                     {name?.[0]?.toUpperCase() || "U"}
                   </div>
                 )}
-
                 <div className="space-y-1.5 flex-1">
-                  <label className="block text-xs font-semibold text-slate-700">
-                    User Avatar (Cloudflare R2 Upload)
-                  </label>
+                  <label className="block text-xs font-semibold text-slate-700">Avatar</label>
                   <div className="flex items-center gap-2">
                     <label className="cursor-pointer bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-semibold px-3 py-1.5 rounded-md transition shadow-xs">
-                      {isUploading ? "Uploading to Cloudflare..." : "Choose Image..."}
+                      {isUploading ? "Uploading..." : "Choose Image..."}
                       <input
                         type="file"
                         accept="image/*"
@@ -466,20 +487,13 @@ export default function TeamUsersRoute() {
                         }}
                         className="text-xs text-red-600 hover:text-red-800 font-medium underline"
                       >
-                        Remove Avatar
+                        Remove
                       </button>
                     )}
                   </div>
                 </div>
               </div>
-
-              <TextField
-                label="Full Name"
-                value={name}
-                onChange={setName}
-                autoComplete="off"
-                placeholder="e.g. John Doe"
-              />
+              <TextField label="Full Name" value={name} onChange={setName} autoComplete="off" placeholder="e.g. John Doe" />
               <TextField
                 label="Email Address"
                 type="email"
@@ -489,18 +503,14 @@ export default function TeamUsersRoute() {
                 placeholder="john@bridgecustom.com"
               />
               <TextField
-                label={editingUserId ? "Password (Leave empty to keep existing)" : "Password"}
+                label={editingUserId ? "Password (leave empty to keep current)" : "Password"}
                 type="password"
                 value={password}
                 onChange={setPassword}
                 autoComplete="new-password"
+                helpText={editingUserId ? undefined : "At least 8 characters"}
               />
-              <Select
-                label="Assign Role"
-                options={roleOptions}
-                value={selectedRoleId}
-                onChange={setSelectedRoleId}
-              />
+              <Select label="Assign Role" options={roleOptions} value={selectedRoleId} onChange={setSelectedRoleId} />
             </FormLayout>
           </Modal.Section>
         </Modal>

@@ -1,5 +1,9 @@
 import prisma from "../db.server";
 
+function isSuperAdminRoleCode(code: string) {
+  return code.toLowerCase() === "super_admin";
+}
+
 /**
  * Get all permission codes for a user
  */
@@ -8,33 +12,26 @@ export async function getUserPermissions(userId: string): Promise<string[]> {
     where: { id: userId, isActive: true },
     include: {
       userRoles: {
-        include: {
-          role: {
-            include: {
-              rolePermissions: {
-                include: {
-                  permission: true,
-                },
-              },
-            },
-          },
-        },
+        include: { role: true },
       },
     },
   });
 
   if (!user) return [];
 
-  const permissionCodes = new Set<string>();
-
-  for (const userRole of user.userRoles) {
-    const role = userRole.role;
-    for (const rolePerm of role.rolePermissions) {
-      permissionCodes.add(rolePerm.permission.code);
-    }
+  if (user.userRoles.some((ur) => isSuperAdminRoleCode(ur.role.code))) {
+    return ["system:all"];
   }
 
-  return Array.from(permissionCodes);
+  const roleIds = user.userRoles.map((ur) => ur.roleId);
+  if (roleIds.length === 0) return [];
+
+  const rolePerms = await prisma.rolePermission.findMany({
+    where: { roleId: { in: roleIds } },
+    include: { permission: true },
+  });
+
+  return Array.from(new Set(rolePerms.map((rp) => rp.permission.code)));
 }
 
 /**
@@ -42,10 +39,7 @@ export async function getUserPermissions(userId: string): Promise<string[]> {
  */
 export async function hasPermission(userId: string, permissionCode: string): Promise<boolean> {
   const permissions = await getUserPermissions(userId);
-  if (permissions.includes(permissionCode) || permissions.includes("system:all")) {
-    return true;
-  }
-  return false;
+  return permissions.includes(permissionCode) || permissions.includes("system:all");
 }
 
 /**
@@ -55,14 +49,35 @@ export async function hasPermission(userId: string, permissionCode: string): Pro
 export async function requirePermission(userId: string, permissionCode: string) {
   const allowed = await hasPermission(userId, permissionCode);
   if (!allowed) {
-    throw new Response(
-      JSON.stringify({
-        error: "Access Denied",
-        message: `You do not have permission (${permissionCode}) to perform this action.`,
-      }),
-      { status: 403, headers: { "Content-Type": "application/json" } }
-    );
+    throw new Response("You do not have permission to access this page.", {
+      status: 403,
+      statusText: "Forbidden",
+    });
   }
+}
+
+export function canAccess(permissions: string[] | undefined, permissionCode: string) {
+  if (!permissions?.length) return false;
+  return permissions.includes("system:all") || permissions.includes(permissionCode);
+}
+
+export async function hasAnyPermission(userId: string, permissionCodes: string[]): Promise<boolean> {
+  const permissions = await getUserPermissions(userId);
+  return permissions.includes("system:all") || permissionCodes.some((code) => permissions.includes(code));
+}
+
+export async function requireAnyPermission(userId: string, permissionCodes: string[]) {
+  const allowed = await hasAnyPermission(userId, permissionCodes);
+  if (!allowed) {
+    throw new Response("You do not have permission to access this page.", {
+      status: 403,
+      statusText: "Forbidden",
+    });
+  }
+}
+
+export function rethrowHttpResponse(error: unknown) {
+  if (error instanceof Response) throw error;
 }
 
 /**
@@ -75,23 +90,23 @@ export async function logActivity({
   payload,
   ipAddress,
 }: {
-  userId?: string;
+  userId?: string | null;
   action: string;
   resource: string;
-  payload?: Record<string, any>;
+  payload?: Record<string, unknown>;
   ipAddress?: string;
 }) {
   try {
     await prisma.auditLog.create({
       data: {
-        userId,
+        userId: userId || null,
         action,
         resource,
         payload: payload ? JSON.stringify(payload) : null,
-        ipAddress,
+        ipAddress: ipAddress || null,
       },
     });
   } catch (error) {
-    console.error("❌ Failed to log audit activity:", error);
+    console.error("Failed to log audit activity:", error);
   }
 }

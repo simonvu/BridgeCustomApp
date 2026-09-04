@@ -65,12 +65,26 @@ export async function generateTrimmedSquarePng(imageBuffer: Buffer, size = 256):
  * Tự động tạo ảnh thu nhỏ Thumbnail (WebP format, width max 400px, quality 80%)
  * Giúp tối ưu dung lượng từ 5MB-10MB xuống chỉ còn 20KB-40KB khi hiển thị trên giao diện!
  */
+export async function getImageDimensions(
+  imageBuffer: Buffer
+): Promise<{ width: number; height: number } | null> {
+  try {
+    const metadata = await sharp(imageBuffer).metadata();
+    if (!metadata.width || !metadata.height) return null;
+    return { width: metadata.width, height: metadata.height };
+  } catch {
+    return null;
+  }
+}
+
 export async function generateThumbnail(imageBuffer: Buffer): Promise<{
   buffer: Buffer;
   contentType: string;
   extension: string;
   width?: number;
   height?: number;
+  originalWidth?: number;
+  originalHeight?: number;
 } | null> {
   try {
     const metadata = await sharp(imageBuffer).metadata();
@@ -97,6 +111,8 @@ export async function generateThumbnail(imageBuffer: Buffer): Promise<{
       extension: "webp",
       width: thumbMeta.width,
       height: thumbMeta.height,
+      originalWidth: metadata.width,
+      originalHeight: metadata.height,
     };
   } catch (error) {
     console.error("⚠️ Cannot generate thumbnail via sharp (non-image or corrupt file):", error);

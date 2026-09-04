@@ -1,9 +1,11 @@
 import { json, type LoaderFunctionArgs, type ActionFunctionArgs } from "@remix-run/node";
-import { getTeamUserId } from "../services/auth.server";
+import { rethrowHttpResponse } from "../services/rbac.server";
+import { requireAnyPage, requireTeamPage } from "../services/team.server";
 import prisma from "../db.server";
 
 // GET /api/studio?id=<artworkId> or GET /api/studio (list all studio artworks)
 export async function loader({ request }: LoaderFunctionArgs) {
+  await requireTeamPage(request, "artworks:items:read");
   const url = new URL(request.url);
   const artworkId = url.searchParams.get("id");
 
@@ -48,16 +50,6 @@ export async function action({ request }: ActionFunctionArgs) {
     return json({ error: "Method not allowed" }, { status: 405 });
   }
 
-  let userId = await getTeamUserId(request);
-  let currentUser = userId ? await prisma.user.findUnique({ where: { id: userId } }) : null;
-
-  if (!currentUser) {
-    currentUser = await prisma.user.findFirst({ where: { email: "admin@bridgecustom.com" } });
-  }
-
-  const uploaderName = currentUser?.name || "Super Admin";
-  const uploaderAvatar = currentUser?.avatarUrl || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80";
-
   try {
     const body = await request.json();
     const {
@@ -75,6 +67,13 @@ export async function action({ request }: ActionFunctionArgs) {
       fields,
       rules,
     } = body;
+
+    const { user: currentUser } = await requireAnyPage(
+      request,
+      id ? ["artworks:items:update"] : ["artworks:items:create"]
+    );
+    const uploaderName = currentUser?.name || "Super Admin";
+    const uploaderAvatar = currentUser?.avatarUrl || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80";
 
     if (!title || !title.trim()) {
       return json({ error: "Artwork title is required" }, { status: 400 });
@@ -316,6 +315,7 @@ export async function action({ request }: ActionFunctionArgs) {
 
     return json({ success: true, artwork: fullArtwork });
   } catch (error: any) {
+    rethrowHttpResponse(error);
     console.error("API Studio POST Error:", error);
     return json({ error: error.message || "Failed to save artwork" }, { status: 500 });
   }

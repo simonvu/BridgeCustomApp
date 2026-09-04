@@ -35,15 +35,11 @@ import {
 import DashboardLayout from "../components/DashboardLayout";
 import MediaSelectModal, { type MediaFileItem } from "../components/MediaSelectModal";
 import prisma from "../db.server";
-import { requireTeamUserId } from "../services/auth.server";
+import { requireTeamPage } from "../services/team.server";
 
 // Loader: Fetch Artworks & User Profile
 export async function loader({ request }: LoaderFunctionArgs) {
-  const currentUserId = await requireTeamUserId(request);
-  const currentUser = await prisma.user.findUnique({
-    where: { id: currentUserId },
-    include: { userRoles: { include: { role: true } } },
-  });
+  const { currentUser } = await requireTeamPage(request, "artworks:items:read");
 
   const studioModel = (prisma as any).studioArtwork;
   const studioArtworks = studioModel
@@ -99,27 +95,25 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const allArtworks = [...formattedStudioArtworks, ...formattedLegacyArtworks];
 
   return json({
-    currentUser: {
-      email: currentUser?.email || "admin@bridgecustom.com",
-      name: currentUser?.name || "Super Admin",
-      roleName: currentUser?.userRoles?.[0]?.role?.code?.toUpperCase() || "SUPER_ADMIN",
-      avatarUrl: currentUser?.avatarUrl || null,
-    },
+    currentUser,
     artworks: allArtworks,
   });
 }
 
 // Action: Create / Delete / Duplicate Artwork
 export async function action({ request }: ActionFunctionArgs) {
-  const currentUserId = await requireTeamUserId(request);
+  const formData = await request.formData();
+  const intent = formData.get("intent");
+  const perm =
+    intent === "DELETE_ARTWORK"
+      ? "artworks:items:delete"
+      : "artworks:items:create";
+  const { userId: currentUserId } = await requireTeamPage(request, perm);
   const currentUser = await prisma.user.findUnique({ where: { id: currentUserId } });
 
   const uploaderEmail = currentUser?.email || "admin@bridgecustom.com";
   const uploaderName = currentUser?.name || "Super Admin";
   const uploaderAvatar = currentUser?.avatarUrl || "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80";
-
-  const formData = await request.formData();
-  const intent = formData.get("intent");
 
   const artworkModel = (prisma as any).artwork;
   const studioModel = (prisma as any).studioArtwork;

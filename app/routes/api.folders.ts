@@ -1,9 +1,15 @@
 import { json, type LoaderFunctionArgs, type ActionFunctionArgs } from "@remix-run/node";
-import { getTeamUserId } from "../services/auth.server";
+import { rethrowHttpResponse } from "../services/rbac.server";
+import { requireAnyPage, requireTeamPage } from "../services/team.server";
 import prisma from "../db.server";
 
 // GET /api/folders - List all media folders
 export async function loader({ request }: LoaderFunctionArgs) {
+  await requireAnyPage(request, [
+    "media:files:read",
+    "artworks:items:read",
+    "cliparts:items:read",
+  ]);
   let foldersFromDb: any[] = [];
   try {
     foldersFromDb = await prisma.mediaFolder.findMany({
@@ -54,12 +60,7 @@ export async function action({ request }: ActionFunctionArgs) {
     return json({ error: "Method not allowed" }, { status: 405 });
   }
 
-  let userId = await getTeamUserId(request);
-  let currentUser = userId ? await prisma.user.findUnique({ where: { id: userId } }) : null;
-
-  if (!currentUser) {
-    currentUser = await prisma.user.findFirst({ where: { email: "admin@bridgecustom.com" } });
-  }
+  const { user: currentUser } = await requireTeamPage(request, "media:files:upload");
 
   const uploaderEmail = currentUser?.email || "admin@bridgecustom.com";
   const uploaderName = currentUser?.name || "Super Admin";
@@ -100,6 +101,7 @@ export async function action({ request }: ActionFunctionArgs) {
       return json({ error: dbErr.message || "Database error creating folder" }, { status: 500 });
     }
   } catch (error: any) {
+    rethrowHttpResponse(error);
     console.error("Error creating folder in api.folders.ts:", error);
     return json({ error: error.message || "Failed to create folder" }, { status: 500 });
   }

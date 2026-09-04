@@ -42,6 +42,7 @@ model User {
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
   userRoles     UserRole[]
+  auditLogs     AuditLog[]
 
   @@map("users")
 }
@@ -54,22 +55,26 @@ model Role {
   isSystem    Boolean        @default(false)
   createdAt   DateTime       @default(now())
   updatedAt   DateTime       @updatedAt
-  userRoles   UserRole[]
-  permissions RolePermission[]
+  userRoles       UserRole[]
+  rolePermissions RolePermission[]
 
   @@map("roles")
 }
 
 model Permission {
-  id          String         @id @default(uuid())
-  code        String         @unique // VD: "artworks:create", "artworks:edit", "artworks:delete", "users:manage"
+  id          String           @id @default(uuid())
+  code        String           @unique
   name        String
-  category    String         @default("General") // VD: "Artworks", "Users", "Settings"
+  module      String           @default("general")
+  resource    String           @default("items")
+  action      String           @default("read")
+  category    String           @default("General")
   description String?
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
-  roles       RolePermission[]
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  rolePermissions RolePermission[]
 
+  @@index([module, action])
   @@map("permissions")
 }
 
@@ -93,6 +98,21 @@ model RolePermission {
 
   @@id([roleId, permissionId])
   @@map("role_permissions")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  resource  String
+  payload   String?
+  ipAddress String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([action])
+  @@map("audit_logs")
 }
 
 // ==========================================

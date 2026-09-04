@@ -16,15 +16,11 @@ import {
 } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
 import prisma from "../db.server";
-import { getTeamUserId } from "../services/auth.server";
+import { requireTeamPage } from "../services/team.server";
 import { injectFontStylesheets, type FontItem } from "../utils/fontLoader";
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const currentUserId = await getTeamUserId(request);
-  const currentUser = await prisma.user.findUnique({
-    where: { id: currentUserId },
-    include: { userRoles: { include: { role: true } } },
-  });
+  const { currentUser } = await requireTeamPage(request, "fonts:items:read");
 
   const fontModel = (prisma as any).font;
   const fonts: FontItem[] = fontModel
@@ -34,12 +30,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
     : [];
 
   return json({
-    currentUser: {
-      email: currentUser?.email || "admin@bridgecustom.com",
-      name: currentUser?.name || "Super Admin",
-      roleName: currentUser?.userRoles?.[0]?.role?.code?.toUpperCase() || "SUPER_ADMIN",
-      avatarUrl: currentUser?.avatarUrl || null,
-    },
+    currentUser,
     fonts,
   });
 }
@@ -224,7 +215,7 @@ export default function FontsRoute() {
   });
 
   return (
-    <DashboardLayout currentUser={currentUser} activeItem="fonts">
+    <DashboardLayout currentUser={currentUser}>
       <div className="p-6 space-y-6 max-w-7xl mx-auto">
         {/* Page Header */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-gray-200 pb-5">
