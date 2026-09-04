@@ -111,7 +111,7 @@ export async function action({ request }: ActionFunctionArgs) {
     if (existing) {
       clipart = await model.update({ where: { id }, data });
     } else {
-      clipart = await model.create({ data });
+      clipart = await model.create({ data: id ? { ...data, id: String(id) } : data });
     }
 
     return json({ success: true, clipart });

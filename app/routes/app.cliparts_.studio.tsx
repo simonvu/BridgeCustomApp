@@ -7,6 +7,7 @@ import {
   Check,
   MoreHorizontal,
   Download,
+  ClipboardCopy,
   ZoomIn,
   ZoomOut,
   Undo2,
@@ -35,9 +36,9 @@ import {
   type MergeGroup,
 } from "../utils/clipArtMerge";
 import type { StudioFieldItem } from "../utils/fieldHelpers";
-import { isEmptyOption } from "../utils/fieldHelpers";
+import { isEmptyOption, isFreeTransformField, stripOptionTransform } from "../utils/fieldHelpers";
 import MergeOptionsModal, { type MergeOptionsSubmit } from "../components/studio/MergeOptionsModal";
-import { autoGenerateSquareThumbnail } from "../utils/thumbnailGenerator";
+import { autoGenerateSquareThumbnail, trimToSquareDataUrl } from "../utils/thumbnailGenerator";
 import { cleanImportedName, guessGroupName, slugValue } from "../utils/optionRename";
 import {
   buildClipArtInstance,
@@ -165,6 +166,7 @@ export default function ClipArtStudioRoute() {
   const [isSaving, setIsSaving] = useState(false);
   const [savedToast, setSavedToast] = useState(false);
   const [statusMsg, setStatusMsg] = useState("");
+  const [pngBusy, setPngBusy] = useState<"download" | "copy" | null>(null);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [rightSidebarWidthPx, setRightSidebarWidthPx] = useState(420);
   const didAutoTrim = useRef(false);
@@ -364,11 +366,11 @@ export default function ClipArtStudioRoute() {
         if (e.key === "ArrowDown") dy = step;
         if (e.key === "ArrowLeft") dx = -step;
         if (e.key === "ArrowRight") dx = step;
-        setLayers((prev) =>
-          prev.map((l) =>
-            selectedLayerIds.includes(l.id) && !l.isLocked ? { ...l, posX: l.posX + dx, posY: l.posY + dy } : l
-          )
-        );
+        selectedLayerIds.forEach((id) => {
+          const layer = layers.find((l) => l.id === id);
+          if (!layer || layer.isLocked) return;
+          handleUpdateLayer(id, { posX: layer.posX + dx, posY: layer.posY + dy });
+        });
       } else if (e.key === "Delete" || e.key === "Backspace") {
         e.preventDefault();
         selectedLayerIds.forEach((id) => handleDeleteLayer(id));
@@ -447,31 +449,31 @@ export default function ClipArtStudioRoute() {
   const handleFlipSelected = () => {
     const ids = new Set(selectedLayerIds);
     if (ids.size === 0) return;
-    const nextFlip = new Map(
-      layers.filter((l) => ids.has(l.id)).map((l) => [l.id, !Boolean(l.properties?.flipH)])
-    );
-    setLayers((prev) =>
-      prev.map((l) =>
-        ids.has(l.id) && !l.isLocked
-          ? { ...l, properties: { ...(l.properties || {}), flipH: nextFlip.get(l.id) } }
-          : l
-      )
-    );
-    setFields((prev) =>
-      prev.map((f) => {
-        const layer = layers.find((l) => l.linkedFieldId === f.id && ids.has(l.id));
-        if (!layer) return f;
-        const flipH = nextFlip.get(layer.id);
-        const activeId = f.activeOptionId;
-        const options = (f.config?.options || []).map((o: any, i: number) =>
-          o.id === activeId || (!activeId && i === 0) ? { ...o, flipH } : o
-        );
-        return { ...f, config: { ...(f.config || {}), options } };
-      })
-    );
+    layers.forEach((l) => {
+      if (!ids.has(l.id) || l.isLocked) return;
+      const srcId = l.properties?.sandwichSourceLayerId;
+      if (l.properties?.sandwichRole === "front" && srcId && ids.has(srcId)) return;
+      handleUpdateLayer(l.id, {
+        properties: { flipH: !Boolean(l.properties?.flipH) },
+      });
+    });
   };
 
-  const handleUpdateLayer = (layerId: string, patch: Partial<CanvasLayerItem>) => {
+  const handleUpdateLayer = (
+    layerId: string,
+    patch: Partial<CanvasLayerItem>,
+    opts?: { persistOptionGeom?: boolean }
+  ) => {
+    const persistOptionGeom = opts?.persistOptionGeom !== false;
+    const geomTouched =
+      patch.posX !== undefined ||
+      patch.posY !== undefined ||
+      patch.width !== undefined ||
+      patch.height !== undefined ||
+      patch.rotation !== undefined ||
+      patch.properties?.flipH !== undefined ||
+      patch.properties?.flipV !== undefined;
+
     setLayers((prev) => {
       const next = prev.map((l) => {
         if (l.id !== layerId) return l;
@@ -482,6 +484,36 @@ export default function ClipArtStudioRoute() {
         return merged;
       });
       const src = next.find((l) => l.id === layerId);
+      if (
+        src &&
+        persistOptionGeom &&
+        geomTouched &&
+        src.linkedFieldId &&
+        src.properties?.sandwichRole !== "front"
+      ) {
+        setFields((prevFields) => {
+          const field = prevFields.find((f) => f.id === src.linkedFieldId);
+          if (!field || !isFreeTransformField(field) || !field.activeOptionId) return prevFields;
+          return prevFields.map((f) => {
+            if (f.id !== field.id) return f;
+            const options = (f.config?.options || []).map((o: any) =>
+              o.id === f.activeOptionId
+                ? {
+                    ...o,
+                    posX: src.posX,
+                    posY: src.posY,
+                    width: src.width,
+                    height: src.height,
+                    rotation: src.rotation,
+                    flipH: src.properties?.flipH,
+                    flipV: src.properties?.flipV,
+                  }
+                : o
+            );
+            return { ...f, config: { ...(f.config || {}), options } };
+          });
+        });
+      }
       if (!src) return next;
       return next.map((l) => {
         if (l.properties?.sandwichSourceLayerId !== layerId) return l;
@@ -616,7 +648,13 @@ export default function ClipArtStudioRoute() {
       if (option.opacity !== undefined) {
         updatedProps.properties = { ...updatedProps.properties, opacity: Number(option.opacity) };
       }
-      handleUpdateLayer(linkedLayer.id, updatedProps);
+      if (option.flipH !== undefined) {
+        updatedProps.properties = { ...updatedProps.properties, flipH: Boolean(option.flipH) };
+      }
+      if (option.flipV !== undefined) {
+        updatedProps.properties = { ...updatedProps.properties, flipV: Boolean(option.flipV) };
+      }
+      handleUpdateLayer(linkedLayer.id, updatedProps, { persistOptionGeom: false });
       if (select && i === 0 && linkedLayer.properties?.sandwichRole !== "front") {
         setSelectedLayerIds([linkedLayer.id]);
       }
@@ -729,7 +767,7 @@ export default function ClipArtStudioRoute() {
         fieldType: "FIELD_ASSET",
         displayType: "THUMBNAIL",
         sortOrder: prev.length,
-        isRequired: false,
+        isRequired: true,
         allowPersonalized: true,
         activeOptionId: opt.id,
         config: { options: [opt] },
@@ -794,37 +832,6 @@ export default function ClipArtStudioRoute() {
     );
   };
 
-  const handleResetGroup = (layerId: string) => {
-    const layer = layers.find((l) => l.id === layerId);
-    if (!layer) return;
-    const w = layer.properties?.naturalWidth || layer.width;
-    const h = layer.properties?.naturalHeight || layer.height;
-    const maxDim = Math.min(widthPx, heightPx) * 0.6;
-    const scale = Math.min(maxDim / Math.max(1, w), maxDim / Math.max(1, h), 1);
-    const nw = Math.max(20, Math.round(w * scale));
-    const nh = Math.max(20, Math.round(h * scale));
-    handleUpdateLayer(layerId, {
-      posX: Math.round((widthPx - nw) / 2),
-      posY: Math.round((heightPx - nh) / 2),
-      width: nw,
-      height: nh,
-      rotation: 0,
-      properties: { ...(layer.properties || {}), flipH: false, flipV: false, opacity: 1 },
-    });
-    if (layer.linkedFieldId) {
-      setFields((prev) =>
-        prev.map((f) => {
-          if (f.id !== layer.linkedFieldId) return f;
-          const options = (f.config?.options || []).map((o: any) => {
-            const { posX, posY, width, height, rotation, flipH, flipV, ...rest } = o;
-            return rest;
-          });
-          return { ...f, config: { ...(f.config || {}), options } };
-        })
-      );
-    }
-  };
-
   const measureImage = (url: string): Promise<{ natW: number; natH: number }> =>
     new Promise((resolve) => {
       const img = new Image();
@@ -834,15 +841,105 @@ export default function ClipArtStudioRoute() {
       img.src = url;
     });
 
-  const uploadDataUrl = async (dataUrl: string, fileName: string): Promise<{ url: string; key: string } | null> => {
+  const fitToCanvas = (natW: number, natH: number) => {
+    const maxDim = Math.min(widthPx, heightPx) * 0.6;
+    const scale = Math.min(maxDim / Math.max(1, natW), maxDim / Math.max(1, natH), 1);
+    const width = Math.max(20, Math.round(natW * scale));
+    const height = Math.max(20, Math.round(natH * scale));
+    return {
+      posX: Math.round((widthPx - width) / 2),
+      posY: Math.round((heightPx - height) / 2),
+      width,
+      height,
+      rotation: 0,
+    };
+  };
+
+  const keepCenter = (
+    box: { posX: number; posY: number; width: number; height: number },
+    fitted: { width: number; height: number; rotation?: number }
+  ) => ({
+    width: fitted.width,
+    height: fitted.height,
+    rotation: fitted.rotation ?? 0,
+    posX: Math.round(box.posX + box.width / 2 - fitted.width / 2),
+    posY: Math.round(box.posY + box.height / 2 - fitted.height / 2),
+  });
+
+  const handleToggleFreeTransform = async (fieldId: string, enabled: boolean) => {
+    const field = fields.find((f) => f.id === fieldId);
+    if (!field) return;
+    const layer =
+      layers.find((l) => l.linkedFieldId === fieldId && l.properties?.sandwichRole !== "front") ||
+      layers.find((l) => l.linkedFieldId === fieldId);
+    if (!enabled) {
+      setFields((prev) =>
+        prev.map((f) => {
+          if (f.id !== fieldId) return f;
+          const options = (f.config?.options || []).map((o: any) => stripOptionTransform(o));
+          return { ...f, config: { ...(f.config || {}), options, freeTransform: false } };
+        })
+      );
+      return;
+    }
+    setStatusMsg("Measuring option sizes…");
+    const seeded = await mapPool(field.config?.options || [], 4, async (o: any) => {
+      if (o.isEmpty) return o;
+      if (o.posX !== undefined && o.width !== undefined && o.height !== undefined) return o;
+      const isActive = o.id === field.activeOptionId;
+      if (isActive && layer) {
+        return {
+          ...o,
+          posX: layer.posX,
+          posY: layer.posY,
+          width: layer.width,
+          height: layer.height,
+          rotation: layer.rotation || 0,
+          flipH: layer.properties?.flipH,
+          flipV: layer.properties?.flipV,
+        };
+      }
+      const url = o.assetImageUrl || o.swatchImageUrl;
+      if (!url) {
+        return layer
+          ? {
+              ...o,
+              posX: layer.posX,
+              posY: layer.posY,
+              width: layer.width,
+              height: layer.height,
+              rotation: layer.rotation || 0,
+              flipH: layer.properties?.flipH,
+              flipV: layer.properties?.flipV,
+            }
+          : o;
+      }
+      const { natW, natH } = await measureImage(url);
+      return { ...o, ...fitToCanvas(natW, natH) };
+    });
+    setFields((prev) =>
+      prev.map((f) =>
+        f.id === fieldId ? { ...f, config: { ...(f.config || {}), options: seeded, freeTransform: true } } : f
+      )
+    );
+    setStatusMsg("");
+  };
+
+  const uploadDataUrl = async (
+    dataUrl: string,
+    fileName: string,
+    opts?: { key?: string; skipLibrary?: boolean }
+  ): Promise<{ url: string; key: string } | null> => {
     try {
       const file = dataUrlToFile(dataUrl, fileName);
       const fd = new FormData();
       fd.append("file", file);
       fd.append("folder", "cliparts");
+      if (opts?.key) fd.append("key", opts.key);
+      if (opts?.skipLibrary) fd.append("skipLibrary", "1");
       const res = await fetch("/api/upload", { method: "POST", body: fd });
       const data = await res.json();
-      if (data.success && data.url) return { url: data.url, key: data.key || fileName };
+      if (data.success && data.url) return { url: data.url, key: data.key || opts?.key || fileName };
     } catch (e) {
       console.error("Upload failed", e);
     }
@@ -853,24 +950,19 @@ export default function ClipArtStudioRoute() {
     if (!url) return "";
     try {
       const dataUrl = await autoGenerateSquareThumbnail(url, 256);
-      if (!dataUrl || dataUrl === url) return url;
-      if (dataUrl.startsWith("data:")) {
-        const up = await uploadDataUrl(
-          dataUrl,
-          `opt_thumb_${Date.now()}_${Math.random().toString(36).slice(2, 6)}.png`
-        );
-        return up?.url || dataUrl;
-      }
+      if (!dataUrl || dataUrl.startsWith("data:")) return url;
       return dataUrl;
     } catch {
       return url;
     }
   };
 
-  const filesToVariants = async (files: any[]) =>
+  const filesToVariants = async (files: any[], attachGeom = false) =>
     mapPool(files, 4, async (f, i) => {
       const url = f.url || f.thumbnailUrl;
       const label = cleanImportedName(f.fileName, `Option ${i + 1}`);
+      const measured = attachGeom ? await measureImage(url) : null;
+      const geom = measured ? fitToCanvas(measured.natW, measured.natH) : {};
       return {
         id: `opt_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 5)}`,
         label,
@@ -878,6 +970,7 @@ export default function ClipArtStudioRoute() {
         assetImageUrl: url,
         swatchImageUrl: (await makeSquareThumb(url)) || url,
         isVisible: true,
+        ...geom,
       };
     });
 
@@ -941,17 +1034,37 @@ export default function ClipArtStudioRoute() {
     }
     const pending = fields.filter((f) => (f.config?.options || []).length > 0);
     if (pending.length === 0) return;
+    const needsTrim = pending.some((f) =>
+      (f.config?.options || []).some((o: any) => !o.isEmpty && o.assetImageUrl && !o.swatchImageUrl)
+    );
     didAutoTrim.current = true;
     try {
       sessionStorage.setItem(storageKey, "1");
     } catch {
       /* ignore */
     }
-    (async () => {
-      for (const f of pending) {
-        await handleRegenerateThumbs(f.id, f.config?.options || []);
+    if (!needsTrim) return;
+    let cancelled = false;
+    const run = () => {
+      if (cancelled) return;
+      void (async () => {
+        for (const f of pending) {
+          await handleRegenerateThumbs(f.id, f.config?.options || []);
+        }
+      })();
+    };
+    const idleId =
+      typeof window.requestIdleCallback === "function"
+        ? window.requestIdleCallback(run, { timeout: 2500 })
+        : 0;
+    const timeoutId = idleId ? 0 : window.setTimeout(run, 600);
+    return () => {
+      cancelled = true;
+      if (idleId && typeof window.cancelIdleCallback === "function") {
+        window.cancelIdleCallback(idleId);
       }
-    })();
+      if (timeoutId) window.clearTimeout(timeoutId);
+    };
     // one-shot per clip art after the server-side trim shipped
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fields, clipArtId]);
@@ -967,25 +1080,22 @@ export default function ClipArtStudioRoute() {
 
     const first = files[0];
     const { natW, natH } = await measureImage(first.url || first.thumbnailUrl);
-    const maxDim = Math.min(widthPx, heightPx) * 0.6;
-    const scale = Math.min(maxDim / natW, maxDim / natH, 1);
-    const w = Math.max(20, Math.round(natW * scale));
-    const h = Math.max(20, Math.round(natH * scale));
+    const { posX, posY, width: w, height: h } = fitToCanvas(natW, natH);
 
     const layer: CanvasLayerItem = {
       id: `layer_${Date.now()}_grp`,
       name: label,
       layerType: "ASSET",
       zIndex: nextZ(),
-      posX: Math.round((widthPx - w) / 2),
-      posY: Math.round((heightPx - h) / 2),
+      posX,
+      posY,
       width: w,
       height: h,
       rotation: 0,
       isVisible: true,
       isLocked: false,
       linkedFieldId: fieldId,
-      properties: { assetUrl: options[0].assetImageUrl, opacity: 1 },
+      properties: { assetUrl: options[0].assetImageUrl, opacity: 1, naturalWidth: natW, naturalHeight: natH },
     };
 
     setFields((prev) => [
@@ -996,7 +1106,7 @@ export default function ClipArtStudioRoute() {
         fieldType: "FIELD_ASSET",
         displayType: "THUMBNAIL",
         sortOrder: fields.length,
-        isRequired: false,
+        isRequired: true,
         allowPersonalized: true,
         activeOptionId: options[0].id,
         config: { options },
@@ -1010,7 +1120,8 @@ export default function ClipArtStudioRoute() {
 
   const addVariantsToGroup = async (fieldId: string, files: any[]) => {
     setStatusMsg("Preparing variants…");
-    const newOpts = await filesToVariants(files);
+    const field = fields.find((f) => f.id === fieldId);
+    const newOpts = await filesToVariants(files, isFreeTransformField(field));
     setFields((prev) =>
       prev.map((f) => {
         if (f.id !== fieldId) return f;
@@ -1035,13 +1146,24 @@ export default function ClipArtStudioRoute() {
       const url = files[0].url || files[0].thumbnailUrl;
       const layer = layers.find((l) => l.id === target.layerId);
       const swatch = await makeSquareThumb(url);
-      handleUpdateProps(target.layerId, { assetUrl: url });
+      const { natW, natH } = await measureImage(url);
+      const field = layer?.linkedFieldId ? fields.find((f) => f.id === layer.linkedFieldId) : undefined;
+      const geom =
+        field && isFreeTransformField(field) && layer
+          ? keepCenter(layer, fitToCanvas(natW, natH))
+          : null;
+      handleUpdateLayer(target.layerId, {
+        ...(geom || {}),
+        properties: { assetUrl: url, naturalWidth: natW, naturalHeight: natH },
+      });
       if (layer?.linkedFieldId) {
         setFields((prev) =>
           prev.map((f) => {
             if (f.id !== layer.linkedFieldId) return f;
             const options = (f.config?.options || []).map((o: any) =>
-              o.id === f.activeOptionId ? { ...o, assetImageUrl: url, swatchImageUrl: swatch || url } : o
+              o.id === f.activeOptionId
+                ? { ...o, assetImageUrl: url, swatchImageUrl: swatch || url, ...(geom || {}) }
+                : o
             );
             return { ...f, config: { ...(f.config || {}), options } };
           })
@@ -1054,31 +1176,46 @@ export default function ClipArtStudioRoute() {
       const url = files[0].url || files[0].thumbnailUrl;
       const fileName = files[0].fileName as string | undefined;
       const swatch = await makeSquareThumb(url);
+      const field = fields.find((f) => f.id === target.fieldId);
+      const current = field?.config?.options?.[target.optionIndex];
+      let geom: { posX: number; posY: number; width: number; height: number; rotation: number } | null = null;
+      if (field && isFreeTransformField(field) && target.optionTargetType !== "SWATCH") {
+        const { natW, natH } = await measureImage(url);
+        const fitted = fitToCanvas(natW, natH);
+        const layer = layers.find(
+          (l) => l.linkedFieldId === field.id && l.properties?.sandwichRole !== "front"
+        );
+        const box =
+          current?.posX !== undefined && current?.width !== undefined
+            ? { posX: current.posX, posY: current.posY, width: current.width, height: current.height }
+            : layer;
+        geom = box ? keepCenter(box, fitted) : fitted;
+      }
       setFields((prev) =>
         prev.map((f) => {
           if (f.id !== target.fieldId) return f;
           const options = [...(f.config?.options || [])];
           if (!options[target.optionIndex!]) return f;
-          const current = options[target.optionIndex!];
-          const nextLabel = fileName ? cleanImportedName(fileName, current.label || "Option") : current.label;
+          const cur = options[target.optionIndex!];
+          const nextLabel = fileName ? cleanImportedName(fileName, cur.label || "Option") : cur.label;
           options[target.optionIndex!] = {
-            ...current,
+            ...cur,
             ...(target.optionTargetType === "SWATCH"
               ? { swatchImageUrl: swatch || url }
               : {
                   assetImageUrl: url,
                   swatchImageUrl: swatch || url,
                   label: nextLabel,
-                  value: slugValue(nextLabel || current.label || "option", target.optionIndex! + 1),
+                  value: slugValue(nextLabel || cur.label || "option", target.optionIndex! + 1),
+                  ...(geom || {}),
                 }),
           };
           return { ...f, config: { ...(f.config || {}), options } };
         })
       );
-      const field = fields.find((f) => f.id === target.fieldId);
       const opt = field?.config?.options?.[target.optionIndex];
       if (opt && target.optionTargetType !== "SWATCH") {
-        handlePreviewOptionChoice(target.fieldId, { ...opt, assetImageUrl: url });
+        handlePreviewOptionChoice(target.fieldId, { ...opt, assetImageUrl: url, ...(geom || {}) });
       }
       return;
     }
@@ -1238,7 +1375,7 @@ export default function ClipArtStudioRoute() {
           fieldType: "FIELD_ASSET",
           displayType: "THUMBNAIL",
           sortOrder: prev.length,
-          isRequired: false,
+          isRequired: true,
           allowPersonalized: true,
           activeOptionId: firstOpt?.id,
           config: { options: built },
@@ -1313,19 +1450,25 @@ export default function ClipArtStudioRoute() {
       let compositeUrl = "";
       let compositeKey = "";
       let thumbnailUrl = "";
+      const previewId = clipArtId || (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `clip_${Date.now()}`);
       if (compositeDataUrl) {
-        const up = await uploadDataUrl(compositeDataUrl, `clipart_${Date.now()}.png`);
+        const bust = Date.now();
+        const up = await uploadDataUrl(compositeDataUrl, "composite.png", {
+          key: `cliparts/_generated/${previewId}/composite.png`,
+          skipLibrary: true,
+        });
         if (up) {
-          compositeUrl = up.url;
+          compositeUrl = `${up.url}${up.url.includes("?") ? "&" : "?"}v=${bust}`;
           compositeKey = up.key;
         }
         try {
-          const trimmed = await autoGenerateSquareThumbnail(compositeDataUrl, 400);
+          const trimmed = await trimToSquareDataUrl(compositeDataUrl, 400);
           if (trimmed.startsWith("data:")) {
-            const upt = await uploadDataUrl(trimmed, `clipart_thumb_${Date.now()}.png`);
-            thumbnailUrl = upt?.url || trimmed;
-          } else if (trimmed) {
-            thumbnailUrl = trimmed;
+            const upt = await uploadDataUrl(trimmed, "thumb.png", {
+              key: `cliparts/_generated/${previewId}/thumb.png`,
+              skipLibrary: true,
+            });
+            thumbnailUrl = upt?.url ? `${upt.url}${upt.url.includes("?") ? "&" : "?"}v=${bust}` : "";
           }
         } catch (e) {
           console.warn("Trimmed clip art thumb failed", e);
@@ -1337,7 +1480,7 @@ export default function ClipArtStudioRoute() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           intent: "SAVE",
-          id: clipArtId,
+          id: previewId,
           name,
           category,
           widthPx,
@@ -1370,17 +1513,74 @@ export default function ClipArtStudioRoute() {
     }
   };
 
-  const handleDownload = () => {
-    const dataUrl = exportComposite(1);
+  const getScreenPngDataUrl = async (): Promise<string> => {
+    let dataUrl = exportComposite(1);
     if (!dataUrl) {
-      setStatusMsg("Nothing to download yet.");
-      setTimeout(() => setStatusMsg(""), 2000);
-      return;
+      try {
+        dataUrl = await rasterizeClipArtFrame(
+          buildClipArtInstance({
+            id: clipArtId || "draft",
+            name,
+            widthPx,
+            heightPx,
+            layers,
+            fields: encodeClipArtFields(fields, clipArtRules),
+          })
+        );
+      } catch (e) {
+        console.warn("PNG export fallback failed", e);
+      }
     }
-    const a = document.createElement("a");
-    a.href = dataUrl;
-    a.download = `${name || "clipart"}.png`;
-    a.click();
+    return dataUrl || "";
+  };
+
+  const handleDownload = async () => {
+    setPngBusy("download");
+    try {
+      const dataUrl = await getScreenPngDataUrl();
+      if (!dataUrl) {
+        setStatusMsg("Nothing to download yet.");
+        setTimeout(() => setStatusMsg(""), 2000);
+        return;
+      }
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = `${name || "clipart"}.png`;
+      a.click();
+    } catch (e) {
+      console.error("Download PNG failed", e);
+      setStatusMsg("Download PNG failed.");
+      setTimeout(() => setStatusMsg(""), 2000);
+    } finally {
+      setPngBusy(null);
+    }
+  };
+
+  const handleCopyPng = async () => {
+    setPngBusy("copy");
+    try {
+      const dataUrl = await getScreenPngDataUrl();
+      if (!dataUrl) {
+        setStatusMsg("Nothing to copy yet.");
+        setTimeout(() => setStatusMsg(""), 2000);
+        return;
+      }
+      if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
+        setStatusMsg("Clipboard PNG is not supported in this browser.");
+        setTimeout(() => setStatusMsg(""), 2500);
+        return;
+      }
+      const file = dataUrlToFile(dataUrl, `${name || "clipart"}.png`);
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": file })]);
+      setStatusMsg("Copied PNG to clipboard.");
+      setTimeout(() => setStatusMsg(""), 2000);
+    } catch (e) {
+      console.error("Copy PNG failed", e);
+      setStatusMsg("Copy PNG failed. Try Download instead.");
+      setTimeout(() => setStatusMsg(""), 2500);
+    } finally {
+      setPngBusy(null);
+    }
   };
 
   const pickerTitle =
@@ -1472,6 +1672,32 @@ export default function ClipArtStudioRoute() {
                 <ZoomIn className="w-3.5 h-3.5" />
               </button>
             </div>
+            <button
+              type="button"
+              onClick={handleDownload}
+              disabled={pngBusy !== null}
+              className="h-8 w-8 rounded-lg border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 flex items-center justify-center transition cursor-pointer shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
+              title="Download current screen as PNG"
+            >
+              {pngBusy === "download" ? (
+                <span className="w-3.5 h-3.5 border-2 border-emerald-700 border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <Download className="w-4 h-4 text-emerald-700" />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={handleCopyPng}
+              disabled={pngBusy !== null}
+              className="h-8 w-8 rounded-lg border border-indigo-300 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 flex items-center justify-center transition cursor-pointer shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
+              title="Copy current screen as PNG"
+            >
+              {pngBusy === "copy" ? (
+                <span className="w-3.5 h-3.5 border-2 border-indigo-700 border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <ClipboardCopy className="w-4 h-4 text-indigo-700" />
+              )}
+            </button>
             <button
               type="button"
               onClick={handleBack}
@@ -1572,6 +1798,10 @@ export default function ClipArtStudioRoute() {
               onOpenMediaPickerForLayer={handleOpenMediaPickerForLayer}
               onFlipSelected={handleFlipSelected}
               onMergeSelected={openMergeModal}
+              lockOptionGeometry={
+                Boolean(selectedLayer?.linkedFieldId) &&
+                !isFreeTransformField(fields.find((f) => f.id === selectedLayer?.linkedFieldId))
+              }
             />
             <div className="flex-1 relative overflow-auto">
               <StudioCanvas
@@ -1590,6 +1820,7 @@ export default function ClipArtStudioRoute() {
                 workspaceBgColor="#ffffff"
                 fonts={fonts}
                 doodlePacks={[]}
+                useOptionGeometry="whenFree"
                 onResizeCanvas={(w, h) => {
                   setWidthPx(w);
                   setHeightPx(h);
@@ -1717,7 +1948,6 @@ export default function ClipArtStudioRoute() {
                   if (layer) handleUpdateLayer(id, { isVisible: !layer.isVisible });
                 }}
                 onDuplicate={handleDuplicateLayer}
-                onReset={handleResetGroup}
                 onDelete={handleDeleteLayer}
                 onDeleteVariant={handleDeleteVariant}
                 onReorder={(newLayers) => setLayers(newLayers)}
@@ -1728,6 +1958,7 @@ export default function ClipArtStudioRoute() {
                 onToggleHiddenField={(fieldId, hidden) => {
                   handleUpdateField(fieldId, { hiddenFromCustomer: hidden, allowPersonalized: !hidden });
                 }}
+                onToggleFreeTransform={handleToggleFreeTransform}
                 onUpdateOption={(fieldId, optId, patch) => {
                   setFields((prev) => {
                     const next = prev.map((f) => {

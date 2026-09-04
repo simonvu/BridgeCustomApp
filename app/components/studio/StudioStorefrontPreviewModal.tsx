@@ -98,6 +98,10 @@ export default function StudioStorefrontPreviewModal({
     const source = activeScreen?.fields && activeScreen.fields.length > 0 ? activeScreen.fields : fields;
     return [...source].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
   }, [activeScreen, fields]);
+  const activeRules = useMemo(() => {
+    if (Array.isArray(activeScreen?.rules)) return activeScreen.rules;
+    return rules;
+  }, [activeScreen, rules]);
 
   // Doodle Alphabet layers the customer may personalize with their own text
   const personalizableDoodleLayers = useMemo(
@@ -277,7 +281,7 @@ export default function StudioStorefrontPreviewModal({
       bgColor: activeScreen?.bgColor,
       layers: activeLayers,
       fields: activeFields,
-      rules,
+      rules: activeRules,
       formValues,
       customerPhotoUploads,
       doodleTextValues,
@@ -297,7 +301,7 @@ export default function StudioStorefrontPreviewModal({
     doodleTextValues,
     activeLayers,
     activeFields,
-    rules,
+    activeRules,
     widthPx,
     heightPx,
     fonts,
@@ -312,7 +316,7 @@ export default function StudioStorefrontPreviewModal({
   const hasMultipleScreens = screens.length > 1;
   const showViewSelector = Boolean(screenFieldConfig?.enableScreenField) || hasMultipleScreens;
 
-  const visibleFields = activeFields.filter((f) => isFieldVisibleByRules(f, rules, formValues));
+  const visibleFields = activeFields.filter((f) => isFieldVisibleByRules(f, activeRules, formValues));
 
   const goPrevScreen = () => setActiveScreenIndex((p) => (p > 0 ? p - 1 : screens.length - 1));
   const goNextScreen = () => setActiveScreenIndex((p) => (p < screens.length - 1 ? p + 1 : 0));
@@ -792,7 +796,7 @@ export default function StudioStorefrontPreviewModal({
                           {i + 1}
                         </span>
                         <span className="truncate">
-                          {field.label} {field.isRequired && <span className="text-rose-500">*</span>}
+                          {field.label} {field.isRequired !== false && <span className="text-rose-500">*</span>}
                         </span>
                       </label>
                       {field.fieldType === "TEXT" && (
@@ -805,6 +809,9 @@ export default function StudioStorefrontPreviewModal({
                         </span>
                       )}
                     </div>
+                    {field.fieldType !== "IMAGE_UPLOAD" && field.config?.helpText && (
+                      <p className="text-[11px] text-slate-500 font-medium">{field.config.helpText}</p>
+                    )}
                     {renderFieldControl(field)}
                   </div>
                 );
@@ -818,7 +825,10 @@ export default function StudioStorefrontPreviewModal({
                       {visibleFields.length + di + 1}
                     </span>
                     <Sparkles className="w-3.5 h-3.5 text-purple-500 shrink-0" />
-                    <span className="truncate">{layer.properties?.fieldLabel || "Custom Doodle Text"}</span>
+                    <span className="truncate">
+                      {layer.properties?.fieldLabel || "Custom Doodle Text"}{" "}
+                      {layer.properties?.isRequired !== false && <span className="text-rose-500">*</span>}
+                    </span>
                   </label>
                   {layer.properties?.helpText && (
                     <p className="text-[11px] text-slate-500 font-medium -mt-1">{layer.properties.helpText}</p>

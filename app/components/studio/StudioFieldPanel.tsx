@@ -268,7 +268,7 @@ export default function StudioFieldPanel({
                     <label className="flex items-center gap-1 text-[11px] cursor-pointer">
                       <input
                         type="checkbox"
-                        checked={field.isRequired}
+                        checked={field.isRequired !== false}
                         onChange={(e) => onUpdateField(field.id, { isRequired: e.target.checked })}
                         className="rounded text-blue-600 text-xs"
                       />

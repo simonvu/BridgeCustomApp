@@ -514,17 +514,45 @@ function drawClipArtPart(
   ctx.restore();
 }
 
-function loadImage(url: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
+const imageCache = new Map<string, Promise<HTMLImageElement>>();
+
+/** Shared decode so canvas layers and sandwich knockouts don't fetch the same PNG twice. */
+export function loadClipArtImage(url: string): Promise<HTMLImageElement> {
+  if (!url) return Promise.reject(new Error("empty image url"));
+  const hit = imageCache.get(url);
+  if (hit) return hit;
+  const pending = new Promise<HTMLImageElement>((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = "anonymous";
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error(`Could not load ${url}`));
+    img.decoding = "async";
+    img.onload = () => {
+      const ready = typeof img.decode === "function" ? img.decode().then(() => img).catch(() => img) : Promise.resolve(img);
+      ready.then(resolve);
+    };
+    img.onerror = () => {
+      imageCache.delete(url);
+      reject(new Error(`Could not load ${url}`));
+    };
     img.src = url;
   });
+  imageCache.set(url, pending);
+  return pending;
 }
 
-export async function rasterizeClipArtFrame(instance: ClipArtInstance): Promise<string> {
+const FRAME_CACHE_MAX = 24;
+const frameCanvasCache = new Map<string, HTMLCanvasElement>();
+
+function frameCacheKey(instance: ClipArtInstance) {
+  return `${clipArtFingerprint(instance)}_${instance.sourceWidth}x${instance.sourceHeight}`;
+}
+
+export async function rasterizeClipArtFrameToCanvas(
+  instance: ClipArtInstance
+): Promise<HTMLCanvasElement | null> {
+  const key = frameCacheKey(instance);
+  const cached = frameCanvasCache.get(key);
+  if (cached) return cached;
+
   const passes = clipArtDrawPasses(instance);
   const w = Math.max(1, Math.round(instance.sourceWidth));
   const h = Math.max(1, Math.round(instance.sourceHeight));
@@ -532,8 +560,11 @@ export async function rasterizeClipArtFrame(instance: ClipArtInstance): Promise<
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d");
-  if (!ctx) return "";
-  if (passes.length === 0) return canvas.toDataURL("image/png");
+  if (!ctx) return null;
+  if (passes.length === 0) {
+    rememberFrameCanvas(key, canvas);
+    return canvas;
+  }
 
   const urls = new Set<string>();
   passes.forEach((p) => {
@@ -545,7 +576,7 @@ export async function rasterizeClipArtFrame(instance: ClipArtInstance): Promise<
   const loaded = new Map<string, HTMLImageElement>();
   await Promise.all(
     [...urls].map(async (url) => {
-      loaded.set(url, await loadImage(url));
+      loaded.set(url, await loadClipArtImage(url));
     })
   );
 
@@ -553,7 +584,7 @@ export async function rasterizeClipArtFrame(instance: ClipArtInstance): Promise<
   punch.width = w;
   punch.height = h;
   const pctx = punch.getContext("2d");
-  if (!pctx) return "";
+  if (!pctx) return null;
 
   for (const pass of passes) {
     const img = loaded.get(pass.part.assetImageUrl || "");
@@ -573,7 +604,22 @@ export async function rasterizeClipArtFrame(instance: ClipArtInstance): Promise<
     pctx.globalCompositeOperation = "source-over";
     ctx.drawImage(punch, 0, 0);
   }
-  return canvas.toDataURL("image/png");
+  rememberFrameCanvas(key, canvas);
+  return canvas;
+}
+
+function rememberFrameCanvas(key: string, canvas: HTMLCanvasElement) {
+  if (frameCanvasCache.has(key)) return;
+  if (frameCanvasCache.size >= FRAME_CACHE_MAX) {
+    const oldest = frameCanvasCache.keys().next().value;
+    if (oldest) frameCanvasCache.delete(oldest);
+  }
+  frameCanvasCache.set(key, canvas);
+}
+
+export async function rasterizeClipArtFrame(instance: ClipArtInstance): Promise<string> {
+  const canvas = await rasterizeClipArtFrameToCanvas(instance);
+  return canvas ? canvas.toDataURL("image/png") : "";
 }
 
 export async function rasterizePunchedPlate(args: {
@@ -581,25 +627,29 @@ export async function rasterizePunchedPlate(args: {
   height: number;
   plate: ClipArtPartOption;
   knockouts: ClipArtPartOption[];
-}): Promise<string> {
+}): Promise<HTMLCanvasElement | null> {
   const w = Math.max(1, Math.round(args.width));
   const h = Math.max(1, Math.round(args.height));
+  const plateUrl = args.plate.assetImageUrl || "";
+  if (!plateUrl) return null;
+  const urls = [plateUrl, ...args.knockouts.map((k) => k.assetImageUrl || "").filter(Boolean)];
+  await Promise.all(urls.map((url) => loadClipArtImage(url)));
   const canvas = document.createElement("canvas");
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d");
-  if (!ctx) return "";
-  const img = await loadImage(args.plate.assetImageUrl || "");
+  if (!ctx) return null;
+  const img = await loadClipArtImage(plateUrl);
   drawClipArtPart(ctx, img, args.plate);
-  if (args.knockouts.length === 0) return canvas.toDataURL("image/png");
+  if (args.knockouts.length === 0) return canvas;
   ctx.globalCompositeOperation = "destination-out";
   for (const k of args.knockouts) {
     if (!k.assetImageUrl) continue;
-    const kImg = await loadImage(k.assetImageUrl);
+    const kImg = await loadClipArtImage(k.assetImageUrl);
     drawClipArtPart(ctx, kImg, k);
   }
   ctx.globalCompositeOperation = "source-over";
-  return canvas.toDataURL("image/png");
+  return canvas;
 }
 
 /**

@@ -2,8 +2,17 @@ import { useMemo, useState } from "react";
 import { Pencil, Plus, Trash2, ArrowRight, X } from "lucide-react";
 import type { ClipArtConditionClause, ClipArtConditionRule } from "../../utils/clipArtInstance";
 import { clauseValues } from "../../utils/clipArtInstance";
+import { CLIP_ART_TIPS } from "../../utils/clipArtTips";
+import FeatureTip from "./FeatureTip";
 
-type GroupOpt = { id: string; label?: string; value?: string };
+type GroupOpt = {
+  id: string;
+  label?: string;
+  value?: string;
+  swatchImageUrl?: string;
+  assetImageUrl?: string;
+  isEmpty?: boolean;
+};
 type GroupLike = { id: string; name: string; options: GroupOpt[] };
 
 interface ClipArtConditionPanelProps {
@@ -20,6 +29,31 @@ function optionLabel(opt: GroupOpt) {
 
 function optionValue(opt: GroupOpt) {
   return opt.id || opt.value || opt.label || "";
+}
+
+function optionThumbUrl(opt: GroupOpt) {
+  if (opt.isEmpty) return "";
+  return opt.swatchImageUrl || opt.assetImageUrl || "";
+}
+
+function OptionThumb({ opt }: { opt: GroupOpt }) {
+  const src = optionThumbUrl(opt);
+  if (!src) {
+    return (
+      <span
+        className="w-6 h-6 rounded bg-slate-100 border border-slate-200 shrink-0"
+        aria-hidden
+      />
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      className="w-6 h-6 rounded object-contain bg-white border border-slate-200/80 shrink-0"
+      draggable={false}
+    />
+  );
 }
 
 function emptyClause(sourceGroupId = ""): ClipArtConditionClause {
@@ -122,6 +156,13 @@ export default function ClipArtConditionPanel({
     if (values.length === 0) return "";
     return values.map((v) => optionName(clause.sourceGroupId, v)).join(" or ");
   };
+  const clauseOptions = (clause: ClipArtConditionClause) => {
+    const g = groups.find((x) => x.id === clause.sourceGroupId);
+    if (!g) return [];
+    return clauseValues(clause)
+      .map((v) => g.options.find((o) => o.id === v || o.value === v || o.label === v))
+      .filter((o): o is GroupOpt => Boolean(o));
+  };
 
   const noGroups = groups.length < 1;
   const targetChoices = useMemo(
@@ -131,8 +172,11 @@ export default function ClipArtConditionPanel({
 
   return (
     <div className="space-y-4">
-      <p className="text-[11px] text-slate-500 leading-snug">
-        Tick several options for OR (Skin is 5 or 6 or 7 or 8, hide Eyes). Use AND to require another group too.
+      <p className="text-[11px] text-slate-500 leading-snug flex items-start gap-1.5">
+        <span className="flex-1">
+          Tick several options for OR (Skin is 5 or 6 or 7 or 8, hide Eyes). Use AND to require another group too.
+        </span>
+        <FeatureTip title={CLIP_ART_TIPS.conditions.title}>{CLIP_ART_TIPS.conditions.body}</FeatureTip>
       </p>
 
       {noGroups ? (
@@ -191,7 +235,7 @@ export default function ClipArtConditionPanel({
                       <option value="NOT_EQUALS">is none of</option>
                     </select>
                   </div>
-                  <div className="rounded-lg border border-slate-200 bg-white p-2 max-h-36 overflow-y-auto">
+                  <div className="rounded-lg border border-slate-200 bg-white p-2 max-h-52 overflow-y-auto">
                     {opts.length === 0 ? (
                       <p className="text-[11px] text-slate-400">No options in this group.</p>
                     ) : (
@@ -202,7 +246,8 @@ export default function ClipArtConditionPanel({
                           return (
                             <label
                               key={opt.id}
-                              className={`inline-flex items-center gap-1 px-2 py-1 rounded-md border text-[11px] font-semibold cursor-pointer ${
+                              title={optionLabel(opt)}
+                              className={`inline-flex items-center gap-1.5 pl-1 pr-2 py-0.5 rounded-md border text-[11px] font-semibold cursor-pointer max-w-full ${
                                 checked
                                   ? "bg-amber-50 border-amber-300 text-amber-900"
                                   : "bg-white border-slate-200 text-slate-600 hover:border-slate-300"
@@ -212,9 +257,10 @@ export default function ClipArtConditionPanel({
                                 type="checkbox"
                                 checked={checked}
                                 onChange={() => toggleValue(idx, val)}
-                                className="w-3 h-3 accent-amber-600 cursor-pointer"
+                                className="w-3 h-3 accent-amber-600 cursor-pointer shrink-0"
                               />
-                              {optionLabel(opt)}
+                              <OptionThumb opt={opt} />
+                              <span className="truncate max-w-[110px]">{optionLabel(opt)}</span>
                             </label>
                           );
                         })}
@@ -310,8 +356,26 @@ export default function ClipArtConditionPanel({
                       {groupName(c.sourceGroupId)}
                     </span>
                     <span className="text-slate-400">{c.operator === "NOT_EQUALS" ? "≠" : "="}</span>
-                    <span className="bg-amber-50 text-amber-900 px-1.5 py-0.5 rounded font-bold border border-amber-200 truncate max-w-[220px]">
-                      {optionNames(c)}
+                    <span
+                      className="inline-flex items-center gap-1 bg-amber-50 text-amber-900 px-1.5 py-0.5 rounded font-bold border border-amber-200 min-w-0 max-w-[260px]"
+                      title={optionNames(c)}
+                    >
+                      <span className="inline-flex items-center shrink-0">
+                        {clauseOptions(c)
+                          .slice(0, 4)
+                          .map((opt) =>
+                            optionThumbUrl(opt) ? (
+                              <img
+                                key={opt.id}
+                                src={optionThumbUrl(opt)}
+                                alt=""
+                                className="w-4 h-4 rounded object-contain bg-white border border-amber-200 -ml-0.5 first:ml-0"
+                                draggable={false}
+                              />
+                            ) : null
+                          )}
+                      </span>
+                      <span className="truncate">{optionNames(c)}</span>
                     </span>
                   </span>
                 ))}

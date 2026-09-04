@@ -1,3 +1,5 @@
+import { loadClipArtImage } from "./clipArtInstance";
+
 export interface DoodleLetterMapping {
   char: string;
   imageUrl: string;
@@ -29,8 +31,66 @@ export interface DoodleCompositeLetter {
   height: number;
 }
 
-// Memory Cache for Trimmed Transparent Canvases
+export interface DoodleStyleAssignment {
+  char: string;
+  style: DoodleStyleItem;
+  imageUrl: string | null;
+}
+
+export interface DoodleLetterPlacement {
+  left: number;
+  top: number;
+  displayW: number;
+  displayH: number;
+}
+
+const TRIM_CACHE_MAX = 120;
 const trimmedImageCache = new Map<string, HTMLCanvasElement>();
+const trimmedPending = new Map<string, Promise<HTMLCanvasElement | null>>();
+
+const ASSIGNMENT_CACHE_MAX = 40;
+const assignmentCache = new Map<string, DoodleStyleAssignment[]>();
+
+const styleLetterIndex = new WeakMap<DoodleStyleItem, Map<string, DoodleLetterMapping>>();
+
+function rememberLru<K, V>(cache: Map<K, V>, key: K, value: V, max: number) {
+  if (cache.has(key)) cache.delete(key);
+  cache.set(key, value);
+  if (cache.size > max) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+}
+
+function peekLru<K, V>(cache: Map<K, V>, key: K): V | undefined {
+  const hit = cache.get(key);
+  if (hit === undefined) return undefined;
+  cache.delete(key);
+  cache.set(key, hit);
+  return hit;
+}
+
+function rowHasOpaque(data: Uint8ClampedArray, origW: number, y: number): boolean {
+  const row = y * origW * 4;
+  const end = row + origW * 4;
+  for (let i = row + 3; i < end; i += 4) {
+    if (data[i] > 10) return true;
+  }
+  return false;
+}
+
+function colHasOpaque(
+  data: Uint8ClampedArray,
+  origW: number,
+  x: number,
+  y0: number,
+  y1: number
+): boolean {
+  for (let y = y0; y <= y1; y++) {
+    if (data[(y * origW + x) * 4 + 3] > 10) return true;
+  }
+  return false;
+}
 
 /**
  * Auto-crops transparent padding around an image element/canvas
@@ -50,33 +110,26 @@ export function trimTransparentCanvas(
   if (!ctx) return tempCanvas;
 
   ctx.drawImage(imgEl, 0, 0);
-  const imgData = ctx.getImageData(0, 0, origW, origH);
-  const data = imgData.data;
+  const data = ctx.getImageData(0, 0, origW, origH).data;
 
-  let minX = origW;
-  let minY = origH;
-  let maxX = -1;
-  let maxY = -1;
+  let minY = 0;
+  while (minY < origH && !rowHasOpaque(data, origW, minY)) minY++;
+  let maxY = origH - 1;
+  while (maxY >= minY && !rowHasOpaque(data, origW, maxY)) maxY--;
 
-  for (let y = 0; y < origH; y++) {
-    for (let x = 0; x < origW; x++) {
-      const alpha = data[(y * origW + x) * 4 + 3];
-      if (alpha > 10) {
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
+  if (minY > maxY) return tempCanvas;
 
-  // If entire image is empty or invalid, return original
-  if (maxX < minX || maxY < minY) {
-    return tempCanvas;
-  }
+  let minX = 0;
+  while (minX < origW && !colHasOpaque(data, origW, minX, minY, maxY)) minX++;
+  let maxX = origW - 1;
+  while (maxX >= minX && !colHasOpaque(data, origW, maxX, minY, maxY)) maxX--;
 
   const cropW = maxX - minX + 1;
   const cropH = maxY - minY + 1;
+
+  if (cropW === origW && cropH === origH && minX === 0 && minY === 0) {
+    return tempCanvas;
+  }
 
   const trimmedCanvas = document.createElement("canvas");
   trimmedCanvas.width = cropW;
@@ -90,30 +143,137 @@ export function trimTransparentCanvas(
   return trimmedCanvas;
 }
 
+export function getCachedTrimmedImage(url: string): HTMLCanvasElement | undefined {
+  if (!url) return undefined;
+  return peekLru(trimmedImageCache, url);
+}
+
 /**
  * Loads an image from URL and automatically trims transparent padding
  */
 export function loadAndTrimImage(url: string): Promise<HTMLCanvasElement | null> {
   if (!url) return Promise.resolve(null);
-  if (trimmedImageCache.has(url)) {
-    return Promise.resolve(trimmedImageCache.get(url)!);
+  const cached = peekLru(trimmedImageCache, url);
+  if (cached) return Promise.resolve(cached);
+  const inflight = trimmedPending.get(url);
+  if (inflight) return inflight;
+  const p = loadClipArtImage(url)
+    .then((img) => {
+      const trimmed = trimTransparentCanvas(img);
+      rememberLru(trimmedImageCache, url, trimmed, TRIM_CACHE_MAX);
+      return trimmed;
+    })
+    .catch(() => null)
+    .finally(() => {
+      trimmedPending.delete(url);
+    });
+  trimmedPending.set(url, p);
+  return p;
+}
+
+export function collectDoodleLetterUrls(assignments: DoodleStyleAssignment[]): string[] {
+  const seen = new Set<string>();
+  const urls: string[] = [];
+  for (let i = 0; i < assignments.length; i++) {
+    const url = assignments[i].imageUrl;
+    if (url && !seen.has(url)) {
+      seen.add(url);
+      urls.push(url);
+    }
+  }
+  return urls;
+}
+
+export function preloadDoodleLetterImages(assignments: DoodleStyleAssignment[]): Promise<void> {
+  const urls = collectDoodleLetterUrls(assignments);
+  if (urls.length === 0) return Promise.resolve();
+  return Promise.all(urls.map((url) => loadAndTrimImage(url))).then(() => undefined);
+}
+
+export function layoutDoodleAlphabetRow(
+  slots: Array<{ width: number; height: number } | null>,
+  opts: {
+    renderWidth: number;
+    renderHeight: number;
+    letterSpacing: number;
+    autoFitContainer: boolean;
+    align?: string;
+  }
+): Array<DoodleLetterPlacement | null> {
+  const renderWidth = opts.renderWidth;
+  const renderHeight = opts.renderHeight;
+  const letterSpacing = opts.letterSpacing;
+  const autoFitContainer = opts.autoFitContainer;
+  const align = opts.align || "center";
+  const baseMaxLetterH = renderHeight * 0.85;
+
+  const scaled: Array<{ w: number; h: number } | null> = new Array(slots.length);
+  let letterCount = 0;
+  let rawTotalW = 0;
+
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i];
+    if (!slot) {
+      scaled[i] = null;
+      rawTotalW += baseMaxLetterH * 0.5 + letterSpacing;
+      continue;
+    }
+    const origW = slot.width || 100;
+    const origH = slot.height || 100;
+    const letterW = origW * (baseMaxLetterH / origH);
+    scaled[i] = { w: letterW, h: baseMaxLetterH };
+    rawTotalW += letterW + letterSpacing;
+    letterCount++;
+  }
+  if (letterCount > 0) rawTotalW -= letterSpacing;
+
+  let fitScale = 1;
+  if (autoFitContainer && rawTotalW > renderWidth) {
+    fitScale = renderWidth / Math.max(1, rawTotalW);
   }
 
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      try {
-        const trimmed = trimTransparentCanvas(img);
-        trimmedImageCache.set(url, trimmed);
-        resolve(trimmed);
-      } catch (err) {
-        resolve(null);
-      }
+  const finalLetterSpacing = letterSpacing * fitScale;
+  const finalMaxLetterH = baseMaxLetterH * fitScale;
+
+  let finalTotalW = 0;
+  const fitted: Array<{ w: number; h: number } | null> = new Array(slots.length);
+  for (let i = 0; i < scaled.length; i++) {
+    const item = scaled[i];
+    if (!item) {
+      fitted[i] = null;
+      finalTotalW += finalMaxLetterH * 0.5 + finalLetterSpacing;
+      continue;
+    }
+    const w = item.w * fitScale;
+    const h = item.h * fitScale;
+    fitted[i] = { w, h };
+    finalTotalW += w + finalLetterSpacing;
+  }
+  if (letterCount > 0) finalTotalW -= finalLetterSpacing;
+
+  let startX = -finalTotalW / 2;
+  if (align === "left") startX = -renderWidth / 2 + 10;
+  else if (align === "right") startX = renderWidth / 2 - finalTotalW - 10;
+
+  let currentX = startX;
+  const placements: Array<DoodleLetterPlacement | null> = new Array(slots.length);
+  for (let i = 0; i < fitted.length; i++) {
+    const item = fitted[i];
+    if (!item) {
+      placements[i] = null;
+      currentX += finalMaxLetterH * 0.5 + finalLetterSpacing;
+      continue;
+    }
+    placements[i] = {
+      left: currentX + item.w / 2,
+      top: 0,
+      displayW: item.w,
+      displayH: item.h,
     };
-    img.onerror = () => resolve(null);
-    img.src = url;
-  });
+    currentX += item.w + finalLetterSpacing;
+  }
+
+  return placements;
 }
 
 // Pseudo-random seed generator
@@ -122,28 +282,40 @@ function seededRandom(seed: number) {
   return x - Math.floor(x);
 }
 
+function firstLetterByChar(style: DoodleStyleItem): Map<string, DoodleLetterMapping> {
+  let map = styleLetterIndex.get(style);
+  if (map) return map;
+  map = new Map();
+  const letters = style.letters || [];
+  for (let i = 0; i < letters.length; i++) {
+    const l = letters[i];
+    if (l?.char && !map.has(l.char)) {
+      map.set(l.char, l);
+    }
+  }
+  styleLetterIndex.set(style, map);
+  return map;
+}
+
 export function getDoodleLetterForChar(
   char: string,
   style: DoodleStyleItem
 ): string | null {
   if (!style || !style.letters || style.letters.length === 0) return null;
 
-  // 1. Exact match
-  const exact = style.letters.find((l) => l.char === char);
+  const byChar = firstLetterByChar(style);
+
+  const exact = byChar.get(char);
   if (exact?.imageUrl) return exact.imageUrl;
 
-  // 2. Case fallback (uppercase for lowercase or vice-versa)
   const isLower = char === char.toLowerCase();
   const altChar = isLower ? char.toUpperCase() : char.toLowerCase();
-  const alt = style.letters.find((l) => l.char === altChar);
+  const alt = byChar.get(altChar);
   if (alt?.imageUrl) return alt.imageUrl;
 
-  // 3. Uppercase A-Z fallback
-  const upper = char.toUpperCase();
-  const upperObj = style.letters.find((l) => l.char === upper);
-  if (upperObj?.imageUrl) return upperObj.imageUrl;
+  const upper = byChar.get(char.toUpperCase());
+  if (upper?.imageUrl) return upper.imageUrl;
 
-  // 4. Any letter fallback in style
   return style.letters[0]?.imageUrl || null;
 }
 
@@ -227,19 +399,54 @@ function buildBalancedStyleSequence(
   return sequence;
 }
 
+function assignmentCacheKey(
+  text: string,
+  pack: DoodlePackItem,
+  rule: string,
+  fixedStyleId: string | undefined,
+  seed: number
+): string {
+  const styles = pack.styles || [];
+  let styleFp = pack.id || "";
+  for (let i = 0; i < styles.length; i++) {
+    const s = styles[i];
+    styleFp += `|${s.id}`;
+    const letters = s.letters || [];
+    for (let j = 0; j < letters.length; j++) {
+      styleFp += `,${letters[j].char}=${letters[j].imageUrl || ""}`;
+    }
+  }
+  return `${styleFp}\n${text}\n${rule}\n${fixedStyleId || ""}\n${seed}`;
+}
+
 export function resolveDoodleStyleAssignments(
   text: string,
   pack: DoodlePackItem,
   rule: "RANDOM_SHUFFLE" | "CYCLE_PATTERN" | "SEED_SHUFFLE" | "FIXED_STYLE",
   fixedStyleId?: string,
   seed: number = 12345
-): { char: string; style: DoodleStyleItem; imageUrl: string | null }[] {
+): DoodleStyleAssignment[] {
   if (!pack || !pack.styles || pack.styles.length === 0) return [];
 
-  const styles = pack.styles;
-  const result: { char: string; style: DoodleStyleItem; imageUrl: string | null }[] = [];
+  const key = assignmentCacheKey(text, pack, rule, fixedStyleId, seed);
+  const cached = peekLru(assignmentCache, key);
+  if (cached) return cached;
 
-  // Count non-space characters
+  const result = resolveDoodleStyleAssignmentsUncached(text, pack, rule, fixedStyleId, seed);
+  rememberLru(assignmentCache, key, result, ASSIGNMENT_CACHE_MAX);
+  return result;
+}
+
+function resolveDoodleStyleAssignmentsUncached(
+  text: string,
+  pack: DoodlePackItem,
+  rule: "RANDOM_SHUFFLE" | "CYCLE_PATTERN" | "SEED_SHUFFLE" | "FIXED_STYLE",
+  fixedStyleId?: string,
+  seed: number = 12345
+): DoodleStyleAssignment[] {
+  const styles = pack.styles;
+  const result: DoodleStyleAssignment[] = [];
+
   let nonSpaceCount = 0;
   for (let i = 0; i < text.length; i++) {
     if (text[i] !== " ") nonSpaceCount++;

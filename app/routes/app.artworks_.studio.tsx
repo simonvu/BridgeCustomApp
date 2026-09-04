@@ -17,7 +17,6 @@ import {
   ChevronDown,
   X,
   Download,
-  Package,
   GitBranch,
 } from "lucide-react";
 import DashboardLayout from "../components/DashboardLayout";
@@ -41,6 +40,10 @@ import {
   buildDefaultFieldConfig,
   defaultDisplayType,
   defaultFieldLabel,
+  flattenRuleForStorage,
+  isConditionOnlyField,
+  isOptionFieldType,
+  seedListItemGeometry,
   type StudioFieldItem,
   type StudioConditionRuleItem,
 } from "../utils/fieldHelpers";
@@ -192,24 +195,39 @@ export default function ArtworkStudioRoute() {
     },
   ];
 
-  // MULTI-SCREEN STATE (Each screen has its OWN independent layers & custom fields!)
+  // MULTI-SCREEN STATE (Each screen has its OWN independent layers, fields & conditions)
   const [screens, setScreens] = useState<StudioScreenItem[]>(() => {
+    const globalRules: StudioConditionRuleItem[] = artworkData?.rules || [];
+    const rulesForScreen = (screen: any): StudioConditionRuleItem[] => {
+      if (Array.isArray(screen.rules)) return screen.rules;
+      const fieldIds = new Set((screen.fields || []).map((f: any) => f.id));
+      return globalRules.filter((r) => fieldIds.has(r.sourceFieldId));
+    };
+
     if (artworkData?.screens) {
       try {
         const parsed = typeof artworkData.screens === "string" ? JSON.parse(artworkData.screens) : artworkData.screens;
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((s: any) => ({
-            ...s,
-            layers: (s.layers || []).map((l: any) => {
-              const props = typeof l.properties === "string" ? JSON.parse(l.properties) : (l.properties || {});
-              return {
-                ...l,
-                properties: props,
-                maskLayerId: l.maskLayerId || props.maskLayerId,
-                parentPhotoUploadId: l.parentPhotoUploadId || props.parentPhotoUploadId,
-              };
-            }),
-          }));
+          return parsed.map((s: any) => {
+            const fields = (s.fields || []).map((f: any) => ({
+              ...f,
+              config: typeof f.config === "string" ? JSON.parse(f.config) : f.config || {},
+            }));
+            const next = {
+              ...s,
+              fields,
+              layers: (s.layers || []).map((l: any) => {
+                const props = typeof l.properties === "string" ? JSON.parse(l.properties) : (l.properties || {});
+                return {
+                  ...l,
+                  properties: props,
+                  maskLayerId: l.maskLayerId || props.maskLayerId,
+                  parentPhotoUploadId: l.parentPhotoUploadId || props.parentPhotoUploadId,
+                };
+              }),
+            };
+            return { ...next, rules: rulesForScreen(next) };
+          });
         }
       } catch (e) {
         console.error("Failed to parse saved artwork screens JSON:", e);
@@ -267,6 +285,7 @@ export default function ArtworkStudioRoute() {
         sortOrder: 0,
         layers: initialLayers,
         fields: initialFields,
+        rules: globalRules,
       },
     ];
   });
@@ -286,29 +305,9 @@ export default function ArtworkStudioRoute() {
   const activeScreen = screens.find((s) => s.id === activeScreenId) || screens[0];
   const layers = activeScreen?.layers || [];
   const fields = activeScreen?.fields || [];
-
-  const [rules, setRules] = useState<StudioConditionRuleItem[]>(artworkData?.rules || []);
-  const [conditionsModalOpen, setConditionsModalOpen] = useState(false);
-
-  const handleAddRule = (rule: Omit<StudioConditionRuleItem, "id">) => {
-    const newRule: StudioConditionRuleItem = {
-      ...rule,
-      id: `rule_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    };
-    setRules((prev) => [...prev, newRule]);
-    setIsDirty(true);
-  };
-
-  const handleDeleteRule = (ruleId: string) => {
-    setRules((prev) => prev.filter((r) => r.id !== ruleId));
-    setIsDirty(true);
-  };
-
-  // Condition rules that belong to the active screen (their source field lives here)
-  const activeScreenRules = useMemo(() => {
-    const ids = new Set(fields.map((f) => f.id));
-    return rules.filter((r) => ids.has(r.sourceFieldId));
-  }, [rules, fields]);
+  const rules: StudioConditionRuleItem[] = activeScreen?.rules || [];
+  const [conditionsOpen, setConditionsOpen] = useState(false);
+  const [conditionDraft, setConditionDraft] = useState<StudioConditionRuleItem[]>([]);
 
   const [selectedLayerIds, setSelectedLayerIds] = useState<string[]>(() => (layers[0]?.id ? [layers[0].id] : []));
 
@@ -810,6 +809,7 @@ export default function ArtworkStudioRoute() {
       sortOrder: screens.length,
       layers: [],
       fields: [],
+      rules: [],
     };
     const nextScreens = [...screens, newScreen];
     setScreens(nextScreens);
@@ -831,11 +831,31 @@ export default function ArtworkStudioRoute() {
       };
     });
 
-    const duplicatedLayers = (targetScreen.layers || []).map((l) => ({
-      ...l,
-      id: `layer_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
-      linkedFieldId: l.linkedFieldId ? (fieldIdMap.get(l.linkedFieldId) || l.linkedFieldId) : undefined,
-    }));
+    const layerIdMap = new Map<string, string>();
+    const duplicatedLayers = (targetScreen.layers || []).map((l) => {
+      const newLayerId = `layer_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`;
+      layerIdMap.set(l.id, newLayerId);
+      return {
+        ...l,
+        id: newLayerId,
+        linkedFieldId: l.linkedFieldId ? (fieldIdMap.get(l.linkedFieldId) || l.linkedFieldId) : undefined,
+      };
+    });
+
+    const remapTarget = (id: string) => fieldIdMap.get(id) || layerIdMap.get(id) || id;
+    const duplicatedRules = (targetScreen.rules || []).map((r: StudioConditionRuleItem, idx: number) => {
+      const when = (r.when || []).map((c) => ({
+        ...c,
+        sourceFieldId: fieldIdMap.get(c.sourceFieldId) || c.sourceFieldId,
+      }));
+      return flattenRuleForStorage({
+        ...r,
+        id: `rule_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 6)}`,
+        sourceFieldId: fieldIdMap.get(r.sourceFieldId) || r.sourceFieldId,
+        targetId: remapTarget(r.targetId),
+        when: when.length ? when : r.when,
+      });
+    });
 
     const duplicatedScreenId = `screen_${Date.now()}`;
     const duplicatedScreen: StudioScreenItem = {
@@ -845,6 +865,7 @@ export default function ArtworkStudioRoute() {
       sortOrder: screens.length,
       layers: duplicatedLayers,
       fields: duplicatedFields,
+      rules: duplicatedRules,
     };
 
     const nextScreens = [...screens, duplicatedScreen];
@@ -976,7 +997,7 @@ export default function ArtworkStudioRoute() {
           screenFieldConfig,
           layers: sanitizedActiveLayers,
           fields,
-          rules,
+          rules: updatedScreens.flatMap((s) => (s.rules || []).map((r: StudioConditionRuleItem) => flattenRuleForStorage(r))),
         }),
       });
 
@@ -1070,6 +1091,8 @@ export default function ArtworkStudioRoute() {
         isRequired: true,
         allowPersonalized: true,
         config: {
+          isConditionOnly: false,
+          helpText: "",
           options: [
             { id: `item_${nowStamp}_1`, label: "Item 1", value: "item_1", swatchImageUrl: "", assetImageUrl: "" },
             { id: `item_${nowStamp}_2`, label: "Item 2", value: "item_2", swatchImageUrl: "", assetImageUrl: "" },
@@ -1120,7 +1143,7 @@ export default function ArtworkStudioRoute() {
       isVisible: true,
       isLocked: false,
       properties: type === "TEXT"
-        ? { text: "Sample Text", fontFamily: "Roboto", fontSize: 36, fontWeight: "normal", fontStyle: "normal", color: "#1e293b", align: "center", verticalAlign: "middle", autoFit: true, minCharacters: 3, maxCharacters: 50, disallowSpecialChars: false }
+        ? { text: "Sample Text", fontFamily: "Roboto", fontSize: 36, fontWeight: "normal", fontStyle: "normal", color: "#1e293b", align: "center", verticalAlign: "middle", autoFit: true, minCharacters: 3, maxCharacters: 50, disallowSpecialChars: false, allowPersonalized: true, isRequired: true, helpText: "" }
         : type === "ASSET"
         ? { opacity: 1 }
         : type === "PHOTO_UPLOAD"
@@ -1128,6 +1151,7 @@ export default function ArtworkStudioRoute() {
             fieldLabel: "Upload Your Photo",
             helpText: "High resolution JPG or PNG recommended",
             isRequired: true,
+            allowPersonalized: true,
             maskShape: "RECTANGLE",
             enableZoom: true,
             enableRotate: true,
@@ -1148,6 +1172,7 @@ export default function ArtworkStudioRoute() {
             allowPersonalized: true,
             fieldLabel: "Custom Doodle Text",
             helpText: "Type text to render custom doodle font art",
+            isRequired: true,
           }
         : type === "WORD_SEARCH_PUZZLE"
         ? {
@@ -1164,6 +1189,9 @@ export default function ArtworkStudioRoute() {
             gridFontFamily: "Roboto",
             gridFontSize: 22,
             gridTextColor: "#FFFFFF",
+            allowPersonalized: true,
+            isRequired: true,
+            helpText: "",
           }
         : {},
     };
@@ -1281,7 +1309,7 @@ export default function ArtworkStudioRoute() {
         const nextLayers = currentLayers.map((l) => (l.id === layerId ? { ...l, ...updatedProps } : l));
         let nextFields = currentFields;
 
-        // Atomic Sync: If linked to a field and position/size properties change, update option atomically!
+        // Per-item canvas transform: write size/position onto the active list option.
         if (
           targetLayer.linkedFieldId &&
           (updatedProps.posX !== undefined ||
@@ -1292,6 +1320,7 @@ export default function ArtworkStudioRoute() {
         ) {
           nextFields = currentFields.map((f) => {
             if (f.id !== targetLayer.linkedFieldId) return f;
+            if (!isOptionFieldType(f.fieldType) || isConditionOnlyField(f)) return f;
 
             const config = f.config || {};
             const opts: any[] = config.options || [];
@@ -1309,6 +1338,7 @@ export default function ArtworkStudioRoute() {
                 width: updatedProps.width !== undefined ? updatedProps.width : (curOpt.width ?? targetLayer.width),
                 height: updatedProps.height !== undefined ? updatedProps.height : (curOpt.height ?? targetLayer.height),
                 rotation: updatedProps.rotation !== undefined ? updatedProps.rotation : (curOpt.rotation ?? targetLayer.rotation ?? 0),
+                hasCustomPosition: true,
               };
               return { ...f, config: { ...config, options: updatedOpts } };
             }
@@ -1447,7 +1477,7 @@ export default function ArtworkStudioRoute() {
       fieldType,
       displayType: defaultDisplayType(fieldType),
       sortOrder: fields.length,
-      isRequired: false,
+      isRequired: true,
       allowPersonalized: true,
       config: buildDefaultFieldConfig(fieldType),
     };
@@ -1491,12 +1521,16 @@ export default function ArtworkStudioRoute() {
               minCharacters: 0,
               maxCharacters: 50,
               disallowSpecialChars: false,
+              allowPersonalized: true,
+              isRequired: true,
+              helpText: "",
             }
           : fieldType === "IMAGE_UPLOAD"
           ? {
               fieldLabel: newFieldLabel,
               helpText: "High resolution JPG or PNG recommended",
-              isRequired: false,
+              isRequired: true,
+              allowPersonalized: true,
               maskShape: "RECTANGLE",
               enableZoom: true,
               enableRotate: true,
@@ -1534,6 +1568,7 @@ export default function ArtworkStudioRoute() {
                 disallowSpecialChars: cfg.disallowSpecialChars ?? l.properties?.disallowSpecialChars,
                 allowMultiline: cfg.allowMultiline ?? l.properties?.allowMultiline,
                 maxLines: cfg.maxLines ?? l.properties?.maxLines,
+                helpText: cfg.helpText ?? l.properties?.helpText,
                 ...(cfg.defaultText ? { text: cfg.defaultText } : {}),
               },
             };
@@ -1622,47 +1657,33 @@ function detectCleanNameFromFileName(fileName: string): string {
   };
 
   const handlePreviewOptionChoice = (fieldId: string, option: any) => {
-    let linkedLayer = layers.find((l) => l.linkedFieldId === fieldId);
-    if (!linkedLayer) {
-      const field = fields.find((f) => f.id === fieldId);
-      const newZ = layers.length > 0 ? Math.max(...layers.map((l) => l.zIndex)) + 1 : 1;
-      const newLayer: CanvasLayerItem = {
-        id: `layer_${Date.now()}`,
-        name: field?.label || "Linked Layer",
-        layerType: field?.fieldType === "TEXT" ? "TEXT" : "ASSET",
-        zIndex: newZ,
-        posX: option.posX !== undefined ? option.posX : 300,
-        posY: option.posY !== undefined ? option.posY : 200,
-        width: option.width !== undefined ? option.width : 350,
-        height: option.height !== undefined ? option.height : 350,
-        rotation: option.rotation !== undefined ? option.rotation : 0,
-        isVisible: true,
-        isLocked: false,
-        linkedFieldId: fieldId,
-        properties: {
-          assetUrl: option.assetImageUrl || "",
-        },
-      };
-      setLayers((prev) => [...prev, newLayer]);
-      setSelectedLayerId(newLayer.id);
-    } else {
-      const updatedProps: Partial<CanvasLayerItem> = {
-        properties: {
-          ...(linkedLayer.properties || {}),
-          assetUrl: option.assetImageUrl || linkedLayer.properties?.assetUrl,
-        },
-      };
+    const field = fields.find((f) => f.id === fieldId);
+    if (isConditionOnlyField(field)) return;
 
-      if (option.hasCustomPosition) {
-        if (option.posX !== undefined) updatedProps.posX = option.posX;
-        if (option.posY !== undefined) updatedProps.posY = option.posY;
-        if (option.width !== undefined) updatedProps.width = option.width;
-        if (option.height !== undefined) updatedProps.height = option.height;
-        if (option.rotation !== undefined) updatedProps.rotation = option.rotation;
-      }
+    const linkedLayer = layers.find((l) => l.linkedFieldId === fieldId);
+    if (linkedLayer) return;
 
-      handleUpdateLayer(linkedLayer.id, updatedProps);
-    }
+    const newZ = layers.length > 0 ? Math.max(...layers.map((l) => l.zIndex)) + 1 : 1;
+    const geom = seedListItemGeometry(option);
+    const newLayer: CanvasLayerItem = {
+      id: `layer_${Date.now()}`,
+      name: field?.label || "Linked Layer",
+      layerType: field?.fieldType === "TEXT" ? "TEXT" : "ASSET",
+      zIndex: newZ,
+      posX: geom.posX ?? 300,
+      posY: geom.posY ?? 200,
+      width: geom.width ?? 350,
+      height: geom.height ?? 350,
+      rotation: geom.rotation ?? 0,
+      isVisible: true,
+      isLocked: false,
+      linkedFieldId: fieldId,
+      properties: {
+        assetUrl: option.assetImageUrl || "",
+      },
+    };
+    setLayers((prev) => [...prev, newLayer]);
+    setSelectedLayerId(newLayer.id);
   };
 
   const handleSelectMediaAssets = async (selectedFiles: any[]) => {
@@ -1671,17 +1692,13 @@ function detectCleanNameFromFileName(fileName: string): string {
 
     if (pickerTarget.type === "BATCH_OPTIONS" && pickerTarget.fieldId) {
       const field = fields.find((f) => f.id === pickerTarget.fieldId);
-      if (field) {
+      if (field && !isConditionOnlyField(field)) {
         const config = field.config || {};
         const existingOpts = [...(config.options || [])];
         const item1 = existingOpts[0];
 
         const refLayer = layers.find((l) => l.linkedFieldId === field.id);
-        const firstPosX = item1?.posX !== undefined ? item1.posX : refLayer?.posX || 100;
-        const firstPosY = item1?.posY !== undefined ? item1.posY : refLayer?.posY || 100;
-        const firstWidth = item1?.width !== undefined ? item1.width : 300;
-        const firstRotation = item1?.rotation !== undefined ? item1.rotation : refLayer?.rotation || 0;
-        const firstOpacity = item1?.opacity !== undefined ? item1.opacity : refLayer?.properties?.opacity ?? 1;
+        const geom = seedListItemGeometry(item1, refLayer);
 
         const newOptions: any[] = [];
 
@@ -1701,7 +1718,7 @@ function detectCleanNameFromFileName(fileName: string): string {
             img.onload = () => {
               const natW = img.naturalWidth || 300;
               const natH = img.naturalHeight || 300;
-              resH(Math.max(10, Math.round(firstWidth / (natW / natH))));
+              resH(Math.max(10, Math.round((geom.width || 300) / (natW / natH))));
             };
             img.onerror = () => resH(300);
           });
@@ -1714,12 +1731,13 @@ function detectCleanNameFromFileName(fileName: string): string {
             value: valueStr,
             swatchImageUrl: autoSwatchUrl || fileUrl,
             assetImageUrl: fileUrl,
-            posX: firstPosX,
-            posY: firstPosY,
-            width: firstWidth,
+            posX: geom.posX,
+            posY: geom.posY,
+            width: geom.width,
             height: calcH,
-            rotation: firstRotation,
-            opacity: firstOpacity,
+            rotation: geom.rotation,
+            opacity: geom.opacity,
+            hasCustomPosition: true,
             isVisible: true,
           });
         }
@@ -1804,13 +1822,15 @@ function detectCleanNameFromFileName(fileName: string): string {
         if (targetOpt) {
           const isSwatch = pickerTarget.optionTargetType === "SWATCH";
           if (!isSwatch) {
+            const refLayer = layers.find((l) => l.linkedFieldId === field.id);
+            const geom = seedListItemGeometry(targetOpt, refLayer);
             const img = new Image();
             img.crossOrigin = "anonymous";
             img.src = firstUrl;
             img.onload = async () => {
               const natW = img.naturalWidth || 300;
               const natH = img.naturalHeight || 300;
-              const currentW = targetOpt.width || 300;
+              const currentW = geom.width || 300;
               const calcH = Math.max(10, Math.round(currentW / (natW / natH)));
 
               let autoSwatchUrl = targetOpt.swatchImageUrl;
@@ -1820,13 +1840,14 @@ function detectCleanNameFromFileName(fileName: string): string {
 
               options[pickerTarget.optionIndex] = {
                 ...targetOpt,
+                ...geom,
                 assetImageUrl: firstUrl,
                 swatchImageUrl: autoSwatchUrl || firstUrl,
                 width: currentW,
                 height: calcH,
+                hasCustomPosition: true,
               };
               handleUpdateField(field.id, { config: { ...config, options } });
-              handlePreviewOptionChoice(field.id, options[pickerTarget.optionIndex]);
             };
             img.onerror = async () => {
               let autoSwatchUrl = targetOpt.swatchImageUrl;
@@ -1835,11 +1856,12 @@ function detectCleanNameFromFileName(fileName: string): string {
               }
               options[pickerTarget.optionIndex] = {
                 ...targetOpt,
+                ...geom,
                 assetImageUrl: firstUrl,
                 swatchImageUrl: autoSwatchUrl || firstUrl,
+                hasCustomPosition: true,
               };
               handleUpdateField(field.id, { config: { ...config, options } });
-              handlePreviewOptionChoice(field.id, options[pickerTarget.optionIndex]);
             };
           } else {
             options[pickerTarget.optionIndex] = {
@@ -1924,29 +1946,6 @@ function detectCleanNameFromFileName(fileName: string): string {
                 title="Live Preview & Customer Customization Form"
               >
                 <Eye className="w-3.5 h-3.5" />
-              </button>
-
-              {/* Insert Clip Art Button */}
-              <button
-                type="button"
-                onClick={() => setClipArtInsertOpen(true)}
-                className="px-2 h-6 rounded flex items-center justify-center transition cursor-pointer text-emerald-700 hover:bg-emerald-50 bg-emerald-50/50 border border-emerald-200"
-                title="Insert a Clip Art asset as one layer"
-              >
-                <Package className="w-3.5 h-3.5" />
-              </button>
-
-              {/* Conditional Logic Rules Button */}
-              <button
-                type="button"
-                onClick={() => setConditionsModalOpen(true)}
-                className="relative px-2 h-6 rounded flex items-center gap-1 justify-center transition cursor-pointer text-amber-700 hover:bg-amber-50 bg-amber-50/50 border border-amber-200"
-                title="Conditional Logic Rules (show/hide fields & layers)"
-              >
-                <GitBranch className="w-3.5 h-3.5" />
-                {rules.length > 0 && (
-                  <span className="text-[10px] font-extrabold leading-none">{rules.length}</span>
-                )}
               </button>
 
               <div className="w-[1px] h-3.5 bg-slate-300 mx-0.5" />
@@ -2223,6 +2222,11 @@ function detectCleanNameFromFileName(fileName: string): string {
                   onReorderLayers={(newLayers) => setLayers(() => newLayers)}
                   onReloadClipArt={handleReloadClipArt}
                   reloadingClipArtLayerId={reloadingClipArtLayerId}
+                  onOpenConditions={() => {
+                    setConditionDraft(JSON.parse(JSON.stringify(rules || [])));
+                    setConditionsOpen(true);
+                  }}
+                  conditionCount={rules.length}
                 />
               </div>
 
@@ -2631,51 +2635,78 @@ function detectCleanNameFromFileName(fileName: string): string {
       />
 
       {/* Conditional Logic Rules Modal */}
-      {conditionsModalOpen && (
+      {conditionsOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs p-4">
-          <div className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-3xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+          <div className="bg-white rounded-xl shadow-2xl border border-gray-200 w-full max-w-3xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 flex flex-col max-h-[90vh]">
+            <div className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
                 <div className="p-1.5 bg-amber-50 text-amber-600 rounded-lg">
                   <GitBranch className="w-4 h-4" />
                 </div>
                 <div>
-                  <h2 className="font-bold text-sm text-[#303030]">Conditional Logic</h2>
-                  <p className="text-[11px] text-[#616161]">
-                    Show or hide fields &amp; layers based on customer selections on &ldquo;
-                    {activeScreen?.name || "this view"}&rdquo;.
+                  <h2 className="text-sm font-bold text-slate-900">Artwork conditions</h2>
+                  <p className="text-[11px] text-slate-500">
+                    Show or hide fields and layers on &ldquo;{activeScreen?.name || "this screen"}&rdquo; only.
                   </p>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => setConditionsModalOpen(false)}
-                className="text-gray-400 hover:text-gray-700 hover:bg-gray-100 p-1.5 rounded-lg transition cursor-pointer"
+                onClick={() => setConditionsOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                title="Cancel"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
-
-            <div className="p-5 max-h-[75vh] overflow-y-auto bg-white">
+            <div className="p-5 overflow-y-auto flex-1">
               <StudioConditionPanel
-                rules={activeScreenRules}
+                rules={conditionDraft}
                 fields={fields}
                 layers={layers}
-                onAddRule={handleAddRule}
-                onDeleteRule={handleDeleteRule}
+                onAddRule={(rule) => {
+                  setConditionDraft((prev) => [
+                    ...prev,
+                    flattenRuleForStorage({
+                      ...rule,
+                      id: `rule_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                    }),
+                  ]);
+                }}
+                onUpdateRule={(rule) => {
+                  setConditionDraft((prev) =>
+                    prev.map((r) => (r.id === rule.id ? flattenRuleForStorage(rule) : r))
+                  );
+                }}
+                onDeleteRule={(ruleId) => {
+                  setConditionDraft((prev) => prev.filter((r) => r.id !== ruleId));
+                }}
               />
             </div>
-
-            <div className="bg-gray-50/80 border-t border-gray-200 px-6 py-3.5 flex items-center justify-between gap-2">
-              <span className="text-[11px] text-slate-500">
-                Rules apply in the live customizer &amp; storefront. Remember to Save.
-              </span>
+            <div className="px-6 py-4 border-t border-slate-200 bg-slate-50 flex items-center justify-end gap-2 shrink-0">
               <button
                 type="button"
-                onClick={() => setConditionsModalOpen(false)}
-                className="px-4 py-2 text-xs font-bold text-white bg-[#005bd3] hover:bg-[#004bb5] rounded-lg transition cursor-pointer shadow-2xs"
+                onClick={() => setConditionsOpen(false)}
+                className="h-9 px-4 rounded-lg border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs cursor-pointer"
               >
-                Done
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setScreens((prev) => {
+                    const next = prev.map((s) =>
+                      s.id === activeScreenId ? { ...s, rules: JSON.parse(JSON.stringify(conditionDraft)) } : s
+                    );
+                    pushHistorySnapshot(next);
+                    return next;
+                  });
+                  setIsDirty(true);
+                  setConditionsOpen(false);
+                }}
+                className="h-9 px-4 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs cursor-pointer"
+              >
+                Save
               </button>
             </div>
           </div>

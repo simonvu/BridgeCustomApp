@@ -17,16 +17,17 @@ import {
   X,
   SlidersHorizontal,
   Grid,
-  ZoomIn,
-  ZoomOut,
   Move,
   Image as ImageIcon,
   Eye,
   ListFilter,
+  GitBranch,
 } from "lucide-react";
 
 import { StudioFieldItem } from "./StudioFieldPanel";
+import { isConditionOnlyField, isOptionFieldType } from "../../utils/fieldHelpers";
 import { defaultGradientPatch, getGradientCss, getNormalizedGradientStops } from "../../utils/textFill";
+import TextGradientEditor from "./TextGradientEditor";
 
 interface StudioTopToolbarProps {
   selectedLayer: CanvasLayerItem | null;
@@ -38,6 +39,8 @@ interface StudioTopToolbarProps {
   onOpenMediaPickerForLayer?: (layerId: string) => void;
   onFlipSelected?: () => void;
   onMergeSelected?: () => void;
+  /** When true, X/Y/W/H on a linked option group edit the layer only (shared by all options). */
+  lockOptionGeometry?: boolean;
 }
 
 export default function StudioTopToolbar({
@@ -50,6 +53,7 @@ export default function StudioTopToolbar({
   onOpenMediaPickerForLayer,
   onFlipSelected,
   onMergeSelected,
+  lockOptionGeometry = false,
 }: StudioTopToolbarProps) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [isFontLoading, setIsFontLoading] = useState(false);
@@ -106,40 +110,68 @@ export default function StudioTopToolbar({
     ? fields.find((f) => f.id === selectedLayer.linkedFieldId)
     : undefined;
 
-  if (linkedField) {
+  if (linkedField && isOptionFieldType(linkedField.fieldType)) {
+    if (isConditionOnlyField(linkedField)) {
+      return (
+        <div className="h-11 bg-white border-b border-slate-200 px-3 flex items-center gap-2 text-xs select-none shrink-0 shadow-2xs w-full">
+          <div className="w-8 h-8 rounded-lg bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
+            <GitBranch className="w-4 h-4 text-amber-600" />
+          </div>
+          <span className="font-bold text-amber-800">Condition only</span>
+          <span className="text-slate-500 truncate hidden sm:inline">
+            Not drawn on canvas · drives the customize form and artwork conditions
+          </span>
+        </div>
+      );
+    }
+
     const config = linkedField?.config || {};
     const options: any[] = config.options || [];
     const activeOptId = linkedField?.activeOptionId || options[0]?.id;
     const activeOptIdx = activeOptId ? options.findIndex((o: any) => o.id === activeOptId) : -1;
     const activeOpt = activeOptIdx >= 0 ? options[activeOptIdx] : options[0];
 
-    const currentPosX = activeOpt?.posX !== undefined ? activeOpt.posX : selectedLayer.posX;
-    const currentPosY = activeOpt?.posY !== undefined ? activeOpt.posY : selectedLayer.posY;
-    const currentW = activeOpt?.width !== undefined ? activeOpt.width : selectedLayer.width;
-    const currentH = activeOpt?.height !== undefined ? activeOpt.height : selectedLayer.height;
-    const currentRotation = activeOpt?.rotation !== undefined ? activeOpt.rotation : selectedLayer.rotation || 0;
-    const currentOpacity = activeOpt?.opacity !== undefined ? Number(activeOpt.opacity) : selectedLayer.properties?.opacity ?? 1;
+    const currentPosX = !lockOptionGeometry && activeOpt?.posX !== undefined ? activeOpt.posX : selectedLayer.posX;
+    const currentPosY = !lockOptionGeometry && activeOpt?.posY !== undefined ? activeOpt.posY : selectedLayer.posY;
+    const currentW = !lockOptionGeometry && activeOpt?.width !== undefined ? activeOpt.width : selectedLayer.width;
+    const currentH = !lockOptionGeometry && activeOpt?.height !== undefined ? activeOpt.height : selectedLayer.height;
+    const currentRotation =
+      !lockOptionGeometry && activeOpt?.rotation !== undefined ? activeOpt.rotation : selectedLayer.rotation || 0;
+    const currentOpacity =
+      !lockOptionGeometry && activeOpt?.opacity !== undefined
+        ? Number(activeOpt.opacity)
+        : selectedLayer.properties?.opacity ?? 1;
 
-    const currentFlipH = Boolean(activeOpt?.flipH ?? selectedLayer.properties?.flipH);
+    const currentFlipH = Boolean(
+      !lockOptionGeometry ? activeOpt?.flipH ?? selectedLayer.properties?.flipH : selectedLayer.properties?.flipH
+    );
 
     const handleOptionPropChange = (key: string, value: any) => {
-      if (linkedField && onUpdateField && activeOptIdx >= 0) {
+      const geomKey = ["posX", "posY", "width", "height", "rotation"].includes(key);
+      const flipKey = key === "flipH" || key === "flipV";
+      if (linkedField && onUpdateField && activeOptIdx >= 0 && !lockOptionGeometry) {
         const updatedOpts = [...options];
         updatedOpts[activeOptIdx] = {
           ...updatedOpts[activeOptIdx],
           [key]: value,
+          ...(geomKey ? { hasCustomPosition: true } : {}),
         };
         onUpdateField(linkedField.id, {
           config: { ...config, options: updatedOpts },
           activeOptionId: activeOptId,
         });
       }
-      if (["posX", "posY", "width", "height", "rotation"].includes(key)) {
+      if (geomKey) {
         onUpdateLayer(selectedLayer.id, { [key]: value });
       }
-      if (key === "flipH" || key === "flipV") {
+      if (flipKey) {
         onUpdateLayer(selectedLayer.id, {
           properties: { ...(selectedLayer.properties || {}), [key]: value },
+        });
+      }
+      if (key === "opacity") {
+        onUpdateLayer(selectedLayer.id, {
+          properties: { ...(selectedLayer.properties || {}), opacity: value },
         });
       }
     };
@@ -279,6 +311,7 @@ export default function StudioTopToolbar({
   };
 
   const isImageLayer = ["ASSET", "IMAGE", "OVERLAY", "PHOTO_UPLOAD"].includes(selectedLayer.layerType);
+  const showOpacityOnBar = isImageLayer || selectedLayer.layerType === "CLIPART";
 
   const handleFontSelect = async (family: string) => {
     setIsFontLoading(true);
@@ -305,8 +338,13 @@ export default function StudioTopToolbar({
     props.colorMode === "GRADIENT" ||
     (props.shadowBlur || 0) > 0 ||
     (props.curveAngle || 0) !== 0 ||
-    props.opacity !== undefined ||
-    props.autoFit === false;
+    (props.opacity !== undefined && Number(props.opacity) !== 1) ||
+    props.autoFit === false ||
+    props.autoFitContainer === false ||
+    (selectedLayer.layerType === "WORD_SEARCH_PUZZLE" &&
+      (props.showHighlights === false ||
+        props.fontWeight === "normal" ||
+        (props.textTransform || props.wordStyle) === "LOWERCASE"));
 
   return (
     <div className="relative h-11 bg-white border-b border-slate-200 px-3 flex items-center justify-between select-none shrink-0 shadow-2xs z-30 w-full">
@@ -315,6 +353,12 @@ export default function StudioTopToolbar({
         <div className="w-8 h-8 rounded-lg bg-slate-100 border border-slate-300 flex items-center justify-center shrink-0">
           {selectedLayer.layerType === "TEXT" ? (
             <Type className="w-4 h-4 text-indigo-600" />
+          ) : selectedLayer.layerType === "WORD_SEARCH_PUZZLE" ? (
+            <Grid className="w-4 h-4 text-blue-600" />
+          ) : selectedLayer.layerType === "DOODLE_ALPHABET" ? (
+            <Sparkles className="w-4 h-4 text-purple-600" />
+          ) : selectedLayer.layerType === "CLIPART" ? (
+            <Layers className="w-4 h-4 text-emerald-600" />
           ) : (
             <ImageIcon className="w-4 h-4 text-emerald-600" />
           )}
@@ -323,9 +367,9 @@ export default function StudioTopToolbar({
         <div className="h-5 w-px bg-slate-200 my-auto shrink-0" />
 
         {/* IMAGE LAYER CONTROLS (Change Image + Opacity Slider) */}
-        {isImageLayer && (
+        {(isImageLayer || selectedLayer.layerType === "CLIPART") && (
           <>
-            {/* Change Image Button */}
+            {isImageLayer && (
             <button
               type="button"
               onClick={() => onOpenMediaPickerForLayer && onOpenMediaPickerForLayer(selectedLayer.id)}
@@ -335,10 +379,11 @@ export default function StudioTopToolbar({
               <Sparkles className="w-3 h-3 text-emerald-600" />
               <span>{props.assetUrl ? "Change Image" : "Choose Image"}</span>
             </button>
+            )}
 
-            <div className="h-4 w-px bg-slate-200 my-auto shrink-0" />
+            {isImageLayer && <div className="h-4 w-px bg-slate-200 my-auto shrink-0" />}
 
-            {/* Opacity Control Slider & Input */}
+            {showOpacityOnBar && (
             <div className="flex items-center gap-1.5 shrink-0 bg-slate-100 border border-slate-300 rounded-md h-7 px-1.5">
               <Eye className="w-3 h-3 text-slate-500 shrink-0" />
               <span className="text-[10px] font-bold text-slate-500">Opacity:</span>
@@ -355,7 +400,9 @@ export default function StudioTopToolbar({
               {Math.round((props.opacity !== undefined ? Number(props.opacity) : 1) * 100)}%
             </span>
             </div>
+            )}
 
+            {isImageLayer && (
             <button
               type="button"
               onClick={() => handlePropChange("flipH", !props.flipH)}
@@ -369,6 +416,7 @@ export default function StudioTopToolbar({
               <FlipHorizontal className="w-3.5 h-3.5" />
               Flip
             </button>
+            )}
           </>
         )}
 
@@ -619,6 +667,64 @@ export default function StudioTopToolbar({
           </>
         )}
 
+        {selectedLayer.layerType === "DOODLE_ALPHABET" && (
+          <>
+            <button
+              type="button"
+              onClick={() => handlePropChange("seed", (props.seed || 12345) + 1)}
+              className="h-7 px-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-md text-[11px] font-bold flex items-center gap-1.5 transition cursor-pointer shrink-0 shadow-2xs"
+              title="Re-roll style assignments for each letter"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Re-roll</span>
+            </button>
+            <div className="flex items-center gap-1 bg-slate-100 border border-slate-300 rounded-md h-7 px-1.5 shrink-0">
+              <span className="text-[9px] font-bold text-slate-400">Sp:</span>
+              <input
+                type="number"
+                min={-10}
+                max={40}
+                value={props.letterSpacing ?? 4}
+                onChange={(e) => handlePropChange("letterSpacing", Number(e.target.value))}
+                className="w-8 text-center font-mono font-bold bg-transparent border-none text-[11px] focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                title="Letter spacing (px)"
+              />
+            </div>
+            <div className="flex items-center gap-0.5 bg-slate-100 p-0.5 rounded-md border border-slate-300 shrink-0 h-7">
+              <button
+                type="button"
+                onClick={() => handlePropChange("align", "left")}
+                className={`w-6 h-5 flex items-center justify-center rounded transition cursor-pointer ${
+                  props.align === "left" ? "bg-white shadow-2xs text-purple-700" : "text-slate-500 hover:text-slate-900"
+                }`}
+                title="Align left"
+              >
+                <AlignLeft className="w-3 h-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePropChange("align", "center")}
+                className={`w-6 h-5 flex items-center justify-center rounded transition cursor-pointer ${
+                  !props.align || props.align === "center" ? "bg-white shadow-2xs text-purple-700" : "text-slate-500 hover:text-slate-900"
+                }`}
+                title="Align center"
+              >
+                <AlignCenter className="w-3 h-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePropChange("align", "right")}
+                className={`w-6 h-5 flex items-center justify-center rounded transition cursor-pointer ${
+                  props.align === "right" ? "bg-white shadow-2xs text-purple-700" : "text-slate-500 hover:text-slate-900"
+                }`}
+                title="Align right"
+              >
+                <AlignRight className="w-3 h-3" />
+              </button>
+            </div>
+          </>
+        )}
+
         {/* WORD SEARCH PUZZLE LAYER CORE CONTROLS */}
         {selectedLayer.layerType === "WORD_SEARCH_PUZZLE" && (
           <>
@@ -701,6 +807,22 @@ export default function StudioTopToolbar({
                 }}
                 className="w-9 text-center font-mono font-bold bg-transparent border-none text-[11px] focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                 title="Grid Font Size (pt)"
+              />
+            </div>
+            <div className="flex items-center gap-1 bg-slate-100 border border-slate-300 p-0.5 rounded-md h-7 shrink-0" title="Filler letter color">
+              <input
+                type="color"
+                value={props.gridTextColor || props.color || "#1E293B"}
+                onChange={(e) => handlePropChange({ gridTextColor: e.target.value, color: e.target.value, fill: e.target.value })}
+                className="w-5 h-5 rounded border border-slate-300 cursor-pointer p-0 bg-white shrink-0"
+              />
+            </div>
+            <div className="flex items-center gap-1 bg-slate-100 border border-slate-300 p-0.5 rounded-md h-7 shrink-0" title="Hidden word letter color">
+              <input
+                type="color"
+                value={props.wordTextColor || props.gridTextColor || props.color || "#1E293B"}
+                onChange={(e) => handlePropChange({ wordTextColor: e.target.value, highlightTextColor: e.target.value })}
+                className="w-5 h-5 rounded border border-slate-300 cursor-pointer p-0 bg-white shrink-0"
               />
             </div>
           </>
@@ -830,6 +952,10 @@ export default function StudioTopToolbar({
               </button>
             </div>
 
+            {selectedLayer.layerType === "TEXT" && (
+              <TextGradientEditor props={props} onChange={(patch) => handlePropChange(patch)} />
+            )}
+
             {/* AUTO-FIT FRAME TOGGLE */}
             {selectedLayer.layerType === "TEXT" && (
               <div className="flex items-center justify-between bg-slate-50 p-2.5 rounded-lg border border-slate-200">
@@ -863,6 +989,26 @@ export default function StudioTopToolbar({
                   }`}
                 >
                   {props.autoFit !== false && !props.allowMultiline ? "ON" : "OFF"}
+                </button>
+              </div>
+            )}
+
+            {selectedLayer.layerType === "DOODLE_ALPHABET" && (
+              <div className="flex items-center justify-between bg-slate-50 p-2.5 rounded-lg border border-slate-200">
+                <div>
+                  <span className="text-xs font-bold text-slate-800 block">Auto Shrink to Fit</span>
+                  <span className="text-[10px] text-slate-400 block">Downscale when the word is wider than the frame</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handlePropChange("autoFitContainer", props.autoFitContainer === false)}
+                  className={`px-2.5 py-1 rounded text-[11px] font-bold transition cursor-pointer ${
+                    props.autoFitContainer !== false
+                      ? "bg-emerald-600 text-white shadow-2xs"
+                      : "bg-slate-200 text-slate-600 hover:bg-slate-300"
+                  }`}
+                >
+                  {props.autoFitContainer !== false ? "ON" : "OFF"}
                 </button>
               </div>
             )}
@@ -1085,6 +1231,111 @@ export default function StudioTopToolbar({
                   )}
                 </div>
               </>
+            )}
+
+            {selectedLayer.layerType === "WORD_SEARCH_PUZZLE" && (
+              <div className="space-y-3 pt-1 border-t border-slate-100">
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-600 block mb-1">Word case</label>
+                    <select
+                      value={props.textTransform || props.wordStyle || "UPPERCASE"}
+                      onChange={(e) => handlePropChange({ textTransform: e.target.value, wordStyle: e.target.value })}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-md px-2 py-1 text-[11px] font-bold outline-none"
+                    >
+                      <option value="UPPERCASE">UPPERCASE</option>
+                      <option value="LOWERCASE">lowercase</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-600 block mb-1">Weight</label>
+                    <select
+                      value={props.fontWeight || "bold"}
+                      onChange={(e) => handlePropChange("fontWeight", e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-200 rounded-md px-2 py-1 text-[11px] font-bold outline-none"
+                    >
+                      <option value="bold">Bold</option>
+                      <option value="normal">Normal</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-slate-800">Oval highlights</span>
+                  <input
+                    type="checkbox"
+                    checked={props.showHighlights !== false}
+                    onChange={(e) => handlePropChange("showHighlights", e.target.checked)}
+                    className="w-4 h-4 text-indigo-600 rounded cursor-pointer"
+                  />
+                </div>
+                {props.showHighlights !== false && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-semibold text-slate-600">Oval color</span>
+                      <input
+                        type="color"
+                        value={props.highlightColor || "#FD005D"}
+                        onChange={(e) => handlePropChange("highlightColor", e.target.value)}
+                        className="w-7 h-6 rounded border border-slate-300 cursor-pointer p-0"
+                      />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between text-[10px] font-semibold text-slate-600">
+                        <span>Border width</span>
+                        <span className="font-mono">{props.highlightLineWidth || 4}px</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="1"
+                        max="10"
+                        step="0.5"
+                        value={props.highlightLineWidth || 4}
+                        onChange={(e) => handlePropChange("highlightLineWidth", Number(e.target.value))}
+                        className="w-full accent-indigo-600"
+                      />
+                    </div>
+                    <label className="flex items-center justify-between text-[11px] font-semibold text-slate-700 cursor-pointer">
+                      <span>Transparent fill</span>
+                      <input
+                        type="checkbox"
+                        checked={props.transparentHighlightFill === true}
+                        onChange={(e) => handlePropChange("transparentHighlightFill", e.target.checked)}
+                        className="w-3.5 h-3.5 text-indigo-600 rounded cursor-pointer"
+                      />
+                    </label>
+                    {props.transparentHighlightFill !== true && (
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-semibold text-slate-600">Fill color</span>
+                        <input
+                          type="color"
+                          value={props.highlightFillColor || props.highlightColor || "#FD005D"}
+                          onChange={(e) => handlePropChange("highlightFillColor", e.target.value)}
+                          className="w-7 h-6 rounded border border-slate-300 cursor-pointer p-0"
+                        />
+                      </div>
+                    )}
+                    {props.transparentHighlightFill !== true && (
+                      <div>
+                        <div className="flex items-center justify-between text-[10px] font-semibold text-slate-600">
+                          <span>Fill opacity</span>
+                          <span className="font-mono">
+                            {Math.round((props.highlightFillOpacity !== undefined ? Number(props.highlightFillOpacity) : 0.22) * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.05"
+                          max="1"
+                          step="0.05"
+                          value={props.highlightFillOpacity !== undefined ? Number(props.highlightFillOpacity) : 0.22}
+                          onChange={(e) => handlePropChange("highlightFillOpacity", Number(e.target.value))}
+                          className="w-full accent-indigo-600"
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
           </div>
         )}

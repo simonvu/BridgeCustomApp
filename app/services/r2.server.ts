@@ -86,8 +86,16 @@ export async function uploadToR2({
     fs.mkdirSync(uploadsDir, { recursive: true });
   }
 
-  const safeKeyName = `${Date.now()}-${Math.random().toString(36).substring(2, 7)}_${key.replace(/[^a-zA-Z0-9_.-]/g, "_")}`;
-  const filePath = path.join(uploadsDir, safeKeyName);
+  const cleanedKey = key.replace(/\.\./g, "").replace(/^\/+/, "");
+  const nestedPath = path.join(uploadsDir, cleanedKey);
+  const useNested = cleanedKey.includes("/") && nestedPath.startsWith(uploadsDir);
+  const filePath = useNested
+    ? nestedPath
+    : path.join(
+        uploadsDir,
+        `${Date.now()}-${Math.random().toString(36).substring(2, 7)}_${cleanedKey.replace(/[^a-zA-Z0-9_.-]/g, "_")}`
+      );
+  if (useNested) fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
   let bufferData: Buffer;
   if (Buffer.isBuffer(body)) {
@@ -100,9 +108,9 @@ export async function uploadToR2({
 
   fs.writeFileSync(filePath, bufferData);
 
-  const localUrl = `/uploads/${safeKeyName}`;
+  const localUrl = `/uploads/${path.relative(uploadsDir, filePath).split(path.sep).join("/")}`;
   console.log(`📁 Local fallback saved: ${localUrl}`);
-  return { url: localUrl, key: safeKeyName };
+  return { url: localUrl, key: useNested ? cleanedKey : path.basename(filePath) };
 }
 
 /**
@@ -135,6 +143,20 @@ export async function getFromR2(key: string): Promise<{ body: Buffer; contentTyp
   // Fallback: Read from local public/uploads directory if file was saved locally
   try {
     const uploadsDir = path.join(process.cwd(), "public", "uploads");
+    const nested = path.join(uploadsDir, key.replace(/\.\./g, "").replace(/^\/+/, ""));
+    if (nested.startsWith(uploadsDir) && fs.existsSync(nested) && fs.statSync(nested).isFile()) {
+      const buffer = fs.readFileSync(nested);
+      const ext = nested.split(".").pop()?.toLowerCase() || "";
+      const contentType =
+        ext === "jpg" || ext === "jpeg"
+          ? "image/jpeg"
+          : ext === "png"
+            ? "image/png"
+            : ext === "webp"
+              ? "image/webp"
+              : "application/octet-stream";
+      return { body: buffer, contentType };
+    }
     if (fs.existsSync(uploadsDir)) {
       const safeKeyName = key.replace(/[^a-zA-Z0-9_.-]/g, "_");
       const files = fs.readdirSync(uploadsDir);

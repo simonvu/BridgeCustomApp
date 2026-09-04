@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { CanvasLayerItem } from "./StudioCanvas";
 import {
   Eye,
@@ -23,9 +23,12 @@ import {
   RefreshCw,
   Grid,
   Package,
+  GitBranch,
 } from "lucide-react";
 
 import { StudioFieldItem } from "./StudioFieldPanel";
+import { isConditionOnlyField, isListItemField, seedListItemGeometry, listRequiresItemImages, optionHasListImage } from "../../utils/fieldHelpers";
+import FeatureTip from "./FeatureTip";
 
 interface StudioLayerPanelProps {
   layers: CanvasLayerItem[];
@@ -45,6 +48,8 @@ interface StudioLayerPanelProps {
   onReorderLayers: (reorderedLayers: CanvasLayerItem[]) => void;
   onReloadClipArt?: (layerId: string) => void;
   reloadingClipArtLayerId?: string | null;
+  onOpenConditions?: () => void;
+  conditionCount?: number;
 }
 
 export default function StudioLayerPanel({
@@ -65,9 +70,13 @@ export default function StudioLayerPanel({
   onReorderLayers,
   onReloadClipArt,
   reloadingClipArtLayerId = null,
+  onOpenConditions,
+  conditionCount = 0,
 }: StudioLayerPanelProps) {
   const [draggedIdx, setDraggedIdx] = useState<number | null>(null);
   const [showAddMenu, setShowAddMenu] = useState(false);
+  const [addMenuPos, setAddMenuPos] = useState({ top: 0, right: 0 });
+  const addLayerBtnRef = useRef<HTMLButtonElement>(null);
   const [collapsedLayerIds, setCollapsedLayerIds] = useState<Record<string, boolean>>({});
 
   const isLayerCollapsed = (layerId: string) => {
@@ -247,14 +256,45 @@ export default function StudioLayerPanel({
       <div className="h-9 px-3 border-b border-slate-200 bg-slate-50/80 flex items-center justify-between relative overflow-visible z-20 shrink-0">
         <h3 className="font-bold text-slate-800 text-xs flex items-center gap-1.5 uppercase tracking-wider">
           <Layers className="w-3.5 h-3.5 text-blue-600" />
-          Layer Stack ({rootDisplayLayers.length})
+          Layer ({rootDisplayLayers.length})
         </h3>
 
-        {/* Add Layer Context Dropdown Menu Button */}
-        <div className="relative">
+        <div className="flex items-center gap-1">
+          {onOpenConditions && (
+            <div className="flex items-center gap-0.5">
+              <button
+                type="button"
+                onClick={onOpenConditions}
+                className="flex items-center gap-1 text-xs font-semibold text-amber-800 hover:text-amber-950 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2 py-1 rounded-md cursor-pointer"
+                title="Show or hide fields and layers from lists on this screen"
+              >
+                <GitBranch className="w-3.5 h-3.5" />
+                Conditions
+                {conditionCount > 0 && (
+                  <span className="text-[10px] font-extrabold leading-none">{conditionCount}</span>
+                )}
+              </button>
+              <FeatureTip title="Conditions">
+                Ẩn hoặc hiện field / layer trên screen này theo option khách chọn. Mỗi screen có bộ
+                rule riêng. Tick nhiều option = OR. AND thêm list khác nếu cần đủ cả hai điều kiện.
+              </FeatureTip>
+            </div>
+          )}
+          <div className="relative">
           <button
+            ref={addLayerBtnRef}
             type="button"
-            onClick={() => setShowAddMenu((prev) => !prev)}
+            onClick={() => {
+              const btn = addLayerBtnRef.current;
+              if (btn) {
+                const r = btn.getBoundingClientRect();
+                setAddMenuPos({
+                  top: r.bottom + 6,
+                  right: Math.max(8, window.innerWidth - r.right),
+                });
+              }
+              setShowAddMenu((prev) => !prev);
+            }}
             className="flex items-center gap-1.5 text-xs font-semibold text-slate-700 hover:text-blue-600 bg-white hover:bg-slate-100 border border-slate-200 hover:border-blue-300 px-2 py-1 rounded-md transition shadow-2xs cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5 text-blue-600" />
@@ -264,14 +304,15 @@ export default function StudioLayerPanel({
 
           {showAddMenu && (
             <>
-              {/* Invisible Backdrop */}
               <div
-                className="fixed inset-0 z-40"
+                className="fixed inset-0 z-[70]"
                 onClick={() => setShowAddMenu(false)}
               />
 
-              {/* Context Dropdown Menu */}
-              <div className="absolute right-0 top-full mt-1.5 w-56 bg-white rounded-xl shadow-2xl border border-slate-200 py-1.5 z-50 text-xs animate-in fade-in zoom-in-95 duration-100">
+              <div
+                className="fixed w-56 bg-white rounded-xl shadow-2xl border border-slate-200 py-1.5 z-[80] text-xs animate-in fade-in zoom-in-95 duration-100 max-h-[min(28rem,calc(100vh-5rem))] overflow-y-auto"
+                style={{ top: addMenuPos.top, right: addMenuPos.right }}
+              >
                 <div className="px-3 py-1 font-bold text-[10px] uppercase tracking-wider text-slate-400">
                   Select Layer Type
                 </div>
@@ -384,6 +425,7 @@ export default function StudioLayerPanel({
             </>
           )}
         </div>
+        </div>
       </div>
 
       {/* Layer List Items */}
@@ -400,6 +442,9 @@ export default function StudioLayerPanel({
             const isDragging = draggedIdx === index;
             const linkedMask = linkedMaskMap.get(layer.id);
             const isMaskSelected = linkedMask && (selectedLayerIds.includes(linkedMask.id) || linkedMask.id === selectedLayerId);
+            const linkedField = fields.find((f) => f.id === layer.linkedFieldId);
+            const isListLayer = isListItemField(linkedField);
+            const conditionOnly = isConditionOnlyField(linkedField);
 
             return (
               <React.Fragment key={layer.id}>
@@ -481,6 +526,22 @@ export default function StudioLayerPanel({
                         {layer.name}
                       </span>
                     )}
+                    {isListLayer && (
+                      <span
+                        className={`text-[9px] font-bold px-1 py-0.2 rounded border shrink-0 ${
+                          conditionOnly
+                            ? "text-amber-700 bg-amber-50 border-amber-200"
+                            : "text-indigo-700 bg-indigo-50 border-indigo-200"
+                        }`}
+                        title={
+                          conditionOnly
+                            ? "Form + conditions only — not drawn on canvas"
+                            : "Each item has its own canvas graphic"
+                        }
+                      >
+                        {conditionOnly ? "Condition" : "Graphic"}
+                      </span>
+                    )}
                     <span className="text-[9px] font-mono text-slate-400 bg-slate-100 px-1 py-0.2 rounded border border-slate-200 shrink-0">
                       z:{rootDisplayLayers.length - 1 - index}
                     </span>
@@ -505,12 +566,11 @@ export default function StudioLayerPanel({
 
                   {/* Parent Layer Control Buttons */}
                   <div className="flex items-center gap-0.5 shrink-0">
-                    {Boolean(layer.linkedFieldId) && (
+                    {isListLayer && !conditionOnly && (
                       <button
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
-                          const linkedField = fields.find((f) => f.id === layer.linkedFieldId);
                           if (linkedField && onUpdateField) {
                             const config = linkedField.config || {};
                             const options: any[] = config.options || [];
@@ -529,6 +589,7 @@ export default function StudioLayerPanel({
                                   posY: firstPosY,
                                   rotation: firstRotation,
                                   opacity: firstOpacity,
+                                  hasCustomPosition: true,
                                 };
                               });
 
@@ -736,13 +797,17 @@ export default function StudioLayerPanel({
                 {/* NESTED DEPENDENT LIST / ITEM LAYERS (Bound to Parent List/Item Layer) */}
                 {(() => {
                   const linkedField = fields.find((f) => f.id === layer.linkedFieldId);
-                  if (!isLayerCollapsed(layer.id) && linkedField && (linkedField.fieldType === "SELECT" || linkedField.fieldType === "RADIO" || linkedField.fieldType === "FIELD_ASSET")) {
+                  if (!isLayerCollapsed(layer.id) && linkedField && isListItemField(linkedField)) {
                     const options = linkedField.config?.options || [];
+                    const listConditionOnly = isConditionOnlyField(linkedField);
+                    const requiresImages = listRequiresItemImages(linkedField);
                     return (
                       <div className="ml-3 mt-1 space-y-1 pl-1.5 border-l-2 border-indigo-300/80">
                         {options.map((opt: any, optIdx: number) => {
                           const isSelectedOption = isSelected && (linkedField.activeOptionId === opt.id || (!linkedField.activeOptionId && optIdx === 0));
                           const isItemDragging = draggedItemIdx === optIdx && draggedItemFieldId === linkedField.id;
+
+                          const missingRequiredImage = requiresImages && !optionHasListImage(opt);
 
                           return (
                             <div
@@ -755,28 +820,32 @@ export default function StudioLayerPanel({
                                 e.stopPropagation();
                                 onSelectLayer(layer.id);
                                 if (onUpdateField) onUpdateField(linkedField.id, { activeOptionId: opt.id });
-                                if (onPreviewOptionChoice) onPreviewOptionChoice(linkedField.id, opt);
+                                if (!listConditionOnly && onPreviewOptionChoice) onPreviewOptionChoice(linkedField.id, opt);
                               }}
                               className={`flex items-center justify-between px-2 py-1.5 rounded-lg border transition cursor-pointer text-xs ${
                                 isItemDragging
                                   ? "opacity-40 border-dashed border-indigo-500 bg-indigo-100"
+                                  : missingRequiredImage
+                                  ? "bg-rose-50 border-rose-300 text-rose-900"
                                   : isSelectedOption
                                   ? "bg-indigo-100/90 border-indigo-400 text-indigo-950 font-bold shadow-2xs"
                                   : isSelected
                                   ? "bg-indigo-50/50 border-indigo-200/80 text-indigo-900 hover:bg-indigo-100/70"
                                   : "bg-slate-50/70 border-slate-200/80 text-slate-700 hover:bg-slate-100"
                               }`}
-                              title="Drag handle to reorder, click to select"
+                              title={missingRequiredImage ? "Image required for Thumbnail Swatch" : "Drag handle to reorder, click to select"}
                             >
                               <div className="flex items-center gap-1.5 min-w-0 flex-1">
                                 <GripVertical className="w-3.5 h-3.5 text-indigo-400 hover:text-indigo-700 cursor-grab active:cursor-grabbing shrink-0" title="Drag to reorder Item" />
-                                <div className="w-5 h-5 rounded border border-indigo-300 bg-white flex items-center justify-center shrink-0 overflow-hidden">
+                                <div className={`w-5 h-5 rounded border bg-white flex items-center justify-center shrink-0 overflow-hidden ${
+                                  missingRequiredImage ? "border-rose-400" : "border-indigo-300"
+                                }`}>
                                   {opt.swatchImageUrl ? (
                                     <img src={opt.swatchImageUrl} alt="" className="w-full h-full object-cover" />
                                   ) : opt.assetImageUrl ? (
                                     <img src={opt.assetImageUrl} alt="" className="w-full h-full object-contain p-0.5" />
                                   ) : (
-                                    <ImageIcon className="w-3 h-3 text-indigo-500" />
+                                    <ImageIcon className={`w-3 h-3 ${missingRequiredImage ? "text-rose-500" : "text-indigo-500"}`} />
                                   )}
                                 </div>
 
@@ -812,6 +881,7 @@ export default function StudioLayerPanel({
                                 <span className="text-[9px] font-mono font-semibold text-indigo-700 bg-indigo-100/90 px-1 py-0.2 rounded border border-indigo-200" title={`Internal Item Index ${optIdx + 1}`}>
                                   i:{optIdx + 1}
                                 </span>
+                                {!listConditionOnly && (
                                 <button
                                   type="button"
                                   onClick={(e) => {
@@ -834,18 +904,25 @@ export default function StudioLayerPanel({
                                     <EyeOff className="w-3.5 h-3.5 text-slate-400" />
                                   )}
                                 </button>
+                                )}
                                 <button
                                   type="button"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     const sourceOpt = options[optIdx];
+                                    const geom = listConditionOnly
+                                      ? {}
+                                      : {
+                                          posX: (sourceOpt.posX !== undefined ? sourceOpt.posX : layer.posX) + 20,
+                                          posY: (sourceOpt.posY !== undefined ? sourceOpt.posY : layer.posY) + 20,
+                                          hasCustomPosition: true,
+                                        };
                                     const newOpt = {
                                       ...sourceOpt,
                                       id: `item_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
                                       label: `${sourceOpt.label || `Item ${optIdx + 1}`} (Copy)`,
                                       value: `${sourceOpt.value || `item_${optIdx + 1}`}_copy_${Date.now().toString(36).substring(2, 6)}`,
-                                      posX: (sourceOpt.posX !== undefined ? sourceOpt.posX : layer.posX) + 20,
-                                      posY: (sourceOpt.posY !== undefined ? sourceOpt.posY : layer.posY) + 20,
+                                      ...geom,
                                     };
                                     const updatedOpts = [...options];
                                     updatedOpts.splice(optIdx + 1, 0, newOpt);
@@ -884,6 +961,7 @@ export default function StudioLayerPanel({
                         })}
 
                         <div className="ml-5 my-1 flex items-center justify-end gap-1.5 flex-wrap">
+                          {!listConditionOnly && (
                           <button
                             type="button"
                             onClick={(e) => {
@@ -899,29 +977,22 @@ export default function StudioLayerPanel({
                             <Images className="w-3 h-3 text-indigo-600" />
                             <span>+ Add Items by Images</span>
                           </button>
+                          )}
 
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
                               onSelectLayer(layer.id);
-                              const item1 = options[0];
-                              const firstPosX = item1?.posX !== undefined ? item1.posX : layer.posX;
-                              const firstPosY = item1?.posY !== undefined ? item1.posY : layer.posY;
-
+                              const geom = listConditionOnly ? {} : seedListItemGeometry(options[0], layer);
                               const newOpt = {
                                 id: `item_${Date.now()}`,
                                 label: `Item ${options.length + 1}`,
                                 value: `item_${options.length + 1}`,
                                 swatchImageUrl: "",
                                 assetImageUrl: "",
-                                posX: firstPosX,
-                                posY: firstPosY,
-                                width: 300,
-                                height: 300,
-                                rotation: item1?.rotation !== undefined ? item1.rotation : layer.rotation || 0,
-                                opacity: item1?.opacity !== undefined ? item1.opacity : layer.properties?.opacity ?? 1,
                                 isVisible: true,
+                                ...geom,
                               };
                               if (onUpdateField) onUpdateField(linkedField.id, {
                                 config: { ...linkedField.config, options: [...options, newOpt] },

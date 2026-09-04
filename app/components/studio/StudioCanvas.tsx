@@ -20,9 +20,14 @@ import {
   quoteFontFamily,
 } from "../../utils/studioText";
 import { generateWordSearchPuzzle } from "../../utils/wordSearchEngine";
-import { resolveDoodleStyleAssignments, loadAndTrimImage } from "../../utils/doodleAlphabetEngine";
-import { isEmptyOption } from "../../utils/fieldHelpers";
-import { clipArtFingerprint, rasterizeClipArtFrame, rasterizePunchedPlate, type ClipArtInstance, type ClipArtPartOption } from "../../utils/clipArtInstance";
+import {
+  resolveDoodleStyleAssignments,
+  getCachedTrimmedImage,
+  preloadDoodleLetterImages,
+  layoutDoodleAlphabetRow,
+} from "../../utils/doodleAlphabetEngine";
+import { isEmptyOption, isConditionOnlyField, isOptionFieldType } from "../../utils/fieldHelpers";
+import { clipArtFingerprint, loadClipArtImage, rasterizeClipArtFrameToCanvas, rasterizePunchedPlate, type ClipArtInstance, type ClipArtPartOption } from "../../utils/clipArtInstance";
 
 export { processCustomMaskImage, preloadCustomMaskImage, createFabricMaskObject };
 
@@ -55,7 +60,7 @@ function restoreRawPhotoElement(photoObj: fabric.Image) {
 }
 
 // Helper to strictly enforce Fabric canvas z-index stacking order (lowest zIndex at index 0, highest zIndex at top)
-export function enforceZIndexOrder(fc: fabric.Canvas, visibleLayers: CanvasLayerItem[]) {
+export function enforceZIndexOrder(fc: fabric.Canvas, visibleLayers: CanvasLayerItem[], render = true) {
   if (!fc) return;
   const sortedVisibleLayers = [...visibleLayers].sort((a, b) => (a.zIndex || 0) - (b.zIndex || 0));
   sortedVisibleLayers.forEach((l, targetIdx) => {
@@ -68,8 +73,20 @@ export function enforceZIndexOrder(fc: fabric.Canvas, visibleLayers: CanvasLayer
       }
     }
   });
-  fc.requestRenderAll();
+  if (render) scheduleFabricRender(fc);
 }
+
+let fabricRenderFrame = 0;
+function scheduleFabricRender(fc: fabric.Canvas | null) {
+  if (!fc) return;
+  if (fabricRenderFrame) return;
+  fabricRenderFrame = requestAnimationFrame(() => {
+    fabricRenderFrame = 0;
+    fc.requestRenderAll();
+  });
+}
+
+const pendingAssetByLayer = new Map<string, string>();
 
 function clampCanvasSize(n: number) {
   return Math.max(100, Math.min(8000, Math.round(n)));
@@ -137,6 +154,8 @@ interface StudioCanvasProps {
   fonts?: FontItem[];
   doodlePacks?: any[];
   onResizeCanvas?: (widthPx: number, heightPx: number) => void;
+  /** Clip-art shared groups: only use per-option size/position when freeTransform is on. */
+  useOptionGeometry?: "always" | "whenFree";
 }
 
 /**
@@ -240,12 +259,14 @@ export default function StudioCanvas({
   fonts = [],
   doodlePacks = [],
   onResizeCanvas,
+  useOptionGeometry = "always",
 }: StudioCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasElRef = useRef<HTMLCanvasElement>(null);
   const fabricCanvasRef = useRef<fabric.Canvas | null>(null);
   const isUpdatingFromFabricRef = useRef(false);
   const pendingFrameUpdatesRef = useRef<{ [layerId: string]: { posX: number; posY: number; width: number; height: number } }>({});
+  const doodleBuildFpRef = useRef<Record<string, string>>({});
 
   const layersRef = useRef(layers);
   useEffect(() => {
@@ -410,6 +431,19 @@ export default function StudioCanvas({
               } else if (obj instanceof fabric.Text || obj instanceof fabric.Textbox) {
                 applyToText(obj);
               }
+            }
+          } else if (layer.layerType === "WORD_SEARCH_PUZZLE") {
+            const props = layer.properties || {};
+            const font = props.gridFontFamily || props.fontFamily || "Roboto";
+            if (!loadedFamily || font.toLowerCase() === loadedFamily.toLowerCase()) {
+              if (obj instanceof fabric.Group) {
+                obj.getObjects().forEach((child) => {
+                  if (child instanceof fabric.Text || child instanceof fabric.Textbox) {
+                    child.set({ dirty: true });
+                  }
+                });
+              }
+              obj.set({ dirty: true });
             }
           }
         }
@@ -815,12 +849,42 @@ export default function StudioCanvas({
       fc.discardActiveObject();
     }
 
-    // Preload any custom mask images that are not yet in cache
+    // Warm image cache for every field option / clip-art part (including hidden layers)
     layers.forEach((l) => {
-      if (l.isVisible && l.properties?.maskShape === "CUSTOM" && l.properties?.maskAssetUrl) {
-        preloadCustomMaskImage(l.properties.maskAssetUrl, () => {
+      const props = l.properties || {};
+      if (l.isVisible && props.maskShape === "CUSTOM" && props.maskAssetUrl) {
+        preloadCustomMaskImage(props.maskAssetUrl, () => {
           setMaskCacheVersion((v) => v + 1);
         });
+      }
+      if (props.assetUrl) void loadClipArtImage(props.assetUrl).catch(() => {});
+      if (l.linkedFieldId) {
+        const linkedF = (fields || []).find((f) => f.id === l.linkedFieldId);
+        (linkedF?.config?.options || []).forEach((o: any) => {
+          const url = o?.assetImageUrl || o?.assetUrl;
+          if (url) void loadClipArtImage(url).catch(() => {});
+        });
+      }
+      if (l.layerType === "CLIPART") {
+        (props.clipArtGroups || []).forEach((g: any) => {
+          (g.options || []).forEach((o: any) => {
+            if (o?.assetImageUrl) void loadClipArtImage(o.assetImageUrl).catch(() => {});
+          });
+        });
+      }
+      if (l.layerType === "DOODLE_ALPHABET") {
+        const pack = doodlePacks?.find((p: any) => p.id === props.doodlePackId) || doodlePacks?.[0];
+        if (pack) {
+          void preloadDoodleLetterImages(
+            resolveDoodleStyleAssignments(
+              (props.text || "AUNTIE").trim(),
+              pack,
+              props.styleSelectionRule || "RANDOM_SHUFFLE",
+              props.fixedStyleId || "",
+              Number(props.seed) || 12345
+            )
+          );
+        }
       }
     });
 
@@ -828,7 +892,12 @@ export default function StudioCanvas({
 
     // Filter visible layers sorted by Z-Index
     const visibleLayers = [...layers]
-      .filter((l) => l.isVisible)
+      .filter((l) => {
+        if (!l.isVisible) return false;
+        if (!l.linkedFieldId) return true;
+        const linkedF = (fields || []).find((f) => f.id === l.linkedFieldId);
+        return !isConditionOnlyField(linkedF);
+      })
       .sort((a, b) => a.zIndex - b.zIndex);
 
     // Existing objects map by layerId
@@ -851,16 +920,23 @@ export default function StudioCanvas({
 
       if (layer.linkedFieldId) {
         const linkedF = (fields || []).find((f) => f.id === layer.linkedFieldId);
-        if (linkedF) {
+        if (isConditionOnlyField(linkedF)) {
+          obj = undefined;
+          return;
+        }
+        if (linkedF && isOptionFieldType(linkedF.fieldType)) {
           const config = linkedF.config || {};
-          const opts = config.options || [];
-          const activeOpt = opts.find((o: any) => o.id === linkedF.activeOptionId) || opts[0];
-          if (activeOpt && activeOpt.isVisible !== false) {
-            if (activeOpt.posX !== undefined) renderPosX = activeOpt.posX;
-            if (activeOpt.posY !== undefined) renderPosY = activeOpt.posY;
-            if (activeOpt.width !== undefined) renderWidth = activeOpt.width;
-            if (activeOpt.height !== undefined) renderHeight = activeOpt.height;
-            if (activeOpt.rotation !== undefined) renderRotation = activeOpt.rotation;
+          const applyOptGeom = useOptionGeometry === "always" || Boolean(config.freeTransform);
+          if (applyOptGeom) {
+            const opts = config.options || [];
+            const activeOpt = opts.find((o: any) => o.id === linkedF.activeOptionId) || opts[0];
+            if (activeOpt && activeOpt.isVisible !== false) {
+              if (activeOpt.posX !== undefined) renderPosX = activeOpt.posX;
+              if (activeOpt.posY !== undefined) renderPosY = activeOpt.posY;
+              if (activeOpt.width !== undefined) renderWidth = activeOpt.width;
+              if (activeOpt.height !== undefined) renderHeight = activeOpt.height;
+              if (activeOpt.rotation !== undefined) renderRotation = activeOpt.rotation;
+            }
           }
         }
       }
@@ -1080,7 +1156,6 @@ export default function StudioCanvas({
         (obj as any).layerId = layer.id;
         (obj as any).layerType = "TEXT";
       } else if (layer.layerType === "WORD_SEARCH_PUZZLE") {
-        // Generate word search matrix using wordSearchEngine
         const rawWords: string[] = props.words && Array.isArray(props.words) && props.words.length > 0
           ? props.words
           : ["SIMON", "LISA", "JANE", "HAPPY", "URI", "RONALDO", "MESSI"];
@@ -1089,33 +1164,89 @@ export default function StudioCanvas({
         const gridH = props.gridHeight || 10;
         const seed = props.seed || 12345;
         const allowDiag = props.allowDiagonal !== false;
-        const allowRev = props.allowReverse === true && props.explicitReverse === true; // Enforce strict default FALSE for all layers
-        const highlightColor = props.highlightColor || props.ovalColor || "#FD005D";
+        const allowRev = props.allowReverse === true && props.explicitReverse === true;
         const fontFam =
           props.gridFontFamily ||
           props.fontFamily ||
           (layer as any).fontFamily ||
           "Roboto";
 
-        // Asynchronously load custom font file if needed
         ensureFontLoaded(fontFam, fonts).then(() => {
-          if (fc) fc.requestRenderAll();
+          if (fc) scheduleFabricRender(fc);
         }).catch(() => {});
 
-        const textColor =
+        const fillerTextColor =
           props.gridTextColor ||
           props.color ||
           props.fill ||
           (layer as any).color ||
           (layer as any).fill ||
           "#1E293B";
-
+        const wordTextColor = props.wordTextColor || props.highlightTextColor || fillerTextColor;
         const fontWeight = props.fontWeight || (layer as any).fontWeight || "bold";
         const fontStyle = props.fontStyle || (layer as any).fontStyle || "normal";
         const textTransform = props.textTransform || props.wordStyle || "UPPERCASE";
-
         const density = props.overlapDensity || "BALANCED";
+        const showHighlights = props.showHighlights === undefined ? true : Boolean(props.showHighlights);
+        const activeHighlightColor = props.highlightColor || props.ovalColor || "#FD005D";
+        const strokeWidth = Number(props.highlightLineWidth) || 4;
+        const isTransparentFill = props.transparentHighlightFill === true;
+        const rawFillColor = props.highlightFillColor || activeHighlightColor;
+        const fillOpacity = isTransparentFill ? 0 : props.highlightFillOpacity !== undefined ? Number(props.highlightFillOpacity) : 0.22;
+        const cellW = renderWidth / gridW;
+        const cellH = renderHeight / gridH;
+        const autoFontSize = Math.min(cellW, cellH) * 0.55;
+        const rawFontSize = Number(props.fontSize || props.gridFontSize || (layer as any).fontSize);
+        const actualFontSize = rawFontSize && rawFontSize > 0 ? rawFontSize : Math.max(10, Math.round(autoFontSize));
+        const isSelected = selectedLayerIds.includes(layer.id) || selectedLayerId === layer.id;
 
+        const puzzleFp = [
+          layer.id,
+          rawWords.join("\n"),
+          gridW,
+          gridH,
+          seed,
+          allowDiag ? 1 : 0,
+          allowRev ? 1 : 0,
+          density,
+          fontFam,
+          fontWeight,
+          fontStyle,
+          textTransform,
+          actualFontSize,
+          fillerTextColor,
+          wordTextColor,
+          showHighlights ? 1 : 0,
+          activeHighlightColor,
+          strokeWidth,
+          isTransparentFill ? 1 : 0,
+          rawFillColor,
+          fillOpacity,
+          Math.round(renderWidth),
+          Math.round(renderHeight),
+        ].join("|");
+
+        const existingPuzzle = obj instanceof fabric.Group ? obj : undefined;
+        if (existingPuzzle && (existingPuzzle as any)._wsFp === puzzleFp) {
+          existingPuzzle.set({
+            left: centerX,
+            top: centerY,
+            angle: layer.rotation,
+            selectable: !layer.isLocked,
+            evented: !layer.isLocked,
+          });
+          const selFrame = existingPuzzle.getObjects()[0];
+          if (selFrame) {
+            selFrame.set({
+              stroke: isSelected ? "#3b82f6" : "transparent",
+              strokeWidth: isSelected ? 1 : 0,
+              strokeDashArray: isSelected ? [4, 4] : undefined,
+            });
+          }
+          existingPuzzle.set({ dirty: true });
+          existingPuzzle.setCoords();
+          obj = existingPuzzle;
+        } else {
         const puzzleResult = generateWordSearchPuzzle({
           words: rawWords,
           gridWidth: gridW,
@@ -1128,13 +1259,6 @@ export default function StudioCanvas({
 
         const { grid, placedWords } = puzzleResult;
 
-        // Auto-fit cell dimensions to fill layer frame bounds (width x height)
-        const cellW = renderWidth / gridW;
-        const cellH = renderHeight / gridH;
-        const autoFontSize = Math.min(cellW, cellH) * 0.55;
-        const rawFontSize = Number(props.fontSize || props.gridFontSize || (layer as any).fontSize);
-        const actualFontSize = rawFontSize && rawFontSize > 0 ? rawFontSize : Math.max(10, Math.round(autoFontSize));
-
         const puzzleTotalW = renderWidth;
         const puzzleTotalH = renderHeight;
 
@@ -1143,8 +1267,6 @@ export default function StudioCanvas({
 
         const groupObjects: fabric.Object[] = [];
 
-        // 1. Selection Frame Dashed Rect
-        const isSelected = selectedLayerIds.includes(layer.id) || selectedLayerId === layer.id;
         const frameRect = new fabric.Rect({
           left: 0,
           top: 0,
@@ -1158,6 +1280,7 @@ export default function StudioCanvas({
           originY: "center",
           selectable: false,
           evented: false,
+          objectCaching: false,
         });
         groupObjects.push(frameRect);
 
@@ -1173,13 +1296,6 @@ export default function StudioCanvas({
           return `rgba(${r}, ${g}, ${b}, ${alpha})`;
         }
 
-        const showHighlights = props.showHighlights === undefined ? true : Boolean(props.showHighlights);
-        const activeHighlightColor = props.highlightColor || props.ovalColor || "#FD005D";
-        const strokeWidth = Number(props.highlightLineWidth) || 4;
-
-        const isTransparentFill = props.transparentHighlightFill === true;
-        const rawFillColor = props.highlightFillColor || activeHighlightColor;
-        const fillOpacity = isTransparentFill ? 0 : props.highlightFillOpacity !== undefined ? Number(props.highlightFillOpacity) : 0.22;
         const capsuleFill = hexToRgba(rawFillColor, fillOpacity);
 
         if (showHighlights && placedWords.length > 0) {
@@ -1217,6 +1333,7 @@ export default function StudioCanvas({
               angle: angleDeg,
               selectable: false,
               evented: false,
+              objectCaching: false,
             });
             groupObjects.push(capsuleObj);
           });
@@ -1237,19 +1354,6 @@ export default function StudioCanvas({
             }
           });
         }
-
-        const fillerTextColor =
-          props.gridTextColor ||
-          props.color ||
-          props.fill ||
-          (layer as any).color ||
-          (layer as any).fill ||
-          "#1E293B";
-
-        const wordTextColor =
-          props.wordTextColor ||
-          props.highlightTextColor ||
-          fillerTextColor;
 
         // 3. Render Letter Matrix ON TOP of Highlights
         for (let r = 0; r < grid.length; r++) {
@@ -1282,6 +1386,7 @@ export default function StudioCanvas({
               strokeWidth: isWhiteText ? 0.8 : 0,
               selectable: false,
               evented: false,
+              objectCaching: false,
             });
             groupObjects.push(letterText);
           }
@@ -1303,7 +1408,7 @@ export default function StudioCanvas({
           selectable: !layer.isLocked,
           evented: !layer.isLocked,
           subTargetCheck: false,
-          objectCaching: false,
+          objectCaching: true,
           dirty: true,
         });
 
@@ -1311,9 +1416,12 @@ export default function StudioCanvas({
         puzzleGroup.width = layer.width;
         puzzleGroup.height = layer.height;
         (puzzleGroup as any).layerId = layer.id;
+        (puzzleGroup as any).layerType = "WORD_SEARCH_PUZZLE";
+        (puzzleGroup as any)._wsFp = puzzleFp;
 
         fc.add(puzzleGroup);
         obj = puzzleGroup;
+        }
       } else if (layer.layerType === "DOODLE_ALPHABET") {
         const doodlePackId = props.doodlePackId;
         const targetPack = doodlePacks?.find((p: any) => p.id === doodlePackId) || doodlePacks?.[0];
@@ -1322,17 +1430,27 @@ export default function StudioCanvas({
         const fixedStyleId = props.fixedStyleId || "";
         const seed = Number(props.seed) || 12345;
         const letterSpacing = Number(props.letterSpacing) || 4;
-        const maxLetterHeight = Number(props.maxLetterHeight) || 120;
         const autoFitContainer = props.autoFitContainer !== false;
         const align = props.align || "center";
         const isSelected = selectedLayerIds.includes(layer.id) || selectedLayerId === layer.id;
 
-        const currentFingerprint = `${layer.id}_${doodlePackId}_${inputText}_${rule}_${fixedStyleId}_${seed}_${letterSpacing}_${maxLetterHeight}_${autoFitContainer}_${align}_${renderWidth}_${renderHeight}_${layer.rotation}_${isSelected}`;
+        const currentFingerprint = [
+          layer.id,
+          doodlePackId,
+          inputText,
+          rule,
+          fixedStyleId,
+          seed,
+          letterSpacing,
+          autoFitContainer ? 1 : 0,
+          align,
+          Math.round(renderWidth),
+          Math.round(renderHeight),
+        ].join("|");
 
-        let existingDoodleGroup = fc.getObjects().find((o: any) => o.layerId === layer.id) as any;
+        const existingDoodleGroup = obj as any;
 
         if (existingDoodleGroup && existingDoodleGroup._doodleFingerprint === currentFingerprint) {
-          // FINGERPRINT UNCHANGED: Just update coordinates without recreating objects! NO FLICKER!
           existingDoodleGroup.set({
             left: centerX,
             top: centerY,
@@ -1340,17 +1458,107 @@ export default function StudioCanvas({
             selectable: !layer.isLocked,
             evented: !layer.isLocked,
           });
+          if (existingDoodleGroup instanceof fabric.Group) {
+            const selFrame = existingDoodleGroup.getObjects()[0];
+            if (selFrame) {
+              const nextStroke = isSelected ? "#9333ea" : "transparent";
+              if (selFrame.stroke !== nextStroke) {
+                selFrame.set({
+                  stroke: nextStroke,
+                  strokeWidth: isSelected ? 1 : 0,
+                  strokeDashArray: isSelected ? [4, 4] : undefined,
+                });
+                existingDoodleGroup.set({ dirty: true });
+              }
+            }
+          }
           existingDoodleGroup.setCoords();
           obj = existingDoodleGroup;
         } else {
-          // Fingerprint changed or new layer: fetch images & build group
           const assignments = targetPack
             ? resolveDoodleStyleAssignments(inputText, targetPack, rule, fixedStyleId, seed)
             : [];
+          doodleBuildFpRef.current[layer.id] = currentFingerprint;
 
-          const validLetters = assignments.filter((a) => a.imageUrl);
+          const commitDoodleGroup = (canvases: Array<HTMLCanvasElement | null>) => {
+            const liveFc = fabricCanvasRef.current;
+            if (!liveFc) return;
+            if (doodleBuildFpRef.current[layer.id] !== currentFingerprint) return;
 
-          if (validLetters.length === 0) {
+            const groupObjects: fabric.Object[] = [];
+            const frameRect = new fabric.Rect({
+              left: 0,
+              top: 0,
+              width: renderWidth,
+              height: renderHeight,
+              fill: "transparent",
+              stroke: isSelected ? "#9333ea" : "transparent",
+              strokeWidth: isSelected ? 1 : 0,
+              strokeDashArray: isSelected ? [4, 4] : undefined,
+              originX: "center",
+              originY: "center",
+              selectable: false,
+              evented: false,
+              objectCaching: false,
+            });
+            groupObjects.push(frameRect);
+
+            const slots = canvases.map((canvas) =>
+              canvas ? { width: canvas.width || 100, height: canvas.height || 100 } : null
+            );
+            const placements = layoutDoodleAlphabetRow(slots, {
+              renderWidth,
+              renderHeight,
+              letterSpacing,
+              autoFitContainer,
+              align,
+            });
+
+            for (let i = 0; i < canvases.length; i++) {
+              const canvas = canvases[i];
+              const place = placements[i];
+              if (!canvas || !place) continue;
+              const img = new fabric.Image(canvas);
+              img.scale(place.displayH / Math.max(1, canvas.height || 100));
+              img.set({
+                left: place.left,
+                top: place.top,
+                originX: "center",
+                originY: "center",
+                selectable: false,
+                evented: false,
+                objectCaching: false,
+              });
+              groupObjects.push(img);
+            }
+
+            const oldGroup = liveFc.getObjects().find((o: any) => o.layerId === layer.id);
+            if (oldGroup) liveFc.remove(oldGroup);
+
+            const doodleGroup = new fabric.Group(groupObjects, {
+              left: centerX,
+              top: centerY,
+              originX: "center",
+              originY: "center",
+              angle: layer.rotation,
+              width: renderWidth,
+              height: renderHeight,
+              selectable: !layer.isLocked,
+              evented: !layer.isLocked,
+              objectCaching: true,
+              dirty: true,
+            });
+
+            (doodleGroup as any).layerId = layer.id;
+            (doodleGroup as any).layerType = "DOODLE_ALPHABET";
+            (doodleGroup as any)._doodleFingerprint = currentFingerprint;
+
+            liveFc.add(doodleGroup);
+            return doodleGroup;
+          };
+
+          const hasGlyph = assignments.some((a) => a.imageUrl);
+          if (!hasGlyph) {
             if (existingDoodleGroup) fc.remove(existingDoodleGroup);
 
             const fallbackText = new fabric.Text(inputText || "DOODLE", {
@@ -1365,143 +1573,37 @@ export default function StudioCanvas({
               angle: layer.rotation,
             });
             (fallbackText as any).layerId = layer.id;
+            (fallbackText as any).layerType = "DOODLE_ALPHABET";
             (fallbackText as any)._doodleFingerprint = currentFingerprint;
             fc.add(fallbackText);
             obj = fallbackText;
           } else {
-            Promise.all(
-              assignments.map((item) => {
-                if (!item.imageUrl) return Promise.resolve(null);
-                return loadAndTrimImage(item.imageUrl).then((trimmedCanvas) => {
-                  if (!trimmedCanvas) return null;
-                  return new fabric.Image(trimmedCanvas);
-                });
-              })
-            ).then((imgObjs) => {
-              if (!fc) return;
+            const canvases = assignments.map((item) =>
+              item.imageUrl ? getCachedTrimmedImage(item.imageUrl) || null : null
+            );
+            const allCached = assignments.every((item, i) => !item.imageUrl || canvases[i]);
 
-              isUpdatingFromFabricRef.current = true;
-
-              const groupObjects: fabric.Object[] = [];
-
-              const frameRect = new fabric.Rect({
-                left: 0,
-                top: 0,
-                width: renderWidth,
-                height: renderHeight,
-                fill: "transparent",
-                stroke: isSelected ? "#9333ea" : "transparent",
-                strokeWidth: isSelected ? 1 : 0,
-                strokeDashArray: isSelected ? [4, 4] : undefined,
-                originX: "center",
-                originY: "center",
-                selectable: false,
-                evented: false,
-              });
-              groupObjects.push(frameRect);
-
-              const baseMaxLetterH = renderHeight * 0.85;
-              const letterMeta: { img: fabric.Image; w: number; h: number }[] = [];
-              let rawTotalW = 0;
-
-              imgObjs.forEach((img) => {
-                if (!img) {
-                  rawTotalW += baseMaxLetterH * 0.5 + letterSpacing;
-                  return;
+            if (allCached) {
+              const doodleGroup = commitDoodleGroup(canvases);
+              if (doodleGroup) obj = doodleGroup;
+            } else {
+              preloadDoodleLetterImages(assignments).then(() => {
+                if (doodleBuildFpRef.current[layer.id] !== currentFingerprint) return;
+                const ready = assignments.map((item) =>
+                  item.imageUrl ? getCachedTrimmedImage(item.imageUrl) || null : null
+                );
+                isUpdatingFromFabricRef.current = true;
+                const doodleGroup = commitDoodleGroup(ready);
+                if (doodleGroup && isSelected) {
+                  const liveFc = fabricCanvasRef.current;
+                  if (liveFc) liveFc.setActiveObject(doodleGroup);
                 }
-                const origW = img.width || 100;
-                const origH = img.height || 100;
-                const scale = baseMaxLetterH / origH;
-                const letterW = origW * scale;
-
-                letterMeta.push({ img, w: letterW, h: baseMaxLetterH });
-                rawTotalW += letterW + letterSpacing;
+                fabricCanvasRef.current?.requestRenderAll();
+                setTimeout(() => {
+                  isUpdatingFromFabricRef.current = false;
+                }, 100);
               });
-
-              if (letterMeta.length > 0) rawTotalW -= letterSpacing;
-
-              // Compute auto-fit scaling factor (Downscale ONLY when text overflows container width; NEVER upscale short words!)
-              let fitScale = 1;
-              if (autoFitContainer && rawTotalW > renderWidth) {
-                fitScale = renderWidth / Math.max(1, rawTotalW);
-              }
-
-              const finalLetterSpacing = letterSpacing * fitScale;
-              const finalMaxLetterH = baseMaxLetterH * fitScale;
-
-              let finalTotalW = 0;
-              imgObjs.forEach((img) => {
-                if (!img) {
-                  finalTotalW += finalMaxLetterH * 0.5 + finalLetterSpacing;
-                  return;
-                }
-                const meta = letterMeta.find((m) => m.img === img);
-                if (meta) {
-                  meta.w = meta.w * fitScale;
-                  meta.h = meta.h * fitScale;
-                  const origH = img.height || 100;
-                  img.scale(meta.h / origH);
-                  finalTotalW += meta.w + finalLetterSpacing;
-                }
-              });
-
-              if (letterMeta.length > 0) finalTotalW -= finalLetterSpacing;
-
-              let startX = -finalTotalW / 2;
-              if (align === "left") startX = -renderWidth / 2 + 10;
-              else if (align === "right") startX = renderWidth / 2 - finalTotalW - 10;
-
-              let currentX = startX;
-
-              imgObjs.forEach((img) => {
-                if (!img) {
-                  currentX += finalMaxLetterH * 0.5 + finalLetterSpacing;
-                  return;
-                }
-                const meta = letterMeta.find((m) => m.img === img);
-                const w = meta?.w || 50;
-
-                img.set({
-                  left: currentX + w / 2,
-                  top: 0,
-                  originX: "center",
-                  originY: "center",
-                });
-                groupObjects.push(img);
-                currentX += w + finalLetterSpacing;
-              });
-
-              const oldGroup = fc.getObjects().find((o: any) => o.layerId === layer.id);
-              if (oldGroup) fc.remove(oldGroup);
-
-              const doodleGroup = new fabric.Group(groupObjects, {
-                left: centerX,
-                top: centerY,
-                originX: "center",
-                originY: "center",
-                angle: layer.rotation,
-                width: renderWidth,
-                height: renderHeight,
-                selectable: !layer.isLocked,
-                evented: !layer.isLocked,
-              });
-
-              (doodleGroup as any).layerId = layer.id;
-              (doodleGroup as any).layerType = "DOODLE_ALPHABET";
-              (doodleGroup as any)._doodleFingerprint = currentFingerprint;
-
-              fc.add(doodleGroup);
-
-              if (isSelected) {
-                fc.setActiveObject(doodleGroup);
-              }
-
-              fc.requestRenderAll();
-
-              setTimeout(() => {
-                isUpdatingFromFabricRef.current = false;
-              }, 100);
-            });
+            }
           }
         }
       } else if (layer.layerType === "MASK") {
@@ -1640,7 +1742,7 @@ export default function StudioCanvas({
             selectable: !layer.isLocked,
             evented: !layer.isLocked,
             lockUniScaling: true,
-            objectCaching: false,
+            objectCaching: true,
             dirty: true,
           });
           img.setControlsVisibility({
@@ -1691,9 +1793,15 @@ export default function StudioCanvas({
           }
           obj = placeholder as any;
 
-          rasterizeClipArtFrame(instance)
-            .then((dataUrl) => {
-              if (!dataUrl) return;
+          pendingAssetByLayer.set(layer.id, fp);
+          (instance.groups || []).forEach((g) => {
+            (g.options || []).forEach((o) => {
+              if (o.assetImageUrl) void loadClipArtImage(o.assetImageUrl).catch(() => {});
+            });
+          });
+          rasterizeClipArtFrameToCanvas(instance)
+            .then((plateCanvas) => {
+              if (!plateCanvas || pendingAssetByLayer.get(layer.id) !== fp) return;
               const still = layersRef.current.find((l) => l.id === layer.id);
               if (!still || still.layerType !== "CLIPART") return;
               const stillFp = `${still.id}_${clipArtFingerprint({
@@ -1706,32 +1814,28 @@ export default function StudioCanvas({
               })}_${still.properties?.clipArtReloadedAt || 0}`;
               if (stillFp !== fp) return;
 
-              const imgEl = new Image();
-              imgEl.crossOrigin = "anonymous";
-              imgEl.onload = () => {
-                const liveFc = fabricCanvasRef.current;
-                if (!liveFc) return;
-                const stale = liveFc.getObjects().find((o: any) => o.layerId === layer.id);
-                if (stale) liveFc.remove(stale);
-                const fabImg = new fabric.Image(imgEl, {
-                  originX: "center",
-                  originY: "center",
-                });
-                (fabImg as any).layerId = layer.id;
-                (fabImg as any).layerType = "CLIPART";
-                (fabImg as any)._clipFp = fp;
-                (fabImg as any).nativeWidth = imgEl.naturalWidth || instance.sourceWidth;
-                (fabImg as any).nativeHeight = imgEl.naturalHeight || instance.sourceHeight;
-                applyClipArtTransform(fabImg);
-                liveFc.add(fabImg);
-                const vis = layersRef.current.filter((l) => l.isVisible);
-                enforceZIndexOrder(liveFc, vis);
-                if (selectedLayerIdsRef.current.includes(layer.id)) {
-                  liveFc.setActiveObject(fabImg);
-                }
-                liveFc.requestRenderAll();
-              };
-              imgEl.src = dataUrl;
+              const liveFc = fabricCanvasRef.current;
+              if (!liveFc) return;
+              const stale = liveFc.getObjects().find((o: any) => o.layerId === layer.id);
+              if (stale) liveFc.remove(stale);
+              const fabImg = new fabric.Image(plateCanvas, {
+                originX: "center",
+                originY: "center",
+                objectCaching: true,
+              });
+              (fabImg as any).layerId = layer.id;
+              (fabImg as any).layerType = "CLIPART";
+              (fabImg as any)._clipFp = fp;
+              (fabImg as any).nativeWidth = plateCanvas.width || instance.sourceWidth;
+              (fabImg as any).nativeHeight = plateCanvas.height || instance.sourceHeight;
+              applyClipArtTransform(fabImg);
+              liveFc.add(fabImg);
+              const vis = layersRef.current.filter((l) => l.isVisible);
+              enforceZIndexOrder(liveFc, vis, false);
+              if (selectedLayerIdsRef.current.includes(layer.id)) {
+                liveFc.setActiveObject(fabImg);
+              }
+              scheduleFabricRender(liveFc);
             })
             .catch(() => {});
         }
@@ -1749,26 +1853,35 @@ export default function StudioCanvas({
         let renderRotation = layer.rotation;
         let flipHFlag = Boolean(props.flipH);
         let flipVFlag = Boolean(props.flipV);
+        let freeTransform = false;
 
         if (layer.linkedFieldId) {
           const linkedF = (fields || []).find((f) => f.id === layer.linkedFieldId);
           if (linkedF) {
             const config = linkedF.config || {};
+            freeTransform = Boolean(config.freeTransform);
             if (config.isConditionOnly) {
               assetUrl = "";
             } else {
               const opts = config.options || [];
+              opts.forEach((o: any) => {
+                const preloadUrl = o?.assetImageUrl || o?.assetUrl;
+                if (preloadUrl) void loadClipArtImage(preloadUrl).catch(() => {});
+              });
               const activeOpt = opts.find((o: any) => o.id === linkedF.activeOptionId) || opts[0];
               if (activeOpt && activeOpt.isVisible !== false) {
                 assetUrl = isEmptyOption(activeOpt) ? "" : activeOpt.assetImageUrl || "";
-                if (activeOpt.posX !== undefined) renderPosX = activeOpt.posX;
-                if (activeOpt.posY !== undefined) renderPosY = activeOpt.posY;
-                if (activeOpt.width !== undefined) renderWidth = activeOpt.width;
-                if (activeOpt.height !== undefined) renderHeight = activeOpt.height;
-                if (activeOpt.rotation !== undefined) renderRotation = activeOpt.rotation;
-                if (activeOpt.opacity !== undefined) opacity = Number(activeOpt.opacity);
-                if (activeOpt.flipH !== undefined) flipHFlag = Boolean(activeOpt.flipH);
-                if (activeOpt.flipV !== undefined) flipVFlag = Boolean(activeOpt.flipV);
+                const applyOptGeom = useOptionGeometry === "always" || freeTransform;
+                if (applyOptGeom) {
+                  if (activeOpt.posX !== undefined) renderPosX = activeOpt.posX;
+                  if (activeOpt.posY !== undefined) renderPosY = activeOpt.posY;
+                  if (activeOpt.width !== undefined) renderWidth = activeOpt.width;
+                  if (activeOpt.height !== undefined) renderHeight = activeOpt.height;
+                  if (activeOpt.rotation !== undefined) renderRotation = activeOpt.rotation;
+                  if (activeOpt.opacity !== undefined) opacity = Number(activeOpt.opacity);
+                  if (activeOpt.flipH !== undefined) flipHFlag = Boolean(activeOpt.flipH);
+                  if (activeOpt.flipV !== undefined) flipVFlag = Boolean(activeOpt.flipV);
+                }
               } else {
                 assetUrl = "";
               }
@@ -1818,13 +1931,20 @@ export default function StudioCanvas({
                     id: l.id,
                     label: l.name,
                     assetImageUrl: url,
-                    relX: l.posX,
-                    relY: l.posY,
-                    relW: l.width,
-                    relH: l.height,
-                    rotation: l.rotation || 0,
-                    flipH: Boolean(l.properties?.flipH),
-                    flipV: Boolean(l.properties?.flipV),
+                    relX: (lf?.config?.freeTransform && active?.posX !== undefined ? active.posX : l.posX) as number,
+                    relY: lf?.config?.freeTransform && active?.posY !== undefined ? active.posY : l.posY,
+                    relW: lf?.config?.freeTransform && active?.width !== undefined ? active.width : l.width,
+                    relH: lf?.config?.freeTransform && active?.height !== undefined ? active.height : l.height,
+                    rotation:
+                      lf?.config?.freeTransform && active?.rotation !== undefined
+                        ? active.rotation
+                        : l.rotation || 0,
+                    flipH: Boolean(
+                      lf?.config?.freeTransform ? active?.flipH ?? l.properties?.flipH : l.properties?.flipH
+                    ),
+                    flipV: Boolean(
+                      lf?.config?.freeTransform ? active?.flipV ?? l.properties?.flipV : l.properties?.flipV
+                    ),
                   } as ClipArtPartOption;
                 })
                 .filter((p): p is ClipArtPartOption => Boolean(p))
@@ -1834,6 +1954,13 @@ export default function StudioCanvas({
                 .map((k) => `${k.id}:${k.assetImageUrl}:${k.relX},${k.relY},${k.relW},${k.relH}`)
                 .join(";")}`
             : "";
+
+          void loadClipArtImage(assetUrl).catch(() => {});
+          knockParts.forEach((k) => {
+            if (k.assetImageUrl) void loadClipArtImage(k.assetImageUrl).catch(() => {});
+          });
+
+          const useObjectCache = !linkedMaskLayer;
 
           const existingImgObj = fc.getObjects().find(
             (o: any) => o.layerId === layer.id && o instanceof fabric.Image
@@ -1861,7 +1988,7 @@ export default function StudioCanvas({
                 selectable: false,
                 evented: false,
                 lockUniScaling: true,
-                objectCaching: false,
+                objectCaching: true,
                 dirty: true,
               });
             } else {
@@ -1881,17 +2008,17 @@ export default function StudioCanvas({
               opacity: opacity,
               selectable: !layer.isLocked,
               evented: !layer.isLocked,
-              lockUniScaling: true,
-              objectCaching: false,
+              lockUniScaling: !freeTransform,
+              objectCaching: useObjectCache,
               dirty: true,
             });
             }
             applyLinkedMask(existingImgObj);
             existingImgObj.setControlsVisibility({
-              mt: false,
-              mb: false,
-              ml: false,
-              mr: false,
+              mt: freeTransform,
+              mb: freeTransform,
+              ml: freeTransform,
+              mr: freeTransform,
               tl: true,
               tr: true,
               bl: true,
@@ -1901,6 +2028,7 @@ export default function StudioCanvas({
             existingImgObj.setCoords();
             obj = existingImgObj;
           } else if (isSandwichFront) {
+            pendingAssetByLayer.set(layer.id, sandwichFp);
             rasterizePunchedPlate({
               width: widthPx,
               height: heightPx,
@@ -1918,90 +2046,81 @@ export default function StudioCanvas({
               },
               knockouts: knockParts,
             })
-              .then((dataUrl) => {
-                if (!fc) return;
-                const imgEl = new Image();
-                imgEl.onload = () => {
-                  if (!fc) return;
-                  const oldObj = fc.getObjects().find((o: any) => o.layerId === layer.id);
-                  if (oldObj) fc.remove(oldObj);
-                  const nativeW = imgEl.naturalWidth || widthPx;
-                  const nativeH = imgEl.naturalHeight || heightPx;
-                  const fabricImg = new fabric.Image(imgEl, {
-                    left: widthPx / 2,
-                    top: heightPx / 2,
-                    originX: "center",
-                    originY: "center",
-                    angle: 0,
-                    scaleX: widthPx / nativeW,
-                    scaleY: heightPx / nativeH,
-                    opacity,
-                    selectable: false,
-                    evented: false,
-                    lockUniScaling: true,
-                    objectCaching: false,
-                    dirty: true,
-                  });
-                  (fabricImg as any).layerId = layer.id;
-                  (fabricImg as any).assetUrl = assetUrl;
-                  (fabricImg as any)._sandwichFp = sandwichFp;
-                  (fabricImg as any).nativeWidth = nativeW;
-                  (fabricImg as any).nativeHeight = nativeH;
-                  fc.add(fabricImg);
-                  const currentLayers = layersRef.current || visibleLayers;
-                  enforceZIndexOrder(fc, currentLayers);
-                  fc.requestRenderAll();
-                };
-                imgEl.src = dataUrl;
+              .then((plateCanvas) => {
+                if (!fc || !plateCanvas || pendingAssetByLayer.get(layer.id) !== sandwichFp) return;
+                const oldObj = fc.getObjects().find((o: any) => o.layerId === layer.id);
+                if (oldObj) fc.remove(oldObj);
+                const nativeW = plateCanvas.width || widthPx;
+                const nativeH = plateCanvas.height || heightPx;
+                const fabricImg = new fabric.Image(plateCanvas, {
+                  left: widthPx / 2,
+                  top: heightPx / 2,
+                  originX: "center",
+                  originY: "center",
+                  angle: 0,
+                  scaleX: widthPx / nativeW,
+                  scaleY: heightPx / nativeH,
+                  opacity,
+                  selectable: false,
+                  evented: false,
+                  lockUniScaling: true,
+                  objectCaching: true,
+                  dirty: true,
+                });
+                (fabricImg as any).layerId = layer.id;
+                (fabricImg as any).assetUrl = assetUrl;
+                (fabricImg as any)._sandwichFp = sandwichFp;
+                (fabricImg as any).nativeWidth = nativeW;
+                (fabricImg as any).nativeHeight = nativeH;
+                fc.add(fabricImg);
+                const currentLayers = layersRef.current || visibleLayers;
+                enforceZIndexOrder(fc, currentLayers, false);
+                scheduleFabricRender(fc);
               })
               .catch(() => {});
           } else {
-            const imgEl = new Image();
-            imgEl.crossOrigin = "anonymous";
-            imgEl.src = assetUrl;
-            imgEl.onerror = () => {
-              console.error("❌ Failed to load canvas asset image:", assetUrl);
-            };
-            imgEl.onload = () => {
-              if (!fc) return;
-              const nativeW = imgEl.naturalWidth || imgEl.width || renderWidth;
-              const nativeH = imgEl.naturalHeight || imgEl.height || renderHeight;
+            pendingAssetByLayer.set(layer.id, assetUrl);
+            loadClipArtImage(assetUrl)
+              .then((imgEl) => {
+                if (!fc || pendingAssetByLayer.get(layer.id) !== assetUrl) return;
+                const nativeW = imgEl.naturalWidth || imgEl.width || renderWidth;
+                const nativeH = imgEl.naturalHeight || imgEl.height || renderHeight;
 
-              const oldObj = fc.getObjects().find((o: any) => o.layerId === layer.id);
-              if (oldObj) fc.remove(oldObj);
+                const oldObj = fc.getObjects().find((o: any) => o.layerId === layer.id);
+                if (oldObj) fc.remove(oldObj);
 
-              const currentLayers = layersRef.current || visibleLayers;
-              const freshLinkedMaskLayer = findLinkedMaskLayer(currentLayers, layer);
-              const freshMaskFab = freshLinkedMaskLayer
-                ? fc.getObjects().find((o: any) => o.layerId === freshLinkedMaskLayer.id)
-                : undefined;
+                const currentLayers = layersRef.current || visibleLayers;
+                const freshLinkedMaskLayer = findLinkedMaskLayer(currentLayers, layer);
+                const freshMaskFab = freshLinkedMaskLayer
+                  ? fc.getObjects().find((o: any) => o.layerId === freshLinkedMaskLayer.id)
+                  : undefined;
 
-              const flipH = flipHFlag ? -1 : 1;
-              const flipV = flipVFlag ? -1 : 1;
-              const baseScaleX = (renderWidth / nativeW) * flipH;
-              const baseScaleY = (renderHeight / nativeH) * flipV;
+                const flipH = flipHFlag ? -1 : 1;
+                const flipV = flipVFlag ? -1 : 1;
+                const baseScaleX = (renderWidth / nativeW) * flipH;
+                const baseScaleY = (renderHeight / nativeH) * flipV;
 
-              const fabricImg = new fabric.Image(imgEl, {
-                left: centerX,
-                top: centerY,
-                originX: "center",
-                originY: "center",
-                angle: renderRotation,
-                scaleX: baseScaleX,
-                scaleY: baseScaleY,
-                opacity: opacity,
-                selectable: !layer.isLocked,
-                evented: !layer.isLocked,
-                lockUniScaling: true,
-                objectCaching: false,
-                dirty: true,
-              });
+                const fabricImg = new fabric.Image(imgEl, {
+                  left: centerX,
+                  top: centerY,
+                  originX: "center",
+                  originY: "center",
+                  angle: renderRotation,
+                  scaleX: baseScaleX,
+                  scaleY: baseScaleY,
+                  opacity: opacity,
+                  selectable: !layer.isLocked,
+                  evented: !layer.isLocked,
+                  lockUniScaling: !freeTransform,
+                  objectCaching: !freshLinkedMaskLayer,
+                  dirty: true,
+                });
 
               fabricImg.setControlsVisibility({
-                mt: false,
-                mb: false,
-                ml: false,
-                mr: false,
+                mt: freeTransform,
+                mb: freeTransform,
+                ml: freeTransform,
+                mr: freeTransform,
                 tl: true,
                 tr: true,
                 bl: true,
@@ -2026,8 +2145,12 @@ export default function StudioCanvas({
 
               fc.add(fabricImg);
               if (selectedLayerId === layer.id) fc.setActiveObject(fabricImg);
-              enforceZIndexOrder(fc, currentLayers);
-            };
+              enforceZIndexOrder(fc, currentLayers, false);
+              scheduleFabricRender(fc);
+              })
+              .catch((err) => {
+                console.error("Failed to load canvas asset image:", assetUrl, err);
+              });
           }
         } else {
           // If this layer is a List container layer with no active graphic asset image, do NOT render any canvas placeholder frame!
@@ -2210,7 +2333,7 @@ export default function StudioCanvas({
     setTimeout(() => {
       isUpdatingFromFabricRef.current = false;
     }, 50);
-  }, [layers, fields, selectedLayerId, selectedLayerIds, widthPx, heightPx, onSelectLayer, onSelectLayers, isPreviewMode, maskCacheVersion]);
+  }, [layers, fields, selectedLayerId, selectedLayerIds, widthPx, heightPx, onSelectLayer, onSelectLayers, isPreviewMode, maskCacheVersion, useOptionGeometry, doodlePacks]);
 
   return (
     <div className={`w-full h-full min-h-full bg-slate-200/70 overflow-auto p-4 relative select-none flex flex-col ${onResizeCanvas && !isPreviewMode && frameResizeMode ? "pb-12" : ""}`}>
@@ -2332,13 +2455,7 @@ export function getActiveFabricCanvas(): fabric.Canvas | null {
 
 // Helper to load image as Promise
 function loadImagePromise(url: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = url;
-  });
+  return loadClipArtImage(url);
 }
 
 function isMaskGuideObject(obj: any): boolean {
@@ -2390,6 +2507,7 @@ export async function generateScreenThumbnailDataUrl(
           if (obj instanceof fabric.Group) {
             const frameRect = obj.getObjects()[0];
             if (frameRect) frameRect.set({ stroke: "transparent" });
+            obj.set({ dirty: true });
           }
         });
         fc.renderAll();
@@ -2405,6 +2523,7 @@ export async function generateScreenThumbnailDataUrl(
         if (obj instanceof fabric.Group) {
           const frameRect = obj.getObjects()[0];
           if (frameRect) frameRect.set({ stroke: "rgba(79, 70, 229, 0.35)" });
+          obj.set({ dirty: true });
         }
       });
       if (activeObjBeforeExport) {
@@ -2475,6 +2594,7 @@ export async function exportActiveScreenPNG(
           if (obj instanceof fabric.Group) {
             const frameRect = obj.getObjects()[0];
             if (frameRect) frameRect.set({ stroke: "transparent" });
+            obj.set({ dirty: true });
           }
         });
         fc.renderAll();
@@ -2495,6 +2615,7 @@ export async function exportActiveScreenPNG(
               stroke: (obj as any).layerType === "DOODLE_ALPHABET" ? "#9333ea" : "rgba(79, 70, 229, 0.35)",
             });
           }
+          obj.set({ dirty: true });
         }
       });
       if (activeObjBeforeExport) {

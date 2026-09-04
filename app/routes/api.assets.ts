@@ -1,5 +1,6 @@
 import { json, type LoaderFunctionArgs } from "@remix-run/node";
 import prisma from "../db.server";
+import { GENERATED_MEDIA_WHERE_NOT } from "../utils/generatedMedia";
 
 // GET /api/assets?page=1&limit=20&folder=ALL&category=ALL&search=...
 export async function loader({ request }: LoaderFunctionArgs) {
@@ -10,7 +11,7 @@ export async function loader({ request }: LoaderFunctionArgs) {
   const category = url.searchParams.get("category") || "ALL";
   const search = (url.searchParams.get("search") || "").trim();
 
-  const where: any = {};
+  const where: any = { NOT: GENERATED_MEDIA_WHERE_NOT };
 
   if (folder !== "ALL") {
     where.folder = folder;

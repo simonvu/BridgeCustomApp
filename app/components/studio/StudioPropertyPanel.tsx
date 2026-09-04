@@ -3,27 +3,16 @@ import { CanvasLayerItem } from "./StudioCanvas";
 import { StudioFieldItem } from "./StudioFieldPanel";
 import {
   SlidersHorizontal,
-  Type,
   ImageIcon,
   Sparkles,
-  Link,
-  Maximize2,
-  AlignLeft,
-  AlignCenter,
-  AlignRight,
   Plus,
   Trash2,
   Palette,
   Eye,
   EyeOff,
   Upload,
-  Edit3,
   Scissors,
   Layers,
-  ListFilter,
-  Radio,
-  LayoutGrid,
-  Images,
   Copy,
   Grid,
   X,
@@ -32,17 +21,79 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { autoGenerateSquareThumbnail } from "../../utils/thumbnailGenerator";
-import { isEmptyOption } from "../../utils/fieldHelpers";
+import {
+  isEmptyOption,
+  isListItemField,
+  isConditionOnlyField,
+  normalizeDisplayType,
+  listRequiresItemImages,
+  optionHasListImage,
+} from "../../utils/fieldHelpers";
 import type { ClipArtInstanceGroup } from "../../utils/clipArtInstance";
 import { clipArtGroupsForArtworkDisplay, resolveDrivenClipArtGroups } from "../../utils/clipArtInstance";
-import StudioFontPicker from "./StudioFontPicker";
-import TextGradientEditor from "./TextGradientEditor";
 
 export interface BackgroundOptionItem {
   id: string;
   label?: string;
   assetUrl?: string;
   aspectRatio?: number;
+}
+
+function PersonalizationControls({
+  allowPersonalized,
+  isRequired,
+  helpText,
+  onAllowPersonalizedChange,
+  onRequiredChange,
+  onHelpTextChange,
+  helpPlaceholder = "Shown under the field on the storefront",
+}: {
+  allowPersonalized: boolean;
+  isRequired: boolean;
+  helpText: string;
+  onAllowPersonalizedChange: (checked: boolean) => void;
+  onRequiredChange: (checked: boolean) => void;
+  onHelpTextChange: (value: string) => void;
+  helpPlaceholder?: string;
+}) {
+  return (
+    <div className="space-y-2.5">
+      <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer text-xs" title="Show this field on the storefront so the customer can personalize it">
+        <input
+          type="checkbox"
+          checked={allowPersonalized}
+          onChange={(e) => onAllowPersonalizedChange(e.target.checked)}
+          className="rounded text-emerald-600 focus:ring-emerald-500"
+        />
+        <span className="text-emerald-950 font-semibold">Allow Personalized</span>
+      </label>
+      {allowPersonalized && (
+        <div className="space-y-2.5">
+          <div>
+            <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+              Instructional Help Text
+            </label>
+            <input
+              type="text"
+              value={helpText}
+              onChange={(e) => onHelpTextChange(e.target.value)}
+              className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none text-xs text-slate-800 bg-white"
+              placeholder={helpPlaceholder}
+            />
+          </div>
+          <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer text-xs" title="Require the customer to fill this field before ordering">
+            <input
+              type="checkbox"
+              checked={isRequired}
+              onChange={(e) => onRequiredChange(e.target.checked)}
+              className="rounded text-indigo-600 focus:ring-indigo-500"
+            />
+            <span>Required</span>
+          </label>
+        </div>
+      )}
+    </div>
+  );
 }
 
 interface StudioPropertyPanelProps {
@@ -110,7 +161,7 @@ export default function StudioPropertyPanel({
       <div className="flex flex-col h-full bg-white w-full select-none items-center justify-center p-6 text-center text-slate-400">
         <SlidersHorizontal className="w-8 h-8 text-slate-300 mb-2" />
         <p className="text-xs font-semibold text-slate-600">No Layer Selected</p>
-        <p className="text-[11px] text-slate-400">Click a layer on the canvas or layer stack to edit properties</p>
+        <p className="text-[11px] text-slate-400">Click a layer on the canvas or layer list to edit properties</p>
       </div>
     );
   }
@@ -166,12 +217,25 @@ export default function StudioPropertyPanel({
     handlePropChange("activeOptionIndex", Math.max(0, index - 1));
   };
 
-  const isListTypeLayer = Boolean(
-    selectedLayer.linkedFieldId ||
-    selectedLayer.name.toLowerCase().includes("list") ||
-    selectedLayer.name.toLowerCase().includes("dropdown") ||
-    selectedLayer.name.toLowerCase().includes("select")
-  );
+  const linkedFieldForLayer = fields.find((f) => f.id === selectedLayer.linkedFieldId);
+  const isListTypeLayer = isListItemField(linkedFieldForLayer);
+
+  const applyLayerPersonalization = (patch: {
+    allowPersonalized?: boolean;
+    isRequired?: boolean;
+    helpText?: string;
+  }) => {
+    handlePropChange(patch);
+    if (linkedFieldForLayer && onUpdateField) {
+      const next: Partial<StudioFieldItem> = {};
+      if (patch.allowPersonalized !== undefined) next.allowPersonalized = patch.allowPersonalized;
+      if (patch.isRequired !== undefined) next.isRequired = patch.isRequired;
+      if (patch.helpText !== undefined) {
+        next.config = { ...(linkedFieldForLayer.config || {}), helpText: patch.helpText };
+      }
+      onUpdateField(linkedFieldForLayer.id, next);
+    }
+  };
 
   return (
     <div className="flex flex-col h-full bg-white w-full select-none overflow-y-auto">
@@ -179,7 +243,7 @@ export default function StudioPropertyPanel({
       <div className="h-9 px-3 border-b border-slate-200 bg-slate-50/80 flex items-center justify-between shrink-0">
         <h3 className="font-bold text-slate-800 text-xs flex items-center gap-1.5 uppercase tracking-wider">
           <SlidersHorizontal className="w-3.5 h-3.5 text-indigo-600" />
-          {selectedLayer.name} Properties
+          Properties
         </h3>
       </div>
 
@@ -194,6 +258,9 @@ export default function StudioPropertyPanel({
               onChange={(e) => onUpdateLayer(selectedLayer.id, { name: e.target.value })}
               className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-indigo-500 focus:outline-none font-semibold text-slate-800"
             />
+            <p className="text-[10px] text-slate-400 mt-1">
+              Canvas transform (X, Y, size, rotation) is on the top toolbar.
+            </p>
           </div>
         )}
 
@@ -305,6 +372,15 @@ export default function StudioPropertyPanel({
                 </section>
               );
             })}
+            <PersonalizationControls
+              allowPersonalized={props.allowPersonalized !== false}
+              isRequired={props.isRequired !== false}
+              helpText={props.helpText !== undefined ? props.helpText : ""}
+              onAllowPersonalizedChange={(checked) => handlePropChange("allowPersonalized", checked)}
+              onRequiredChange={(checked) => handlePropChange("isRequired", checked)}
+              onHelpTextChange={(value) => handlePropChange("helpText", value)}
+              helpPlaceholder="e.g. Pick a style for this clip art"
+            />
           </div>
         )}
 
@@ -315,18 +391,8 @@ export default function StudioPropertyPanel({
             <div className="flex items-center justify-between bg-purple-50/60 p-2.5 rounded-xl border border-purple-100">
               <div className="flex items-center gap-1.5 font-bold text-slate-800 text-xs uppercase tracking-wider">
                 <Sparkles className="w-4 h-4 text-purple-600" />
-                <span>Doodle Alphabet Controls</span>
+                <span>Personalization</span>
               </div>
-
-              <button
-                type="button"
-                onClick={() => handlePropChange("seed", (props.seed || 12345) + 1)}
-                className="text-[10px] font-extrabold text-purple-700 bg-white border border-purple-200 px-2.5 py-1 rounded-lg hover:bg-purple-100 transition cursor-pointer flex items-center gap-1 shrink-0 shadow-2xs"
-                title="Re-roll / Reshuffle style variant assignments for each letter"
-              >
-                <Sparkles className="w-3 h-3 text-purple-600" />
-                <span>🔀 Re-roll Shuffle</span>
-              </button>
             </div>
 
             {/* 1. Input Text String */}
@@ -407,94 +473,15 @@ export default function StudioPropertyPanel({
               </div>
             )}
 
-            {/* 5. Letter Spacing & Max Height */}
-            <div className="grid grid-cols-2 gap-3 pt-2">
-              <div>
-                <label className="text-[10px] font-bold text-slate-600 block mb-1 uppercase tracking-wider">
-                  Letter Spacing ({props.letterSpacing ?? 4}px)
-                </label>
-                <input
-                  type="range"
-                  min="-10"
-                  max="40"
-                  value={props.letterSpacing ?? 4}
-                  onChange={(e) => handlePropChange("letterSpacing", Number(e.target.value))}
-                  className="w-full accent-purple-600"
-                />
-              </div>
-
-              <div>
-                <label className="text-[10px] font-bold text-slate-600 block mb-1 uppercase tracking-wider">
-                  Max Height ({props.maxLetterHeight ?? 120}px)
-                </label>
-                <input
-                  type="range"
-                  min="40"
-                  max="300"
-                  value={props.maxLetterHeight ?? 120}
-                  onChange={(e) => handlePropChange("maxLetterHeight", Number(e.target.value))}
-                  className="w-full accent-purple-600"
-                />
-              </div>
-            </div>
-
-            {/* 6. Auto Fit to Container Toggle Option */}
-            <div className="pt-1">
-              <div className="bg-purple-50/50 p-2.5 rounded-xl border border-purple-100/90 flex items-center justify-between">
-                <div>
-                  <p className="font-extrabold text-xs text-slate-800">Auto Shrink to Fit Container</p>
-                  <p className="text-[10px] text-slate-500">Auto-downscale text when it overflows layer width</p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer shrink-0">
-                  <input
-                    type="checkbox"
-                    checked={props.autoFitContainer !== false}
-                    onChange={(e) => handlePropChange("autoFitContainer", e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600"></div>
-                </label>
-              </div>
-            </div>
-
-            {/* 7. Alignment */}
-            <div>
-              <label className="text-[10px] font-bold text-slate-600 block mb-1 uppercase tracking-wider">
-                Letter Alignment
-              </label>
-              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200">
-                <button
-                  type="button"
-                  onClick={() => handlePropChange("align", "left")}
-                  className={`flex-1 py-1 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
-                    props.align === "left" ? "bg-white text-purple-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
-                  }`}
-                >
-                  <AlignLeft className="w-3.5 h-3.5" />
-                  <span>Left</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handlePropChange("align", "center")}
-                  className={`flex-1 py-1 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
-                    !props.align || props.align === "center" ? "bg-white text-purple-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
-                  }`}
-                >
-                  <AlignCenter className="w-3.5 h-3.5" />
-                  <span>Center</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handlePropChange("align", "right")}
-                  className={`flex-1 py-1 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 cursor-pointer ${
-                    props.align === "right" ? "bg-white text-purple-700 shadow-2xs" : "text-slate-500 hover:text-slate-800"
-                  }`}
-                >
-                  <AlignRight className="w-3.5 h-3.5" />
-                  <span>Right</span>
-                </button>
-              </div>
-            </div>
+            <PersonalizationControls
+              allowPersonalized={props.allowPersonalized !== false}
+              isRequired={props.isRequired !== false}
+              helpText={props.helpText !== undefined ? props.helpText : ""}
+              onAllowPersonalizedChange={(checked) => handlePropChange("allowPersonalized", checked)}
+              onRequiredChange={(checked) => handlePropChange("isRequired", checked)}
+              onHelpTextChange={(value) => handlePropChange("helpText", value)}
+              helpPlaceholder="e.g. Type text to render custom doodle font art"
+            />
           </div>
         )}
 
@@ -504,16 +491,8 @@ export default function StudioPropertyPanel({
             {/* 1. Header & Regenerate Seed */}
             <div className="flex items-center justify-between bg-slate-50 p-2 rounded-lg border border-slate-200">
               <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5 uppercase tracking-wider">
-                <Grid className="w-4 h-4 text-blue-600" /> Word Search Puzzle ({((props.words && Array.isArray(props.words) ? props.words : ["SIMON", "LISA", "JANE", "HAPPY", "URI", "RONALDO", "MESSI"]) as string[]).length} words)
+                <Grid className="w-4 h-4 text-blue-600" /> Hidden Words ({((props.words && Array.isArray(props.words) ? props.words : ["SIMON", "LISA", "JANE", "HAPPY", "URI", "RONALDO", "MESSI"]) as string[]).length})
               </h4>
-              <button
-                type="button"
-                onClick={() => handlePropChange("seed", (props.seed || 12345) + 1)}
-                className="text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-200 px-2 py-1 rounded hover:bg-indigo-100 transition cursor-pointer flex items-center gap-1 shrink-0"
-              >
-                <Sparkles className="w-3 h-3" />
-                <span>Regenerate</span>
-              </button>
             </div>
 
             {/* 2. Hidden Words Manager */}
@@ -564,36 +543,9 @@ export default function StudioPropertyPanel({
               </span>
             </div>
 
-            {/* 3. Grid Dimensions & Placement Rules */}
+            {/* Placement constraints */}
             <div className="space-y-2 bg-slate-50 p-2.5 rounded-lg border border-slate-200">
-              <label className="text-[10px] font-bold text-slate-700 block uppercase tracking-wider">Grid & Placement Rules</label>
-              
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[10px] font-bold text-slate-600 block mb-1">Columns (Cols)</label>
-                  <select
-                    value={props.gridWidth || 10}
-                    onChange={(e) => handlePropChange("gridWidth", Number(e.target.value))}
-                    className="w-full bg-white border border-slate-300 rounded-md px-2 py-1 text-xs font-bold text-slate-800 outline-none cursor-pointer"
-                  >
-                    {[8, 9, 10, 11, 12, 13, 14, 15, 16].map((n) => (
-                      <option key={n} value={n}>{n} Cols</option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="text-[10px] font-bold text-slate-600 block mb-1">Rows (Rows)</label>
-                  <select
-                    value={props.gridHeight || 10}
-                    onChange={(e) => handlePropChange("gridHeight", Number(e.target.value))}
-                    className="w-full bg-white border border-slate-300 rounded-md px-2 py-1 text-xs font-bold text-slate-800 outline-none cursor-pointer"
-                  >
-                    {[8, 9, 10, 11, 12, 13, 14, 15, 16].map((n) => (
-                      <option key={n} value={n}>{n} Rows</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+              <label className="text-[10px] font-bold text-slate-700 block uppercase tracking-wider">Placement Constraints</label>
 
               <div>
                 <label className="text-[10px] font-bold text-slate-600 block mb-1">Word Intersections (Overlaps)</label>
@@ -602,9 +554,9 @@ export default function StudioPropertyPanel({
                   onChange={(e) => handlePropChange("overlapDensity", e.target.value)}
                   className="w-full bg-white border border-slate-300 rounded-md px-2 py-1 text-xs font-bold text-slate-800 outline-none cursor-pointer"
                 >
-                  <option value="BALANCED">✨ Harmony (1-2 Light Intersections - Recommended)</option>
-                  <option value="MINIMAL">🍃 Minimal (Spread Out / 0 Intersections)</option>
-                  <option value="HIGH">🔗 Dense (Many Intersections)</option>
+                  <option value="BALANCED">Harmony (1-2 light intersections)</option>
+                  <option value="MINIMAL">Minimal (spread out / 0 intersections)</option>
+                  <option value="HIGH">Dense (many intersections)</option>
                 </select>
               </div>
 
@@ -631,222 +583,15 @@ export default function StudioPropertyPanel({
               </div>
             </div>
 
-            {/* 4. Typography & Text Style */}
-            <div className="space-y-2 bg-slate-50 p-2.5 rounded-lg border border-slate-200">
-              <label className="text-[10px] font-bold text-slate-700 block uppercase tracking-wider">Typography & Text Style</label>
-              
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Font Family</label>
-                  <StudioFontPicker
-                    selectedFont={props.fontFamily || props.gridFontFamily || selectedLayer.fontFamily || "Roboto"}
-                    fonts={fonts}
-                    onSelectFont={(family) => {
-                      handlePropChange({ fontFamily: family, gridFontFamily: family });
-                      onUpdateLayer(selectedLayer.id, { fontFamily: family });
-                    }}
-                  />
-                </div>
-
-                <div>
-                  <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Font Size (pt)</label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="200"
-                    value={props.fontSize ?? props.gridFontSize ?? 22}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      if (val === "") {
-                        handlePropChange({ fontSize: "", gridFontSize: "" });
-                      } else {
-                        const v = Number(val);
-                        if (!isNaN(v)) {
-                          handlePropChange({ fontSize: v, gridFontSize: v });
-                        }
-                      }
-                    }}
-                    className="w-full bg-white border border-slate-300 rounded-md px-2 py-1 text-xs font-bold text-slate-800 text-center outline-none"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Word Case</label>
-                  <select
-                    value={props.textTransform || props.wordStyle || "UPPERCASE"}
-                    onChange={(e) => {
-                      handlePropChange({ textTransform: e.target.value, wordStyle: e.target.value });
-                    }}
-                    className="w-full bg-white border border-slate-300 rounded-md px-2 py-1 text-xs font-bold text-slate-800 outline-none cursor-pointer"
-                  >
-                    <option value="UPPERCASE">UPPERCASE (A B C)</option>
-                    <option value="LOWERCASE">lowercase (a b c)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Font Weight</label>
-                  <select
-                    value={props.fontWeight || "bold"}
-                    onChange={(e) => handlePropChange("fontWeight", e.target.value)}
-                    className="w-full bg-white border border-slate-300 rounded-md px-2 py-1 text-xs font-bold text-slate-800 outline-none cursor-pointer"
-                  >
-                    <option value="bold">Bold</option>
-                    <option value="normal">Normal</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            {/* 5. Colors Palette & Oval Highlight Tuning */}
-            <div className="space-y-3 bg-slate-50 p-2.5 rounded-lg border border-slate-200">
-              <label className="text-[10px] font-bold text-slate-700 block uppercase tracking-wider">Letter Text Colors</label>
-              
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[10px] font-semibold text-slate-600 block mb-1">Grid Filler Color</label>
-                  <div className="flex items-center gap-1.5 bg-white border border-slate-300 p-1 rounded-md shadow-2xs">
-                    <input
-                      type="color"
-                      value={props.gridTextColor || props.color || props.fill || "#1E293B"}
-                      onChange={(e) => {
-                        handlePropChange({ gridTextColor: e.target.value, color: e.target.value, fill: e.target.value });
-                      }}
-                      className="w-5 h-5 rounded cursor-pointer border-none bg-transparent p-0"
-                      title="Color of random background filler letters"
-                    />
-                    <span className="font-mono text-[10px] font-bold text-slate-700 uppercase truncate">
-                      {props.gridTextColor || props.color || props.fill || "#1E293B"}
-                    </span>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-[10px] font-semibold text-slate-600 block mb-1">Target Word Color</label>
-                  <div className="flex items-center gap-1.5 bg-white border border-slate-300 p-1 rounded-md shadow-2xs">
-                    <input
-                      type="color"
-                      value={props.wordTextColor || props.gridTextColor || props.color || "#1E293B"}
-                      onChange={(e) => {
-                        handlePropChange({ wordTextColor: e.target.value, highlightTextColor: e.target.value });
-                      }}
-                      className="w-5 h-5 rounded cursor-pointer border-none bg-transparent p-0"
-                      title="Color of target hidden word letters"
-                    />
-                    <span className="font-mono text-[10px] font-bold text-slate-700 uppercase truncate">
-                      {props.wordTextColor || props.gridTextColor || props.color || "#1E293B"}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Oval Capsule Highlights Settings */}
-              <div className="pt-2 border-t border-slate-200 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold text-slate-800">Show Oval Highlights</span>
-                  <input
-                    type="checkbox"
-                    checked={props.showHighlights !== false}
-                    onChange={(e) => handlePropChange("showHighlights", e.target.checked)}
-                    className="w-4 h-4 text-indigo-600 rounded cursor-pointer"
-                  />
-                </div>
-
-                {props.showHighlights !== false && (
-                  <div className="space-y-2.5 pt-1">
-                    {/* Border Controls */}
-                    <div className="grid grid-cols-2 gap-2 bg-white p-2 rounded-md border border-slate-200">
-                      <div>
-                        <label className="text-[10px] font-semibold text-slate-600 block mb-1">Oval Border Color</label>
-                        <div className="flex items-center gap-1 bg-slate-50 border border-slate-300 p-1 rounded-md">
-                          <input
-                            type="color"
-                            value={props.highlightColor || "#FD005D"}
-                            onChange={(e) => handlePropChange("highlightColor", e.target.value)}
-                            className="w-4 h-4 rounded cursor-pointer border-none bg-transparent p-0"
-                            title="Color of oval capsule highlight loops"
-                          />
-                          <span className="font-mono text-[9px] font-bold text-slate-700 uppercase truncate">
-                            {props.highlightColor || "#FD005D"}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div>
-                        <label className="text-[10px] font-semibold text-slate-600 block mb-1">
-                          Border Width ({props.highlightLineWidth || 4}px)
-                        </label>
-                        <input
-                          type="range"
-                          min="1"
-                          max="10"
-                          step="0.5"
-                          value={props.highlightLineWidth || 4}
-                          onChange={(e) => handlePropChange("highlightLineWidth", Number(e.target.value))}
-                          className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600 mt-1.5"
-                        />
-                      </div>
-                    </div>
-
-                    {/* Capsule Fill Controls */}
-                    <div className="bg-white p-2 rounded-md border border-slate-200 space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[10px] font-bold text-slate-700 uppercase tracking-wider">Capsule Background Fill</span>
-                        <label className="flex items-center gap-1 text-[10px] font-bold text-slate-700 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={props.transparentHighlightFill === true}
-                            onChange={(e) => handlePropChange("transparentHighlightFill", e.target.checked)}
-                            className="w-3.5 h-3.5 text-indigo-600 rounded cursor-pointer"
-                          />
-                          <span>Transparent Fill</span>
-                        </label>
-                      </div>
-
-                      {!props.transparentHighlightFill ? (
-                        <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-100">
-                          <div>
-                            <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">Fill Color</label>
-                            <div className="flex items-center gap-1 bg-slate-50 border border-slate-300 p-1 rounded-md">
-                              <input
-                                type="color"
-                                value={props.highlightFillColor || props.highlightColor || "#FD005D"}
-                                onChange={(e) => handlePropChange("highlightFillColor", e.target.value)}
-                                className="w-4 h-4 rounded cursor-pointer border-none bg-transparent p-0"
-                              />
-                              <span className="font-mono text-[9px] font-bold text-slate-700 uppercase truncate">
-                                {props.highlightFillColor || props.highlightColor || "#FD005D"}
-                              </span>
-                            </div>
-                          </div>
-
-                          <div>
-                            <label className="text-[10px] font-semibold text-slate-500 block mb-0.5">
-                              Fill Opacity ({Math.round((props.highlightFillOpacity !== undefined ? Number(props.highlightFillOpacity) : 0.22) * 100)}%)
-                            </label>
-                            <input
-                              type="range"
-                              min="0.05"
-                              max="1"
-                              step="0.05"
-                              value={props.highlightFillOpacity !== undefined ? Number(props.highlightFillOpacity) : 0.22}
-                              onChange={(e) => handlePropChange("highlightFillOpacity", Number(e.target.value))}
-                              className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600 mt-1.5"
-                            />
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="text-[10px] italic text-slate-400 bg-slate-50 p-1.5 rounded text-center">
-                          ✨ Capsule background is transparent (border line only)
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
+            <PersonalizationControls
+              allowPersonalized={props.allowPersonalized !== false}
+              isRequired={props.isRequired !== false}
+              helpText={props.helpText !== undefined ? props.helpText : ""}
+              onAllowPersonalizedChange={(checked) => handlePropChange("allowPersonalized", checked)}
+              onRequiredChange={(checked) => handlePropChange("isRequired", checked)}
+              onHelpTextChange={(value) => handlePropChange("helpText", value)}
+              helpPlaceholder="e.g. Enter names to hide in the puzzle"
+            />
           </div>
         )}
 
@@ -1031,42 +776,23 @@ export default function StudioPropertyPanel({
               />
             </div>
 
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                Instructional Help Text
-              </label>
-              <input
-                type="text"
-                value={props.helpText !== undefined ? props.helpText : ""}
-                onChange={(e) => handlePropChange("helpText", e.target.value)}
-                className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-blue-500 focus:outline-none text-xs text-slate-800 bg-white"
-                placeholder="e.g. Enter your custom name or message"
-              />
-            </div>
-
-            <TextGradientEditor props={props} onChange={(patch) => handlePropChange(patch)} />
-
-            <div className="flex items-center gap-4 pt-1">
-              <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer" title="Require customer to fill out this text field before ordering">
-                <input
-                  type="checkbox"
-                  checked={props.isRequired === true}
-                  onChange={(e) => handlePropChange("isRequired", e.target.checked)}
-                  className="rounded text-blue-600 focus:ring-blue-500"
-                />
-                <span>Required</span>
-              </label>
-
-              <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer" title="Allow customer to personalize this text field on storefront order">
-                <input
-                  type="checkbox"
-                  checked={props.allowPersonalized !== false}
-                  onChange={(e) => handlePropChange("allowPersonalized", e.target.checked)}
-                  className="rounded text-emerald-600 focus:ring-emerald-500"
-                />
-                <span className="text-emerald-950 font-semibold">Allow Personalized</span>
-              </label>
-            </div>
+            <PersonalizationControls
+              allowPersonalized={
+                linkedFieldForLayer ? linkedFieldForLayer.allowPersonalized !== false : props.allowPersonalized !== false
+              }
+              isRequired={linkedFieldForLayer ? linkedFieldForLayer.isRequired !== false : props.isRequired !== false}
+              helpText={
+                linkedFieldForLayer?.config?.helpText !== undefined
+                  ? String(linkedFieldForLayer.config.helpText || "")
+                  : props.helpText !== undefined
+                    ? props.helpText
+                    : ""
+              }
+              onAllowPersonalizedChange={(checked) => applyLayerPersonalization({ allowPersonalized: checked })}
+              onRequiredChange={(checked) => applyLayerPersonalization({ isRequired: checked })}
+              onHelpTextChange={(value) => applyLayerPersonalization({ helpText: value })}
+              helpPlaceholder="e.g. Enter your custom name or message"
+            />
 
             {/* Min / Max Length & Special Characters Filter */}
             <div className="space-y-2 pt-2 border-t border-slate-200">
@@ -1192,78 +918,22 @@ export default function StudioPropertyPanel({
                 <Sparkles className="w-5 h-5 text-emerald-600" /> Choose Image from R2 Library
               </button>
             )}
-
-            {/* Opacity Control */}
-            <div className="pt-2 border-t border-slate-100 space-y-1">
-              <div className="flex items-center justify-between text-[11px]">
-                <span className="font-bold text-slate-700">Opacity / Transparency</span>
-                <span className="font-mono font-bold text-indigo-600">
-                  {Math.round((props.opacity !== undefined ? Number(props.opacity) : 1) * 100)}%
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={props.opacity !== undefined ? Number(props.opacity) : 1}
-                  onChange={(e) => handlePropChange("opacity", Number(e.target.value))}
-                  className="flex-1 accent-indigo-600 cursor-pointer h-1.5 bg-slate-200 rounded-lg"
-                />
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={Math.round((props.opacity !== undefined ? Number(props.opacity) : 1) * 100)}
-                  onChange={(e) => handlePropChange("opacity", Math.max(0, Math.min(100, Number(e.target.value))) / 100)}
-                  className="w-12 text-center font-mono text-[11px] font-bold border border-slate-300 rounded px-1 py-0.5"
-                />
-              </div>
-            </div>
           </div>
         )}
 
         {/* List / Item Customization Properties Editor (Independent top-level block) */}
             {(() => {
-              let linkedField = fields.find((f) => f.id === selectedLayer.linkedFieldId);
+              const linkedField = fields.find((f) => f.id === selectedLayer.linkedFieldId);
 
-              const isOptionField =
-                linkedField &&
-                (linkedField.fieldType === "SELECT" ||
-                  linkedField.fieldType === "RADIO" ||
-                  linkedField.fieldType === "FIELD_ASSET");
-
-              const isListTypeLayer = Boolean(
-                isOptionField ||
-                selectedLayer.name.toLowerCase().includes("list") ||
-                selectedLayer.name.toLowerCase().includes("dropdown") ||
-                selectedLayer.name.toLowerCase().includes("select")
-              );
-
-              if (!linkedField && isListTypeLayer) {
-                linkedField = fields.find((f) => f.fieldType === "SELECT") || {
-                  id: selectedLayer.linkedFieldId || `field_${selectedLayer.id}`,
-                  label: selectedLayer.name || "List / Item",
-                  fieldType: "SELECT",
-                  displayType: "DROPDOWN",
-                  sortOrder: 0,
-                  isRequired: true,
-                  allowPersonalized: true,
-                  config: {
-                    isConditionOnly: false,
-                    options: [
-                      { id: `item_${Date.now()}_1`, label: "Item 1", value: "item_1", swatchImageUrl: "", assetImageUrl: "" },
-                      { id: `item_${Date.now()}_2`, label: "Item 2", value: "item_2", swatchImageUrl: "", assetImageUrl: "" },
-                      { id: `item_${Date.now()}_3`, label: "Item 3", value: "item_3", swatchImageUrl: "", assetImageUrl: "" },
-                    ],
-                  },
-                };
-              }
-
-              if (linkedField && (isOptionField || isListTypeLayer)) {
+              if (linkedField && isListItemField(linkedField)) {
                 const config = linkedField.config || {};
                 const options: any[] = config.options || [];
+                const conditionOnly = isConditionOnlyField(linkedField);
+                const viewType = normalizeDisplayType(linkedField.displayType);
+                const requiresItemImages = listRequiresItemImages(linkedField);
+                const missingImageCount = requiresItemImages
+                  ? options.filter((o) => !optionHasListImage(o)).length
+                  : 0;
                 const isItemSelected = Boolean(linkedField.activeOptionId);
                 const activeOptIdx = isItemSelected ? options.findIndex((o) => o.id === linkedField.activeOptionId) : -1;
                 const activeOpt = activeOptIdx >= 0 ? options[activeOptIdx] : null;
@@ -1277,16 +947,6 @@ export default function StudioPropertyPanel({
 
                 return (
                   <div className="pt-3 border-t border-slate-200 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <h4 className="font-bold text-xs text-indigo-900 flex items-center gap-1.5 uppercase tracking-wider">
-                        <ListFilter className="w-4 h-4 text-indigo-600" />
-                        {activeOpt ? "Item Properties" : "List Field Settings"}
-                      </h4>
-                      <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-800 font-bold text-[10px]">
-                        {linkedField.label}
-                      </span>
-                    </div>
-
                     {/* IF PARENT LIST LAYER IS SELECTED: SHOW LIST FIELD LEVEL PROPERTIES */}
                     {!activeOpt && (
                       <div className="space-y-3">
@@ -1315,12 +975,28 @@ export default function StudioPropertyPanel({
                           />
                         </div>
 
+                        <PersonalizationControls
+                          allowPersonalized={linkedField.allowPersonalized !== false}
+                          isRequired={linkedField.isRequired !== false}
+                          helpText={linkedField.config?.helpText ? String(linkedField.config.helpText) : ""}
+                          onAllowPersonalizedChange={(checked) =>
+                            handleFieldUpdate(linkedField.id, { allowPersonalized: checked })
+                          }
+                          onRequiredChange={(checked) =>
+                            handleFieldUpdate(linkedField.id, { isRequired: checked })
+                          }
+                          onHelpTextChange={(value) =>
+                            handleFieldUpdate(linkedField.id, { config: { ...config, helpText: value } })
+                          }
+                          helpPlaceholder="e.g. Choose the pet that appears on the design"
+                        />
+
                         {/* List Type: Condition Only Checkbox */}
                         <div className="bg-indigo-50/70 border border-indigo-200/90 rounded-lg p-2.5 space-y-1">
                           <label className="flex items-center gap-2 font-bold text-indigo-950 cursor-pointer text-xs select-none">
                             <input
                               type="checkbox"
-                              checked={config.isConditionOnly === true}
+                              checked={conditionOnly}
                               onChange={(e) => {
                                 handleFieldUpdate(linkedField.id, {
                                   config: { ...config, isConditionOnly: e.target.checked },
@@ -1331,125 +1007,35 @@ export default function StudioPropertyPanel({
                             <span>Condition only</span>
                           </label>
                           <p className="text-[10px] text-indigo-700 leading-tight pl-6">
-                            {config.isConditionOnly
-                              ? "Only used for conditional rules. Items inside will NOT show graphic images on Studio canvas."
-                              : "Items have graphic images visible on Studio canvas for design composition."}
+                            {conditionOnly
+                              ? "Form input only. Items are not drawn on canvas — use them in Conditions to show or hide other fields."
+                              : "Each item can have its own canvas graphic, size, and position (edit transform on the top toolbar)."}
                           </p>
                         </div>
 
                         {/* View Type Selector */}
-                        <div className="space-y-1.5">
+                        <div className="space-y-1">
                           <label className="block text-[11px] font-bold text-slate-700">View Type (Storefront Layout)</label>
-                          <div className="grid grid-cols-3 gap-1 bg-slate-100 p-1 rounded-lg border border-slate-200 text-[10px]">
-                            <button
-                              type="button"
-                              onClick={() => handleFieldUpdate(linkedField.id, { displayType: "DROPDOWN" })}
-                              className={`py-1.5 px-1 rounded font-bold transition flex items-center justify-center gap-1 cursor-pointer text-center ${
-                                !linkedField.displayType || linkedField.displayType === "DROPDOWN"
-                                  ? "bg-white text-indigo-700 shadow-2xs border border-indigo-200"
-                                  : "text-slate-600 hover:text-slate-900"
-                              }`}
-                              title="Dropdown (item name)"
-                            >
-                              <span>Dropdown</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleFieldUpdate(linkedField.id, { displayType: "RADIO" })}
-                              className={`py-1.5 px-1 rounded font-bold transition flex items-center justify-center gap-1 cursor-pointer text-center ${
-                                linkedField.displayType === "RADIO" || linkedField.displayType === "BUTTON"
-                                  ? "bg-white text-indigo-700 shadow-2xs border border-indigo-200"
-                                  : "text-slate-600 hover:text-slate-900"
-                              }`}
-                              title="Button View (item name)"
-                            >
-                              <span>Button View</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleFieldUpdate(linkedField.id, { displayType: "THUMBNAIL" })}
-                              className={`py-1.5 px-1 rounded font-bold transition flex items-center justify-center gap-1 cursor-pointer text-center ${
-                                linkedField.displayType === "THUMBNAIL" || linkedField.displayType === "IMAGE_SWATCH"
-                                  ? "bg-white text-indigo-700 shadow-2xs border border-indigo-200"
-                                  : "text-slate-600 hover:text-slate-900"
-                              }`}
-                              title="Thumbnail Swatcher"
-                            >
-                              <span>Thumbnail Swatch</span>
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* Required & Allow Personalized Checkboxes */}
-                        <div className="flex items-center gap-4 pt-1">
-                          <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer text-xs">
-                            <input
-                              type="checkbox"
-                              checked={linkedField.isRequired !== false}
-                              onChange={(e) => handleFieldUpdate(linkedField.id, { isRequired: e.target.checked })}
-                              className="rounded text-indigo-600 focus:ring-indigo-500"
-                            />
-                            <span>Required</span>
-                          </label>
-
-                          <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer text-xs">
-                            <input
-                              type="checkbox"
-                              checked={linkedField.allowPersonalized !== false}
-                              onChange={(e) => handleFieldUpdate(linkedField.id, { allowPersonalized: e.target.checked })}
-                              className="rounded text-emerald-600 focus:ring-emerald-500"
-                            />
-                            <span className="text-emerald-950 font-semibold">Allow Personalized</span>
-                          </label>
-                        </div>
-
-                        {/* Items Summary & Add Item Button */}
-                        <div className="pt-2 border-t border-slate-100 flex items-center justify-between">
-                          <span className="text-xs font-semibold text-slate-600">
-                            Configured Items ({options.length})
-                          </span>
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                onOpenMediaPickerForBatchOptions && onOpenMediaPickerForBatchOptions(linkedField.id)
-                              }
-                              className="text-xs font-bold bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 px-2.5 py-1 rounded-md transition flex items-center gap-1 cursor-pointer"
-                              title="Select multiple images from Media Library to create items automatically"
-                            >
-                              <Images className="w-3.5 h-3.5 text-indigo-600" /> + Add Items by Images
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const item1 = options[0];
-                                const firstPosX = item1?.posX !== undefined ? item1.posX : selectedLayer.posX;
-                                const firstPosY = item1?.posY !== undefined ? item1.posY : selectedLayer.posY;
-
-                                const newOpt = {
-                                  id: `item_${Date.now()}`,
-                                  label: `Item ${options.length + 1}`,
-                                  value: `item_${options.length + 1}`,
-                                  swatchImageUrl: "",
-                                  assetImageUrl: "",
-                                  posX: firstPosX,
-                                  posY: firstPosY,
-                                  width: 300,
-                                  height: 300,
-                                  rotation: item1?.rotation !== undefined ? item1.rotation : selectedLayer.rotation || 0,
-                                  opacity: item1?.opacity !== undefined ? item1.opacity : selectedLayer.properties?.opacity ?? 1,
-                                  isVisible: true,
-                                };
-                                onUpdateField(linkedField.id, {
-                                  config: { ...config, options: [...options, newOpt] },
-                                  activeOptionId: newOpt.id,
-                                });
-                              }}
-                              className="text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded-md transition flex items-center gap-1 cursor-pointer shadow-2xs"
-                            >
-                              <Plus className="w-3.5 h-3.5" /> Add Item
-                            </button>
-                          </div>
+                          <select
+                            value={viewType}
+                            onChange={(e) =>
+                              handleFieldUpdate(linkedField.id, {
+                                displayType: e.target.value as "DROPDOWN" | "RADIO" | "THUMBNAIL",
+                              })
+                            }
+                            className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white text-xs font-semibold text-slate-800 focus:ring-2 focus:ring-indigo-500 focus:outline-none cursor-pointer"
+                          >
+                            <option value="DROPDOWN">Dropdown</option>
+                            <option value="RADIO">Button View</option>
+                            <option value="THUMBNAIL">Thumbnail Swatch</option>
+                          </select>
+                          {requiresItemImages && (
+                            <p className={`text-[10px] leading-tight ${missingImageCount > 0 ? "text-rose-600 font-semibold" : "text-indigo-700"}`}>
+                              {missingImageCount > 0
+                                ? `${missingImageCount} item${missingImageCount === 1 ? "" : "s"} still need an image for Thumbnail Swatch.`
+                                : "Each item needs an image for Thumbnail Swatch."}
+                            </p>
+                          )}
                         </div>
                       </div>
                     )}
@@ -1462,6 +1048,7 @@ export default function StudioPropertyPanel({
                             Editing Item {activeOptIdx + 1}: {activeOpt.label || `Item ${activeOptIdx + 1}`}
                           </label>
                           <div className="flex items-center gap-1.5 shrink-0">
+                            {!conditionOnly && (
                             <button
                               type="button"
                               onClick={() => {
@@ -1484,17 +1071,24 @@ export default function StudioPropertyPanel({
                               )}
                               {activeOpt.isVisible !== false ? "Visible" : "Hidden"}
                             </button>
+                            )}
                             <button
                               type="button"
                               onClick={() => {
+                                const geom = conditionOnly
+                                  ? {}
+                                  : {
+                                      posX: (activeOpt.posX !== undefined ? activeOpt.posX : selectedLayer.posX) + 20,
+                                      posY: (activeOpt.posY !== undefined ? activeOpt.posY : selectedLayer.posY) + 20,
+                                      hasCustomPosition: true,
+                                    };
                                 const newOpt = {
                                   ...activeOpt,
                                   id: `item_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
                                   label: `${activeOpt.label || `Item ${activeOptIdx + 1}`} (Copy)`,
                                   value: `${activeOpt.value || `item_${activeOptIdx + 1}`}_copy_${Date.now().toString(36).substring(2, 6)}`,
-                                  posX: (activeOpt.posX !== undefined ? activeOpt.posX : selectedLayer.posX) + 20,
-                                  posY: (activeOpt.posY !== undefined ? activeOpt.posY : selectedLayer.posY) + 20,
                                   isVisible: true,
+                                  ...geom,
                                 };
                                 const updatedOpts = [...options];
                                 updatedOpts.splice(activeOptIdx + 1, 0, newOpt);
@@ -1550,53 +1144,99 @@ export default function StudioPropertyPanel({
                           />
                         </div>
 
-                        {/* Swatch Image Picker */}
-                        <div className="space-y-1">
-                          <label className="block text-[11px] font-semibold text-slate-700">
-                            Swatch Thumbnail Image
-                          </label>
-                          <div className="flex items-center gap-2">
-                            <div className="w-9 h-9 rounded-lg border border-slate-300 bg-slate-50 flex items-center justify-center shrink-0 overflow-hidden">
-                              {activeOpt.swatchImageUrl ? (
-                                <img src={activeOpt.swatchImageUrl} alt="" className="w-full h-full object-cover" />
-                              ) : (
-                                <ImageIcon className="w-4 h-4 text-slate-400" />
-                              )}
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                onOpenMediaPickerForOption && onOpenMediaPickerForOption(linkedField.id, activeOptIdx, "SWATCH")
-                              }
-                              className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 rounded-lg text-xs font-semibold transition cursor-pointer"
-                            >
-                              {activeOpt.swatchImageUrl ? "Change Swatch" : "+ Choose Swatch"}
-                            </button>
-                            {activeOpt.assetImageUrl && (
+                        {requiresItemImages ? (
+                          <div className="space-y-1">
+                            <label className="block text-[11px] font-semibold text-slate-700">
+                              Image <span className="text-rose-600">*</span>
+                            </label>
+                            <p className="text-[10px] text-slate-500 -mt-0.5">
+                              Required for Thumbnail Swatch on the customize form.
+                            </p>
+                            {optionHasListImage(activeOpt) ? (
+                              <div className="space-y-1.5">
+                                <div className="w-full aspect-square max-h-32 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center p-2">
+                                  <img
+                                    src={activeOpt.swatchImageUrl || activeOpt.assetImageUrl}
+                                    alt=""
+                                    className="w-full h-full object-contain"
+                                  />
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onOpenMediaPickerForOption &&
+                                    onOpenMediaPickerForOption(linkedField.id, activeOptIdx, "SWATCH")
+                                  }
+                                  className="w-full py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 rounded-lg transition cursor-pointer"
+                                >
+                                  Change Image
+                                </button>
+                              </div>
+                            ) : (
                               <button
                                 type="button"
-                                onClick={async () => {
-                                  const trimmedSquareUrl = await autoGenerateSquareThumbnail(activeOpt.assetImageUrl);
-                                  const updatedOpts = [...options];
-                                  updatedOpts[activeOptIdx] = { ...activeOpt, swatchImageUrl: trimmedSquareUrl };
-                                  handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
-                                }}
-                                className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1"
-                                title="Auto trim transparent padding & center in a 1:1 square"
+                                onClick={() =>
+                                  onOpenMediaPickerForOption &&
+                                  onOpenMediaPickerForOption(linkedField.id, activeOptIdx, "SWATCH")
+                                }
+                                className="w-full py-2.5 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-300 rounded-xl border-dashed flex items-center justify-center gap-1 transition cursor-pointer"
                               >
-                                <Sparkles className="w-3.5 h-3.5 text-indigo-600" /> Auto Swatch
+                                <Plus className="w-4 h-4 text-rose-600" /> Choose Image
                               </button>
                             )}
                           </div>
-                        </div>
+                        ) : (
+                          <div className="space-y-1">
+                            <label className="block text-[11px] font-semibold text-slate-700">
+                              Swatch Thumbnail Image
+                            </label>
+                            <div className="flex items-center gap-2">
+                              <div className="w-9 h-9 rounded-lg border border-slate-300 bg-slate-50 flex items-center justify-center shrink-0 overflow-hidden">
+                                {activeOpt.swatchImageUrl ? (
+                                  <img src={activeOpt.swatchImageUrl} alt="" className="w-full h-full object-cover" />
+                                ) : (
+                                  <ImageIcon className="w-4 h-4 text-slate-400" />
+                                )}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onOpenMediaPickerForOption &&
+                                  onOpenMediaPickerForOption(linkedField.id, activeOptIdx, "SWATCH")
+                                }
+                                className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 border border-slate-300 text-slate-700 rounded-lg text-xs font-semibold transition cursor-pointer"
+                              >
+                                {activeOpt.swatchImageUrl ? "Change Swatch" : "+ Choose Swatch"}
+                              </button>
+                              {activeOpt.assetImageUrl && !conditionOnly && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    const trimmedSquareUrl = await autoGenerateSquareThumbnail(activeOpt.assetImageUrl);
+                                    const updatedOpts = [...options];
+                                    updatedOpts[activeOptIdx] = { ...activeOpt, swatchImageUrl: trimmedSquareUrl };
+                                    handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
+                                  }}
+                                  className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1"
+                                  title="Auto trim transparent padding & center in a 1:1 square"
+                                >
+                                  <Sparkles className="w-3.5 h-3.5 text-indigo-600" /> Auto Swatch
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
 
                         {/* Canvas Image Picker & Visual Properties (Hidden if Condition Only is checked) */}
-                        {!config.isConditionOnly ? (
+                        {!conditionOnly ? (
                           <div className="space-y-3 pt-2 border-t border-slate-200">
                             <div className="space-y-1">
                               <label className="block text-[11px] font-semibold text-slate-700">
                                 Canvas Graphic Image
                               </label>
+                              <p className="text-[10px] text-slate-400 -mt-0.5 mb-1">
+                                Size and position for this item are on the top toolbar.
+                              </p>
                               {activeOpt.assetImageUrl ? (
                                 <div className="space-y-1.5">
                                   <div className="w-full aspect-square max-h-32 rounded-lg bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center p-2">
@@ -1625,156 +1265,15 @@ export default function StudioPropertyPanel({
                               )}
                             </div>
 
-                            {/* Position & Size Controls for Item Graphic */}
-                            <div className="space-y-2 pt-2 border-t border-slate-100">
-                              <div className="flex items-center justify-between">
-                                <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
-                                  <Maximize2 className="w-3.5 h-3.5 text-indigo-600" /> Position & Size
-                                </h4>
-                              </div>
-
-                              <div className="grid grid-cols-2 gap-2 text-[11px]">
-                                <div>
-                                  <label className="block text-[10px] font-medium text-slate-500 mb-0.5">X Position (px)</label>
-                                  <input
-                                    type="number"
-                                    value={activeOpt.posX !== undefined ? activeOpt.posX : selectedLayer.posX}
-                                    onChange={(e) => {
-                                      const val = Number(e.target.value);
-                                      const updatedOpts = [...options];
-                                      updatedOpts[activeOptIdx] = { ...activeOpt, posX: val };
-                                      handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
-                                    }}
-                                    className="w-full border border-slate-300 rounded px-2 py-1 bg-white text-xs font-mono"
-                                  />
-                                </div>
-
-                                <div>
-                                  <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Y Position (px)</label>
-                                  <input
-                                    type="number"
-                                    value={activeOpt.posY !== undefined ? activeOpt.posY : selectedLayer.posY}
-                                    onChange={(e) => {
-                                      const val = Number(e.target.value);
-                                      const updatedOpts = [...options];
-                                      updatedOpts[activeOptIdx] = { ...activeOpt, posY: val };
-                                      handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
-                                    }}
-                                    className="w-full border border-slate-300 rounded px-2 py-1 bg-white text-xs font-mono"
-                                  />
-                                </div>
-
-                                <div>
-                                  <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Width (px)</label>
-                                  <input
-                                    type="number"
-                                    min={1}
-                                    value={activeOpt.width !== undefined ? activeOpt.width : selectedLayer.width}
-                                    onChange={(e) => {
-                                      const val = Math.max(1, Number(e.target.value));
-                                      const updatedOpts = [...options];
-                                      updatedOpts[activeOptIdx] = { ...activeOpt, width: val };
-                                      handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
-                                    }}
-                                    className="w-full border border-slate-300 rounded px-2 py-1 bg-white text-xs font-mono"
-                                  />
-                                </div>
-
-                                <div>
-                                  <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Height (px)</label>
-                                  <input
-                                    type="number"
-                                    min={1}
-                                    value={activeOpt.height !== undefined ? activeOpt.height : selectedLayer.height}
-                                    onChange={(e) => {
-                                      const val = Math.max(1, Number(e.target.value));
-                                      const updatedOpts = [...options];
-                                      updatedOpts[activeOptIdx] = { ...activeOpt, height: val };
-                                      handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
-                                    }}
-                                    className="w-full border border-slate-300 rounded px-2 py-1 bg-white text-xs font-mono"
-                                  />
-                                </div>
-
-                                <div className="col-span-2">
-                                  <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Rotation (°)</label>
-                                  <div className="flex items-center gap-2">
-                                    <input
-                                      type="range"
-                                      min="-180"
-                                      max="180"
-                                      value={activeOpt.rotation !== undefined ? activeOpt.rotation : selectedLayer.rotation || 0}
-                                      onChange={(e) => {
-                                        const val = Number(e.target.value);
-                                        const updatedOpts = [...options];
-                                        updatedOpts[activeOptIdx] = { ...activeOpt, rotation: val };
-                                        handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
-                                      }}
-                                      className="flex-1 accent-indigo-600 cursor-pointer h-1.5 bg-slate-200 rounded-lg"
-                                    />
-                                    <input
-                                      type="number"
-                                      value={activeOpt.rotation !== undefined ? activeOpt.rotation : selectedLayer.rotation || 0}
-                                      onChange={(e) => {
-                                        const val = Number(e.target.value);
-                                        const updatedOpts = [...options];
-                                        updatedOpts[activeOptIdx] = { ...activeOpt, rotation: val };
-                                        handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
-                                      }}
-                                      className="w-14 text-center font-mono text-[11px] font-bold border border-slate-300 rounded px-1 py-0.5"
-                                    />
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-
-                            {/* Opacity Control for Item Graphic */}
-                            <div className="pt-2 border-t border-slate-100 space-y-1">
-                              <div className="flex items-center justify-between text-[11px]">
-                                <span className="font-bold text-slate-700">Opacity / Transparency</span>
-                                <span className="font-mono font-bold text-indigo-600">
-                                  {Math.round(((activeOpt.opacity !== undefined ? activeOpt.opacity : props.opacity !== undefined ? Number(props.opacity) : 1)) * 100)}%
-                                </span>
-                              </div>
-                              <div className="flex items-center gap-2">
-                                <input
-                                  type="range"
-                                  min="0"
-                                  max="1"
-                                  step="0.01"
-                                  value={activeOpt.opacity !== undefined ? activeOpt.opacity : props.opacity !== undefined ? Number(props.opacity) : 1}
-                                  onChange={(e) => {
-                                    const val = Number(e.target.value);
-                                    const updatedOpts = [...options];
-                                    updatedOpts[activeOptIdx] = { ...activeOpt, opacity: val };
-                                    handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
-                                  }}
-                                  className="flex-1 accent-indigo-600 cursor-pointer h-1.5 bg-slate-200 rounded-lg"
-                                />
-                                <input
-                                  type="number"
-                                  min="0"
-                                  max="100"
-                                  value={Math.round(((activeOpt.opacity !== undefined ? activeOpt.opacity : props.opacity !== undefined ? Number(props.opacity) : 1)) * 100)}
-                                  onChange={(e) => {
-                                    const val = Math.max(0, Math.min(100, Number(e.target.value))) / 100;
-                                    const updatedOpts = [...options];
-                                    updatedOpts[activeOptIdx] = { ...activeOpt, opacity: val };
-                                    handleFieldUpdate(linkedField.id, { config: { ...config, options: updatedOpts } });
-                                  }}
-                                  className="w-12 text-center font-mono text-[11px] font-bold border border-slate-300 rounded px-1 py-0.5"
-                                />
-                              </div>
-                            </div>
                           </div>
-                        ) : (
+                        ) : !requiresItemImages ? (
                           <div className="bg-indigo-50/60 border border-indigo-200 rounded-lg p-2.5 text-[11px] text-indigo-900">
-                            <span className="font-bold block">Condition Only Enabled</span>
+                            <span className="font-bold block">Condition only</span>
                             <span className="text-[10px] text-indigo-700 leading-tight block">
-                              Canvas graphic image is disabled for items because this List layer is set to "Condition only".
+                              This item is form data only. Use its value in Conditions — nothing is drawn on canvas.
                             </span>
                           </div>
-                        )}
+                        ) : null}
                       </div>
                     )}
                   </div>
@@ -1783,6 +1282,30 @@ export default function StudioPropertyPanel({
 
               return null;
             })()}
+
+        {linkedFieldForLayer &&
+          !isListTypeLayer &&
+          selectedLayer.layerType !== "TEXT" &&
+          selectedLayer.layerType !== "PHOTO_UPLOAD" && (
+            <div className="pt-3 border-t border-slate-200">
+              <PersonalizationControls
+                allowPersonalized={linkedFieldForLayer.allowPersonalized !== false}
+                isRequired={linkedFieldForLayer.isRequired !== false}
+                helpText={linkedFieldForLayer.config?.helpText ? String(linkedFieldForLayer.config.helpText) : ""}
+                onAllowPersonalizedChange={(checked) =>
+                  onUpdateField?.(linkedFieldForLayer.id, { allowPersonalized: checked })
+                }
+                onRequiredChange={(checked) =>
+                  onUpdateField?.(linkedFieldForLayer.id, { isRequired: checked })
+                }
+                onHelpTextChange={(value) =>
+                  onUpdateField?.(linkedFieldForLayer.id, {
+                    config: { ...(linkedFieldForLayer.config || {}), helpText: value },
+                  })
+                }
+              />
+            </div>
+          )}
 
         {/* Photo Upload Configuration (If LayerType is PHOTO_UPLOAD) */}
         {selectedLayer.layerType === "PHOTO_UPLOAD" && (
@@ -1803,40 +1326,25 @@ export default function StudioPropertyPanel({
                 />
               </div>
 
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                  Instructional Help Text
-                </label>
-                <input
-                  type="text"
-                  value={props.helpText !== undefined ? props.helpText : "High resolution JPG or PNG recommended"}
-                  onChange={(e) => handlePropChange("helpText", e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-purple-500 focus:outline-none text-xs text-slate-800 bg-white"
-                  placeholder="e.g. High resolution JPG or PNG recommended"
-                />
-              </div>
-
-              <div className="flex items-center gap-4 pt-1">
-                <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer" title="Require customer to upload photo before ordering">
-                  <input
-                    type="checkbox"
-                    checked={props.isRequired !== false}
-                    onChange={(e) => handlePropChange("isRequired", e.target.checked)}
-                    className="rounded text-purple-600 focus:ring-purple-500"
-                  />
-                  <span>Required</span>
-                </label>
-
-                <label className="flex items-center gap-2 font-bold text-slate-800 cursor-pointer" title="Allow customer to personalize this photo upload on storefront order">
-                  <input
-                    type="checkbox"
-                    checked={props.allowPersonalized !== false}
-                    onChange={(e) => handlePropChange("allowPersonalized", e.target.checked)}
-                    className="rounded text-emerald-600 focus:ring-emerald-500"
-                  />
-                  <span className="text-emerald-950 font-semibold">Allow Personalized</span>
-                </label>
-              </div>
+              <PersonalizationControls
+                allowPersonalized={
+                  linkedFieldForLayer ? linkedFieldForLayer.allowPersonalized !== false : props.allowPersonalized !== false
+                }
+                isRequired={
+                  linkedFieldForLayer ? linkedFieldForLayer.isRequired !== false : props.isRequired !== false
+                }
+                helpText={
+                  linkedFieldForLayer?.config?.helpText !== undefined
+                    ? String(linkedFieldForLayer.config.helpText || "")
+                    : props.helpText !== undefined
+                      ? props.helpText
+                      : "High resolution JPG or PNG recommended"
+                }
+                onAllowPersonalizedChange={(checked) => applyLayerPersonalization({ allowPersonalized: checked })}
+                onRequiredChange={(checked) => applyLayerPersonalization({ isRequired: checked })}
+                onHelpTextChange={(value) => applyLayerPersonalization({ helpText: value })}
+                helpPlaceholder="e.g. High resolution JPG or PNG recommended"
+              />
             </div>
 
             {/* Sample Photo Selector for Admin Design Composition */}
@@ -1913,7 +1421,7 @@ export default function StudioPropertyPanel({
                 <span>MASK CUTOUT LAYER</span>
               </label>
               <p className="text-[10px] text-purple-700 leading-tight">
-                This layer defines the cutout mask for Photo Upload. Adjust position X, Y, W, H and select the cutout shape below.
+                This layer defines the cutout for Photo Upload. Set position and size on the top toolbar, then choose the shape below.
               </p>
 
               {/* Cutout Shape Selector */}
@@ -2126,83 +1634,6 @@ export default function StudioPropertyPanel({
           </div>
         )}
 
-        {/* Bounding Box Position & Dimensions (Hidden for List Container Layer) */}
-        {!selectedLayer.linkedFieldId && (
-          <div className="space-y-3 pt-3 border-t border-slate-200">
-            <h4 className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
-              <Maximize2 className="w-4 h-4 text-slate-600" /> Position & Size
-            </h4>
-
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="block text-[10px] font-medium text-slate-500 mb-0.5">X Position (px)</label>
-                <input
-                  type="number"
-                  value={selectedLayer.posX}
-                  onChange={(e) => onUpdateLayer(selectedLayer.id, { posX: Number(e.target.value) })}
-                  className="w-full border border-slate-300 rounded px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none font-mono"
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Y Position (px)</label>
-                <input
-                  type="number"
-                  value={selectedLayer.posY}
-                  onChange={(e) => onUpdateLayer(selectedLayer.id, { posY: Number(e.target.value) })}
-                  className="w-full border border-slate-300 rounded px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none font-mono"
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Width (px)</label>
-                <input
-                  type="number"
-                  value={selectedLayer.width}
-                  onChange={(e) => {
-                    const newW = Number(e.target.value);
-                    const isImageLayer = ["ASSET", "IMAGE", "OVERLAY"].includes(selectedLayer.layerType);
-                    if (isImageLayer) {
-                      const ratio = props.aspectRatio || (selectedLayer.width / selectedLayer.height) || 1;
-                      const newH = Math.max(1, Math.round(newW / ratio));
-                      onUpdateLayer(selectedLayer.id, { width: newW, height: newH });
-                    } else {
-                      onUpdateLayer(selectedLayer.id, { width: newW });
-                    }
-                  }}
-                  className="w-full border border-slate-300 rounded px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none font-mono"
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Height (px)</label>
-                <input
-                  type="number"
-                  value={selectedLayer.height}
-                  onChange={(e) => {
-                    const newH = Number(e.target.value);
-                    const isImageLayer = ["ASSET", "IMAGE", "OVERLAY"].includes(selectedLayer.layerType);
-                    if (isImageLayer) {
-                      const ratio = props.aspectRatio || (selectedLayer.width / selectedLayer.height) || 1;
-                      const newW = Math.max(1, Math.round(newH * ratio));
-                      onUpdateLayer(selectedLayer.id, { width: newW, height: newH });
-                    } else {
-                      onUpdateLayer(selectedLayer.id, { height: newH });
-                    }
-                  }}
-                  className="w-full border border-slate-300 rounded px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none font-mono"
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-medium text-slate-500 mb-0.5">Rotation (°)</label>
-              <input
-                type="number"
-                value={selectedLayer.rotation}
-                onChange={(e) => onUpdateLayer(selectedLayer.id, { rotation: Number(e.target.value) })}
-                className="w-full border border-slate-300 rounded px-2 py-1 focus:ring-1 focus:ring-blue-500 focus:outline-none font-mono"
-              />
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

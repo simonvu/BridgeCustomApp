@@ -169,7 +169,7 @@ export async function action({ request }: ActionFunctionArgs) {
               label: f.label || `Field ${idx + 1}`,
               fieldType: f.fieldType || "TEXT",
               sortOrder: f.sortOrder !== undefined ? f.sortOrder : idx,
-              isRequired: f.isRequired !== undefined ? f.isRequired : false,
+              isRequired: f.isRequired !== undefined ? f.isRequired : true,
               config: typeof f.config === "object" ? JSON.stringify(f.config) : f.config || null,
             })),
           });
@@ -257,7 +257,7 @@ export async function action({ request }: ActionFunctionArgs) {
             label: f.label || `Field ${idx + 1}`,
             fieldType: f.fieldType || "TEXT",
             sortOrder: f.sortOrder !== undefined ? f.sortOrder : idx,
-            isRequired: f.isRequired !== undefined ? f.isRequired : false,
+            isRequired: f.isRequired !== undefined ? f.isRequired : true,
             config: typeof f.config === "object" ? JSON.stringify(f.config) : f.config || null,
           })),
         });

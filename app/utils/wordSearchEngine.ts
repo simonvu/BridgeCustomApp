@@ -78,10 +78,47 @@ function createPRNG(seed: number) {
 
 const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
+const PUZZLE_CACHE_MAX = 40;
+const puzzleCache = new Map<string, WordSearchResult>();
+
+function puzzleCacheKey(options: WordSearchOptions): string {
+  const words = (options.words || [])
+    .map((w) => w.trim().toUpperCase().replace(/[^A-Z]/g, ""))
+    .filter(Boolean)
+    .join("\n");
+  return [
+    words,
+    options.gridWidth ?? 10,
+    options.gridHeight ?? 10,
+    options.seed ?? 12345,
+    options.allowReverse === true ? 1 : 0,
+    options.allowDiagonal === false ? 0 : 1,
+    options.overlapDensity || "BALANCED",
+  ].join("|");
+}
+
 /**
  * Main Word Search Puzzle Generator Function
  */
 export function generateWordSearchPuzzle(options: WordSearchOptions): WordSearchResult {
+  const key = puzzleCacheKey(options);
+  const cached = puzzleCache.get(key);
+  if (cached) {
+    puzzleCache.delete(key);
+    puzzleCache.set(key, cached);
+    return cached;
+  }
+
+  const result = generateWordSearchPuzzleUncached(options);
+  if (puzzleCache.size >= PUZZLE_CACHE_MAX) {
+    const oldest = puzzleCache.keys().next().value;
+    if (oldest) puzzleCache.delete(oldest);
+  }
+  puzzleCache.set(key, result);
+  return result;
+}
+
+function generateWordSearchPuzzleUncached(options: WordSearchOptions): WordSearchResult {
   const {
     words = [],
     gridWidth = 10,
@@ -126,6 +163,7 @@ export function generateWordSearchPuzzle(options: WordSearchOptions): WordSearch
   const sortedWords = Array.from(new Set(sanitizedWords)).sort((a, b) => b.length - a.length);
 
   const placedWords: PlacedWord[] = [];
+  const placedMids: { x: number; y: number }[] = [];
   const unplacedWords: string[] = [];
 
   let totalPuzzleOverlaps = 0;
@@ -176,12 +214,10 @@ export function generateWordSearchPuzzle(options: WordSearchOptions): WordSearch
             const midY = (sy + ey) / 2;
 
             let minDistanceToOthers = 999;
-            placedWords.forEach((pw) => {
-              const pwMidX = (pw.startX + pw.endX) / 2;
-              const pwMidY = (pw.startY + pw.endY) / 2;
-              const dist = Math.hypot(midX - pwMidX, midY - pwMidY);
+            for (let p = 0; p < placedMids.length; p++) {
+              const dist = Math.hypot(midX - placedMids[p].x, midY - placedMids[p].y);
               if (dist < minDistanceToOthers) minDistanceToOthers = dist;
-            });
+            }
 
             let score = 0;
 
@@ -249,6 +285,10 @@ export function generateWordSearchPuzzle(options: WordSearchOptions): WordSearch
         endY: chosen.endY,
         direction: chosen.vec.dir,
         angleDeg: chosen.vec.angleDeg,
+      });
+      placedMids.push({
+        x: (chosen.startX + chosen.endX) / 2,
+        y: (chosen.startY + chosen.endY) / 2,
       });
     } else {
       unplacedWords.push(word);

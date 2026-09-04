@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { json, type ActionFunctionArgs } from "@remix-run/node";
@@ -90,10 +91,9 @@ export async function action({ request }: ActionFunctionArgs) {
     }
 
     const png = await generateTrimmedSquarePng(source, size);
-    const stamp = Date.now();
-    const rand = Math.random().toString(36).slice(2, 8);
+    const hash = crypto.createHash("sha1").update(`${url}|${size}`).digest("hex").slice(0, 20);
     const uploaded = await uploadToR2({
-      key: `cliparts/swatches/${stamp}-${rand}.png`,
+      key: `cliparts/_generated/swatches/${hash}.png`,
       body: png,
       contentType: "image/png",
     });

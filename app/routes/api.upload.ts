@@ -25,6 +25,15 @@ export async function action({ request }: ActionFunctionArgs) {
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
     const folder = (formData.get("folder") as string) || "general";
+    const skipLibrary = String(formData.get("skipLibrary") || "") === "1";
+    const requestedKey = String(formData.get("key") || "").replace(/^\/+/, "");
+    const safeRequestedKey =
+      requestedKey &&
+      !requestedKey.includes("..") &&
+      requestedKey.startsWith("cliparts/_generated/") &&
+      /^[a-zA-Z0-9][a-zA-Z0-9/_.-]*$/.test(requestedKey)
+        ? requestedKey
+        : "";
 
     if (!file || typeof file === "string") {
       return json({ error: "No file uploaded" }, { status: 400 });
@@ -40,7 +49,7 @@ export async function action({ request }: ActionFunctionArgs) {
     const fileExtension = file.name.split(".").pop()?.toLowerCase() || "bin";
     const timestamp = Date.now();
     const randomSuffix = Math.random().toString(36).substring(2, 8);
-    const uniqueKey = `${folder}/${timestamp}-${randomSuffix}.${fileExtension}`;
+    const uniqueKey = safeRequestedKey || `${folder}/${timestamp}-${randomSuffix}.${fileExtension}`;
 
     // Upload file gốc lên Cloudflare R2 / Local
     const result = await uploadToR2({
@@ -63,11 +72,11 @@ export async function action({ request }: ActionFunctionArgs) {
       category = "DOCUMENT";
     }
 
-    // Tự động tạo ảnh thu nhỏ (Thumbnail WebP, width max 400px, 80% quality) nếu là file ảnh
+    // Tự động tạo ảnh thu nhỏ (Thumbnail WebP) nếu là file ảnh đưa vào thư viện media
     let thumbnailUrl: string | null = null;
     let thumbnailKey: string | null = null;
 
-    if (category === "IMAGE" || file.type.startsWith("image/")) {
+    if (!skipLibrary && (category === "IMAGE" || file.type.startsWith("image/"))) {
       const thumb = await generateThumbnail(fileBuffer);
       if (thumb) {
         const thumbKey = `${folder}/thumbnails/${timestamp}-${randomSuffix}_thumb.${thumb.extension}`;
@@ -85,7 +94,7 @@ export async function action({ request }: ActionFunctionArgs) {
     // Tự động tạo bản ghi lưu vào cơ sở dữ liệu MediaFile với cơ chế an toàn 100%
     const mediaModel = (prisma as any).mediaFile;
     let fileRecord = null;
-    if (mediaModel) {
+    if (!skipLibrary && mediaModel) {
       const createData: any = {
         fileName: file.name,
         fileSize: file.size,

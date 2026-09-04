@@ -34,6 +34,13 @@ export interface StudioFieldItem {
   config?: any;
 }
 
+export interface StudioConditionClause {
+  sourceFieldId: string;
+  operator: "EQUALS" | "NOT_EQUALS";
+  targetValue?: string;
+  targetValues?: string[];
+}
+
 export interface StudioConditionRuleItem {
   id: string;
   sourceFieldId: string;
@@ -41,10 +48,59 @@ export interface StudioConditionRuleItem {
   targetValue: string;
   action: "SHOW_LAYER" | "HIDE_LAYER" | "SHOW_FIELD" | "HIDE_FIELD";
   targetId: string;
+  /** AND-clauses. Older rules only have sourceFieldId / targetValue. */
+  when?: StudioConditionClause[];
 }
 
 export const OPTION_FIELD_TYPES = ["RADIO", "SELECT", "FIELD_ASSET"] as const;
 export const TEXT_LIKE_FIELD_TYPES = ["TEXT", "CALENDAR"] as const;
+
+export function isFreeTransformField(field?: StudioFieldItem | null): boolean {
+  return Boolean(field?.config?.freeTransform);
+}
+
+/** Artwork List/Item used only as a storefront form + condition source (nothing drawn). */
+export function isConditionOnlyField(field?: StudioFieldItem | null): boolean {
+  return Boolean(field?.config?.isConditionOnly);
+}
+
+/** SELECT/RADIO list that drives per-item canvas graphics (not clip-art FIELD_ASSET). */
+export function isListItemField(field?: StudioFieldItem | null): boolean {
+  return field?.fieldType === "SELECT" || field?.fieldType === "RADIO";
+}
+
+/** Copy size/position from an existing item or its linked layer when adding a graphic list item. */
+export function seedListItemGeometry(
+  source?: Partial<StudioFieldOptionChoice> | null,
+  layer?: {
+    posX: number;
+    posY: number;
+    width: number;
+    height: number;
+    rotation?: number;
+    properties?: { opacity?: number };
+  } | null
+): Pick<
+  StudioFieldOptionChoice,
+  "posX" | "posY" | "width" | "height" | "rotation" | "opacity" | "hasCustomPosition"
+> {
+  return {
+    posX: source?.posX ?? layer?.posX ?? 100,
+    posY: source?.posY ?? layer?.posY ?? 100,
+    width: source?.width ?? layer?.width ?? 300,
+    height: source?.height ?? layer?.height ?? 300,
+    rotation: source?.rotation ?? layer?.rotation ?? 0,
+    opacity: source?.opacity ?? layer?.properties?.opacity ?? 1,
+    hasCustomPosition: true,
+  };
+}
+
+/** Drop per-option size/position so the group shares the layer transform. */
+export function stripOptionTransform(opt: any) {
+  if (!opt || typeof opt !== "object") return opt;
+  const { posX, posY, width, height, rotation, flipH, flipV, hasCustomPosition, ...rest } = opt;
+  return rest;
+}
 
 export function isOptionFieldType(type?: string): boolean {
   return type === "RADIO" || type === "SELECT" || type === "FIELD_ASSET";
@@ -60,6 +116,15 @@ export function defaultDisplayType(fieldType: string): FieldDisplayType {
   if (fieldType === "RADIO") return "RADIO";
   if (fieldType === "FIELD_ASSET") return "THUMBNAIL";
   return "DROPDOWN";
+}
+
+/** Condition-only list shown as thumbnail swatches — every item needs a form image. */
+export function listRequiresItemImages(field?: StudioFieldItem | null): boolean {
+  return isConditionOnlyField(field) && normalizeDisplayType(field?.displayType) === "THUMBNAIL";
+}
+
+export function optionHasListImage(opt?: Partial<StudioFieldOptionChoice> | null): boolean {
+  return Boolean(opt && (opt.swatchImageUrl || getOptionAssetUrl(opt)));
 }
 
 export function isEmptyOption(opt?: Partial<StudioFieldOptionChoice> | null): boolean {
@@ -137,13 +202,60 @@ export function formatCalendarDate(iso: string, format: CalendarDateFormat | str
   }
 }
 
-function conditionMatches(parentVal: unknown, operator: string, targetValue: string): boolean {
-  const left = String(parentVal ?? "");
-  const right = String(targetValue ?? "");
-  if (operator === "NOT_EQUALS") return left !== right;
-  if (operator === "CONTAINS") return left.includes(right);
-  if (operator === "NOT_EMPTY") return Boolean(left);
-  return left === right;
+export function clauseValues(clause?: StudioConditionClause | null): string[] {
+  if (!clause) return [];
+  if (Array.isArray(clause.targetValues) && clause.targetValues.length > 0) {
+    return clause.targetValues.map(String);
+  }
+  return clause.targetValue ? [String(clause.targetValue)] : [];
+}
+
+export function ruleClauses(rule?: StudioConditionRuleItem | null): StudioConditionClause[] {
+  if (!rule) return [];
+  if (Array.isArray(rule.when) && rule.when.length > 0) return rule.when;
+  return [
+    {
+      sourceFieldId: rule.sourceFieldId,
+      operator: rule.operator,
+      targetValue: rule.targetValue,
+      targetValues: rule.targetValue ? [rule.targetValue] : [],
+    },
+  ];
+}
+
+function clauseMatchesForm(clause: StudioConditionClause, formValues: Record<string, unknown>): boolean {
+  const left = String(formValues[clause.sourceFieldId] ?? "");
+  const values = clauseValues(clause);
+  const hit = values.some((v) => String(v) === left);
+  return clause.operator === "NOT_EQUALS" ? !hit : hit;
+}
+
+export function ruleMatchesForm(
+  rule: StudioConditionRuleItem,
+  formValues: Record<string, unknown>
+): boolean {
+  const clauses = ruleClauses(rule);
+  return clauses.length > 0 && clauses.every((c) => clauseMatchesForm(c, formValues));
+}
+
+export function flattenRuleForStorage(rule: StudioConditionRuleItem): StudioConditionRuleItem {
+  const when = ruleClauses(rule).map((c) => {
+    const values = clauseValues(c);
+    return {
+      sourceFieldId: c.sourceFieldId,
+      operator: c.operator,
+      targetValues: values,
+      targetValue: values[0] || "",
+    };
+  });
+  const first = when[0];
+  return {
+    ...rule,
+    when,
+    sourceFieldId: first?.sourceFieldId || rule.sourceFieldId,
+    operator: first?.operator || rule.operator,
+    targetValue: first?.targetValue || rule.targetValue || "",
+  };
 }
 
 export function isFieldVisibleByRules(
@@ -160,8 +272,7 @@ export function isFieldVisibleByRules(
   if (targeting.length === 0) return true;
 
   for (const rule of targeting) {
-    const parentVal = formValues[rule.sourceFieldId];
-    const matched = conditionMatches(parentVal, rule.operator, rule.targetValue);
+    const matched = ruleMatchesForm(rule, formValues);
     if (rule.action === "SHOW_FIELD" && !matched) return false;
     if (rule.action === "HIDE_FIELD" && matched) return false;
   }
@@ -181,8 +292,7 @@ export function isLayerVisibleByRules(
   if (targeting.length === 0) return true;
 
   for (const rule of targeting) {
-    const parentVal = formValues[rule.sourceFieldId];
-    const matched = conditionMatches(parentVal, rule.operator, rule.targetValue);
+    const matched = ruleMatchesForm(rule, formValues);
     if (rule.action === "SHOW_LAYER" && !matched) return false;
     if (rule.action === "HIDE_LAYER" && matched) return false;
   }
@@ -207,8 +317,7 @@ export function isFieldHiddenByCondition(
   if (targeting.length === 0) return false;
 
   for (const rule of targeting) {
-    const parentVal = formValues[rule.sourceFieldId];
-    const matched = conditionMatches(parentVal, rule.operator, rule.targetValue);
+    const matched = ruleMatchesForm(rule, formValues);
     if (rule.action === "SHOW_FIELD" && !matched) return true;
     if (rule.action === "HIDE_FIELD" && matched) return true;
   }
@@ -219,6 +328,7 @@ export function buildDefaultFieldConfig(fieldType: StudioFieldItem["fieldType"])
   const stamp = Date.now();
   if (isOptionFieldType(fieldType)) {
     return {
+      isConditionOnly: false,
       options: [1, 2, 3].map((n) => ({
         id: `opt_${stamp}_${n}`,
         label: `Option ${n}`,
@@ -227,6 +337,7 @@ export function buildDefaultFieldConfig(fieldType: StudioFieldItem["fieldType"])
         assetImageUrl: "",
         hasCustomPosition: false,
       })),
+      helpText: "",
     };
   }
   if (fieldType === "TEXT") {
@@ -238,6 +349,7 @@ export function buildDefaultFieldConfig(fieldType: StudioFieldItem["fieldType"])
       maxLines: 2,
       placeholder: "",
       defaultText: "",
+      helpText: "",
     };
   }
   if (fieldType === "CALENDAR") {

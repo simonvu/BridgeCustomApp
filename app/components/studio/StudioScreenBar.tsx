@@ -23,6 +23,9 @@ export interface StudioScreenItem {
   bgColor?: string; // Screen solid fill color
   iconUrl?: string; // Custom icon image for ICON view mode
   sortOrder: number;
+  layers?: any[];
+  fields?: any[];
+  rules?: any[];
 }
 
 export interface StudioScreenFieldConfig {

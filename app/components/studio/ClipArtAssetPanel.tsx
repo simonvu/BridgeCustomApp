@@ -11,7 +11,6 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
-  RotateCcw,
   Trash2,
   Type as TypeIcon,
   GitBranch,
@@ -27,6 +26,8 @@ import {
 import { isEmptyOption } from "../../utils/fieldHelpers";
 import { clauseValues, type ClipArtConditionClause } from "../../utils/clipArtInstance";
 import { trimToSquareDataUrl } from "../../utils/thumbnailGenerator";
+import { CLIP_ART_TIPS } from "../../utils/clipArtTips";
+import FeatureTip, { FEATURE_TIP_ATTR } from "./FeatureTip";
 
 type ClipField = {
   id: string;
@@ -35,7 +36,7 @@ type ClipField = {
   activeOptionId?: string | null;
   hiddenFromCustomer?: boolean;
   allowPersonalized?: boolean;
-  config?: { options?: ClipVariant[] };
+  config?: { options?: ClipVariant[]; freeTransform?: boolean };
 };
 
 export type ClipVariant = {
@@ -64,12 +65,12 @@ interface ClipArtAssetPanelProps {
   onRegenerateThumbs: (fieldId: string) => void;
   onToggleVisible: (layerId: string) => void;
   onDuplicate: (layerId: string) => void;
-  onReset: (layerId: string) => void;
   onDelete: (layerId: string) => void;
   onDeleteVariant: (fieldId: string, optId: string) => void;
   onReorder: (reorderedLayers: CanvasLayerItem[]) => void;
   onReorderOptions: (fieldId: string, options: ClipVariant[]) => void;
   onToggleHiddenField?: (fieldId: string, hidden: boolean) => void;
+  onToggleFreeTransform?: (fieldId: string, enabled: boolean) => void;
   onUpdateOption?: (fieldId: string, optId: string, patch: Partial<ClipVariant>) => void;
   onAddSandwichFront?: (layerId: string) => void;
   onSetKnockoutGroupIds?: (layerId: string, ids: string[]) => void;
@@ -80,15 +81,19 @@ interface ClipArtAssetPanelProps {
 
 function thumbSource(opt: ClipVariant | undefined, layer: CanvasLayerItem) {
   if (!opt || isEmptyOption(opt)) return "";
-  return opt.assetImageUrl || opt.swatchImageUrl || layer.properties?.assetUrl || "";
+  return opt.swatchImageUrl || opt.assetImageUrl || layer.properties?.assetUrl || "";
 }
 
-function TrimmedThumb({ src }: { src: string }) {
-  const [url, setUrl] = useState("");
+function TrimmedThumb({ src, alreadySquare }: { src: string; alreadySquare?: boolean }) {
+  const [url, setUrl] = useState(alreadySquare ? src : "");
 
   useEffect(() => {
     if (!src) {
       setUrl("");
+      return;
+    }
+    if (alreadySquare) {
+      setUrl(src);
       return;
     }
     let live = true;
@@ -98,7 +103,7 @@ function TrimmedThumb({ src }: { src: string }) {
     return () => {
       live = false;
     };
-  }, [src]);
+  }, [src, alreadySquare]);
 
   if (!src) return null;
   return <img src={url || src} alt="" className="w-full h-full object-contain" draggable={false} />;
@@ -119,12 +124,12 @@ export default function ClipArtAssetPanel({
   onRegenerateThumbs,
   onToggleVisible,
   onDuplicate,
-  onReset,
   onDelete,
   onDeleteVariant,
   onReorder,
   onReorderOptions,
   onToggleHiddenField,
+  onToggleFreeTransform,
   onUpdateOption,
   onAddSandwichFront,
   onSetKnockoutGroupIds,
@@ -207,7 +212,9 @@ export default function ClipArtAssetPanel({
 
   useEffect(() => {
     if (!menuId && !footerMenuId) return;
-    const close = () => {
+    const close = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest(`[${FEATURE_TIP_ATTR}]`)) return;
       setMenuId(null);
       setFooterMenuId(null);
     };
@@ -271,18 +278,21 @@ export default function ClipArtAssetPanel({
         </h3>
         <div className="flex items-center gap-1">
           {onOpenConditions && (
-            <button
-              type="button"
-              onClick={onOpenConditions}
-              className="flex items-center gap-1 text-xs font-semibold text-amber-800 hover:text-amber-950 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2 py-1 rounded-md cursor-pointer"
-              title="Show or hide groups based on other option groups"
-            >
-              <GitBranch className="w-3.5 h-3.5" />
-              Conditions
-              {conditionCount > 0 && (
-                <span className="text-[10px] font-extrabold leading-none">{conditionCount}</span>
-              )}
-            </button>
+            <div className="flex items-center gap-0.5">
+              <button
+                type="button"
+                onClick={onOpenConditions}
+                className="flex items-center gap-1 text-xs font-semibold text-amber-800 hover:text-amber-950 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2 py-1 rounded-md cursor-pointer"
+                title="Show or hide groups based on other option groups"
+              >
+                <GitBranch className="w-3.5 h-3.5" />
+                Conditions
+                {conditionCount > 0 && (
+                  <span className="text-[10px] font-extrabold leading-none">{conditionCount}</span>
+                )}
+              </button>
+              <FeatureTip title={CLIP_ART_TIPS.conditions.title}>{CLIP_ART_TIPS.conditions.body}</FeatureTip>
+            </div>
           )}
           <button
             type="button"
@@ -313,13 +323,14 @@ export default function ClipArtAssetPanel({
         ) : (
           apartments.map(({ layer, field, options }, index) => {
             const isFocused = selectedLayerIds.includes(layer.id);
-            const isOpen = collapsed[layer.id] !== true;
+            const isOpen = collapsed[layer.id] === false;
             const activeOptId = field?.activeOptionId || options[0]?.id;
             const isDragging = draggedIdx === index;
             const hasEmpty = options.some((o) => isEmptyOption(o));
             const groupId = field?.id || layer.id;
             const hiddenByCondition = Boolean(hiddenGroupIds?.has(groupId));
             const isHiddenField = Boolean(field?.hiddenFromCustomer || field?.allowPersonalized === false);
+            const isFreeTransform = Boolean(field?.config?.freeTransform);
             const isSandwichFront = layer.properties?.sandwichRole === "front";
             const knockoutIds: string[] = Array.isArray(layer.properties?.knockoutGroupIds)
               ? layer.properties.knockoutGroupIds
@@ -402,19 +413,27 @@ export default function ClipArtAssetPanel({
                       </h3>
                     )}
                     {isSandwichFront && (
-                      <span
-                        className="shrink-0 text-[9px] font-extrabold uppercase tracking-wide text-violet-800 bg-violet-50 border border-violet-200 px-1 py-0.5 rounded"
-                        title="Same art drawn again higher in the stack. Drag it above Shirt; keep the original Hair below Hands."
-                      >
+                      <span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] font-extrabold uppercase tracking-wide text-violet-800 bg-violet-50 border border-violet-200 px-1 py-0.5 rounded">
                         Front
+                        <FeatureTip compact title={CLIP_ART_TIPS.sandwichFront.title}>
+                          {CLIP_ART_TIPS.sandwichFront.body}
+                        </FeatureTip>
                       </span>
                     )}
                     {isHiddenField && !isSandwichFront && (
-                      <span
-                        className="shrink-0 text-[9px] font-extrabold uppercase tracking-wide text-slate-700 bg-slate-100 border border-slate-300 px-1 py-0.5 rounded"
-                        title="Customer cannot choose this group. Options follow a related group."
-                      >
+                      <span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] font-extrabold uppercase tracking-wide text-slate-700 bg-slate-100 border border-slate-300 px-1 py-0.5 rounded">
                         Hidden field
+                        <FeatureTip compact title={CLIP_ART_TIPS.hiddenField.title}>
+                          {CLIP_ART_TIPS.hiddenField.body}
+                        </FeatureTip>
+                      </span>
+                    )}
+                    {isFreeTransform && !isSandwichFront && (
+                      <span className="shrink-0 inline-flex items-center gap-0.5 text-[9px] font-extrabold uppercase tracking-wide text-sky-800 bg-sky-50 border border-sky-200 px-1 py-0.5 rounded">
+                        Free size
+                        <FeatureTip compact title={CLIP_ART_TIPS.freeSize.title}>
+                          {CLIP_ART_TIPS.freeSize.body}
+                        </FeatureTip>
                       </span>
                     )}
                     {hiddenByCondition && (
@@ -451,9 +470,6 @@ export default function ClipArtAssetPanel({
                         <Copy className="w-3.5 h-3.5" />
                       </IconBtn>
                     )}
-                    <IconBtn title="Reset position" onClick={() => onReset(layer.id)}>
-                      <RotateCcw className="w-3.5 h-3.5" />
-                    </IconBtn>
                     <IconBtn title="Delete" danger onClick={() => onDelete(layer.id)}>
                       <Trash2 className="w-3.5 h-3.5" />
                     </IconBtn>
@@ -473,12 +489,12 @@ export default function ClipArtAssetPanel({
                   <div className="px-2.5 pb-2.5">
                     {isSandwichFront ? (
                       <div className="rounded-lg border border-violet-200 bg-violet-50/60 p-2 space-y-2">
-                        <p className="text-[10px] leading-snug text-violet-950">
-                          Same art as the original group, drawn again on top. Put this row{" "}
-                          <span className="font-bold">above Shirt</span> and keep the original{" "}
-                          <span className="font-bold">below Hands</span>.
-                        </p>
-                        <p className="text-[10px] font-bold text-violet-900">Stay behind (punch holes)</p>
+                        <div className="flex items-center justify-between gap-1">
+                          <p className="text-[10px] font-bold text-violet-900">Stay behind (punch holes)</p>
+                          <FeatureTip title={CLIP_ART_TIPS.sandwichKnockout.title}>
+                            {CLIP_ART_TIPS.sandwichKnockout.body}
+                          </FeatureTip>
+                        </div>
                         <div className="flex flex-wrap gap-1.5">
                           {apartments
                             .filter(
@@ -587,7 +603,7 @@ export default function ClipArtAssetPanel({
                               {isEmpty ? (
                                 <span className="text-[10px] font-bold text-slate-400 leading-none">None</span>
                               ) : source ? (
-                                <TrimmedThumb src={source} />
+                                <TrimmedThumb src={source} alreadySquare={Boolean(opt.swatchImageUrl)} />
                               ) : layer.layerType === "TEXT" ? (
                                 <TypeIcon className="w-5 h-5 text-slate-400" />
                               ) : (
@@ -681,8 +697,11 @@ export default function ClipArtAssetPanel({
                           });
                           return (
                             <>
-                              <p className="text-[10px] font-bold text-amber-900">
+                              <p className="text-[10px] font-bold text-amber-900 flex items-center gap-1">
                                 Show “{driveOpt.label || "option"}” when
+                                <FeatureTip compact title={CLIP_ART_TIPS.drivenOption.title}>
+                                  {CLIP_ART_TIPS.drivenOption.body}
+                                </FeatureTip>
                               </p>
                               <select
                                 value={src?.field?.id || ""}
@@ -702,7 +721,8 @@ export default function ClipArtAssetPanel({
                                   return (
                                     <label
                                       key={srcOpt.id}
-                                      className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] font-semibold cursor-pointer ${
+                                      title={srcOpt.label || srcOpt.value || "Option"}
+                                      className={`inline-flex items-center gap-1 pl-1 pr-1.5 py-0.5 rounded border text-[10px] font-semibold cursor-pointer ${
                                         checked
                                           ? "bg-amber-100 border-amber-400 text-amber-950"
                                           : "bg-white border-slate-200 text-slate-600"
@@ -732,6 +752,11 @@ export default function ClipArtAssetPanel({
                                         }}
                                         className="w-3 h-3 accent-amber-600"
                                       />
+                                      <span className="w-5 h-5 rounded overflow-hidden bg-white border border-slate-200 shrink-0">
+                                        <TrimmedThumb
+                                          src={srcOpt.swatchImageUrl || srcOpt.assetImageUrl || ""}
+                                        />
+                                      </span>
                                       {srcOpt.label || srcOpt.value || "Option"}
                                     </label>
                                   );
@@ -844,6 +869,7 @@ export default function ClipArtAssetPanel({
               {isSandwichFront ? (
                 <MenuItem
                   label="Remove sandwich front"
+                  tip={CLIP_ART_TIPS.removeSandwichFront}
                   onClick={() => {
                     onDelete(layer.id);
                     setMenuId(null);
@@ -854,6 +880,7 @@ export default function ClipArtAssetPanel({
               {onAddSandwichFront && !hasSandwichFront && (
                 <MenuItem
                   label="Add sandwich front"
+                  tip={CLIP_ART_TIPS.sandwichFront}
                   onClick={() => {
                     onAddSandwichFront(layer.id);
                     setMenuId(null);
@@ -863,8 +890,21 @@ export default function ClipArtAssetPanel({
               {field && (
                 <MenuItem
                   label={isHiddenField ? "Show as customer field" : "Set as hidden field"}
+                  tip={CLIP_ART_TIPS.hiddenField}
                   onClick={() => {
                     onToggleHiddenField?.(field.id, !isHiddenField);
+                    setMenuId(null);
+                  }}
+                />
+              )}
+              {field && !isSandwichFront && (
+                <MenuItem
+                  label={
+                    field.config?.freeTransform ? "Lock size & position" : "Free size & position"
+                  }
+                  tip={CLIP_ART_TIPS.freeSize}
+                  onClick={() => {
+                    onToggleFreeTransform?.(field.id, !field.config?.freeTransform);
                     setMenuId(null);
                   }}
                 />
@@ -872,12 +912,14 @@ export default function ClipArtAssetPanel({
               {field && (
                 <MenuItem
                   label="Bulk rename options"
+                  tip={CLIP_ART_TIPS.bulkRename}
                   onClick={() => openBulkRename(field.id, layer.name, options.filter((o) => !isEmptyOption(o)).length)}
                 />
               )}
               {field && (
                 <MenuItem
                   label="Regenerate thumbnails"
+                  tip={CLIP_ART_TIPS.regenerateThumbs}
                   onClick={() => {
                     onRegenerateThumbs(field.id);
                     setMenuId(null);
@@ -887,6 +929,7 @@ export default function ClipArtAssetPanel({
               {field && !hasEmpty && (
                 <MenuItem
                   label="Add empty (None)"
+                  tip={CLIP_ART_TIPS.addEmpty}
                   onClick={() => {
                     onAddEmptyOption(layer.id);
                     setMenuId(null);
@@ -895,20 +938,15 @@ export default function ClipArtAssetPanel({
               )}
               <MenuItem
                 label="Add variants"
+                tip={CLIP_ART_TIPS.addVariants}
                 onClick={() => {
                   onAddVariants(layer.id);
                   setMenuId(null);
                 }}
               />
               <MenuItem
-                label="Reset transform"
-                onClick={() => {
-                  onReset(layer.id);
-                  setMenuId(null);
-                }}
-              />
-              <MenuItem
                 label="Duplicate group"
+                tip={CLIP_ART_TIPS.duplicateGroup}
                 onClick={() => {
                   onDuplicate(layer.id);
                   setMenuId(null);
@@ -926,10 +964,12 @@ export default function ClipArtAssetPanel({
               >
                 <MenuItem
                   label="Bulk rename options"
+                  tip={CLIP_ART_TIPS.bulkRename}
                   onClick={() => openBulkRename(field.id, layer.name, options.filter((o) => !isEmptyOption(o)).length)}
                 />
                 <MenuItem
                   label="Regenerate thumbnails"
+                  tip={CLIP_ART_TIPS.regenerateThumbs}
                   onClick={() => {
                     onRegenerateThumbs(field.id);
                     setFooterMenuId(null);
@@ -938,6 +978,7 @@ export default function ClipArtAssetPanel({
                 {!hasEmpty && (
                   <MenuItem
                     label="Add empty (None)"
+                    tip={CLIP_ART_TIPS.addEmpty}
                     onClick={() => {
                       onAddEmptyOption(layer.id);
                       setFooterMenuId(null);
@@ -955,6 +996,7 @@ export default function ClipArtAssetPanel({
                 )}
                 <MenuItem
                   label="Add variants"
+                  tip={CLIP_ART_TIPS.addVariants}
                   onClick={() => {
                     onAddVariants(layer.id);
                     setFooterMenuId(null);
@@ -1105,7 +1147,7 @@ function AnchoredMenu({
 
   if (!open || !rect || typeof document === "undefined") return null;
 
-  const width = 192;
+  const width = 228;
   const left = align === "right" ? Math.max(8, rect.right - width) : rect.left;
   const style: React.CSSProperties =
     placement === "up"
@@ -1149,14 +1191,29 @@ function IconBtn({
   );
 }
 
-function MenuItem({ label, onClick }: { label: string; onClick: () => void }) {
+function MenuItem({
+  label,
+  onClick,
+  tip,
+}: {
+  label: string;
+  onClick: () => void;
+  tip?: { title: string; body: string };
+}) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="w-full px-3 py-1.5 text-left text-slate-700 hover:bg-slate-50 cursor-pointer"
-    >
-      {label}
-    </button>
+    <div className="flex items-stretch">
+      <button
+        type="button"
+        onClick={onClick}
+        className="flex-1 min-w-0 px-3 py-1.5 text-left text-slate-700 hover:bg-slate-50 cursor-pointer"
+      >
+        {label}
+      </button>
+      {tip && (
+        <div className="flex items-center pr-1.5">
+          <FeatureTip title={tip.title}>{tip.body}</FeatureTip>
+        </div>
+      )}
+    </div>
   );
 }
