@@ -49,6 +49,8 @@ export type ClipVariant = {
   isVisible?: boolean;
   isEmpty?: boolean;
   showWhen?: ClipArtConditionClause[];
+  flipH?: boolean;
+  flipV?: boolean;
 };
 
 interface ClipArtAssetPanelProps {
@@ -90,7 +92,15 @@ function thumbSource(opt: ClipVariant | undefined, layer: CanvasLayerItem) {
   return opt.swatchImageUrl || opt.assetImageUrl || layer.properties?.assetUrl || "";
 }
 
-function TrimmedThumb({ src, alreadySquare }: { src: string; alreadySquare?: boolean }) {
+function TrimmedThumb({
+  src,
+  alreadySquare,
+  flipH,
+}: {
+  src: string;
+  alreadySquare?: boolean;
+  flipH?: boolean;
+}) {
   const [url, setUrl] = useState(alreadySquare ? src : "");
 
   useEffect(() => {
@@ -112,7 +122,15 @@ function TrimmedThumb({ src, alreadySquare }: { src: string; alreadySquare?: boo
   }, [src, alreadySquare]);
 
   if (!src) return null;
-  return <img src={url || src} alt="" className="w-full h-full object-contain" draggable={false} />;
+  return (
+    <img
+      src={url || src}
+      alt=""
+      className="w-full h-full object-contain"
+      style={flipH ? { transform: "scaleX(-1)" } : undefined}
+      draggable={false}
+    />
+  );
 }
 
 export default function ClipArtAssetPanel({
@@ -684,7 +702,11 @@ export default function ClipArtAssetPanel({
                               {isEmpty ? (
                                 <span className="text-[10px] font-bold text-slate-400 leading-none">None</span>
                               ) : source ? (
-                                <TrimmedThumb src={source} alreadySquare={Boolean(opt.swatchImageUrl)} />
+                                <TrimmedThumb
+                                  src={source}
+                                  alreadySquare={Boolean(opt.swatchImageUrl)}
+                                  flipH={Boolean(opt.flipH ?? layer.properties?.flipH)}
+                                />
                               ) : layer.layerType === "TEXT" ? (
                                 <TypeIcon className="w-5 h-5 text-slate-400" />
                               ) : (
@@ -836,6 +858,7 @@ export default function ClipArtAssetPanel({
                                       <span className="w-5 h-5 rounded overflow-hidden bg-white border border-slate-200 shrink-0">
                                         <TrimmedThumb
                                           src={srcOpt.swatchImageUrl || srcOpt.assetImageUrl || ""}
+                                          flipH={Boolean(srcOpt.flipH ?? src?.layer.properties?.flipH)}
                                         />
                                       </span>
                                       {srcOpt.label || srcOpt.value || "Option"}

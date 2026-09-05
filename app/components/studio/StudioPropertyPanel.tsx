@@ -19,6 +19,9 @@ import {
   Package,
   Pencil,
   RefreshCw,
+  GripVertical,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { autoGenerateSquareThumbnail } from "../../utils/thumbnailGenerator";
 import {
@@ -30,7 +33,11 @@ import {
   optionHasListImage,
 } from "../../utils/fieldHelpers";
 import type { ClipArtInstanceGroup } from "../../utils/clipArtInstance";
-import { clipArtGroupsForArtworkDisplay, resolveDrivenClipArtGroups } from "../../utils/clipArtInstance";
+import {
+  clipArtGroupsForArtworkDisplay,
+  reorderClipArtFormGroups,
+  resolveDrivenClipArtGroups,
+} from "../../utils/clipArtInstance";
 
 export interface BackgroundOptionItem {
   id: string;
@@ -138,6 +145,18 @@ export default function StudioPropertyPanel({
   const [isUploadingMask, setIsUploadingMask] = React.useState(false);
   const [editingClipGroupId, setEditingClipGroupId] = React.useState<string | null>(null);
   const [editingClipGroupName, setEditingClipGroupName] = React.useState("");
+  const [collapsedClipGroups, setCollapsedClipGroups] = React.useState<Record<string, boolean>>({});
+  const [draggedClipGroupId, setDraggedClipGroupId] = React.useState<string | null>(null);
+  const [clipFormDraftIds, setClipFormDraftIds] = React.useState<string[] | null>(null);
+  const draggedClipGroupIdRef = React.useRef<string | null>(null);
+
+  React.useEffect(() => {
+    setCollapsedClipGroups({});
+    setDraggedClipGroupId(null);
+    setClipFormDraftIds(null);
+    draggedClipGroupIdRef.current = null;
+    setEditingClipGroupId(null);
+  }, [selectedLayer?.id]);
 
   if (selectedLayerIds.length > 1) {
     return (
@@ -290,14 +309,114 @@ export default function StudioPropertyPanel({
               </button>
             </div>
 
-            {clipArtGroupsForArtworkDisplay(
-              props.clipArtGroups || [],
-              props.clipArtRules || []
-            ).map((group) => {
-              const isEditing = editingClipGroupId === group.id;
+            <p className="text-[10px] text-slate-500 leading-snug">
+              Collapse groups and drag the handle to reorder the customer form. Canvas draw order stays the same.
+            </p>
+
+            {(() => {
+              const visibleGroups = clipArtGroupsForArtworkDisplay(
+                props.clipArtGroups || [],
+                props.clipArtRules || []
+              );
+              const byId = new Map(visibleGroups.map((g) => [g.id, g]));
+              const formGroups = (clipFormDraftIds || visibleGroups.map((g) => g.id))
+                .map((id) => byId.get(id))
+                .filter((g): g is ClipArtInstanceGroup => Boolean(g));
+
+              const persistFormOrder = (orderedIds: string[]) => {
+                handlePropChange(
+                  "clipArtGroups",
+                  reorderClipArtFormGroups(props.clipArtGroups || [], orderedIds)
+                );
+              };
+
               return (
-                <section key={group.id} className="rounded-xl border border-slate-200 bg-slate-50/60 overflow-hidden">
-                  <header className="flex items-center gap-1.5 px-2.5 py-1.5 bg-white border-b border-slate-100">
+            <div
+              className="space-y-2"
+              onDragOver={(e) => {
+                if (!draggedClipGroupIdRef.current) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+              }}
+            >
+            {formGroups.map((group) => {
+              const isEditing = editingClipGroupId === group.id;
+              const isCollapsed = Boolean(collapsedClipGroups[group.id]);
+              const isDragging = draggedClipGroupId === group.id;
+              return (
+                <section
+                  key={group.id}
+                  onDragOver={(e) => {
+                    if (!draggedClipGroupIdRef.current) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.dataTransfer.dropEffect = "move";
+                    const fromId = draggedClipGroupIdRef.current;
+                    if (!fromId || fromId === group.id) return;
+                    setClipFormDraftIds((prev) => {
+                      const ids = prev || formGroups.map((g) => g.id);
+                      const from = ids.indexOf(fromId);
+                      const to = ids.indexOf(group.id);
+                      if (from < 0 || to < 0 || from === to) return prev;
+                      const next = [...ids];
+                      next.splice(from, 1);
+                      next.splice(to, 0, fromId);
+                      return next;
+                    });
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const ordered = clipFormDraftIds || formGroups.map((g) => g.id);
+                    persistFormOrder(ordered);
+                    draggedClipGroupIdRef.current = null;
+                    setDraggedClipGroupId(null);
+                    setClipFormDraftIds(null);
+                  }}
+                  onDragEnd={() => {
+                    const fromId = draggedClipGroupIdRef.current;
+                    if (fromId && clipFormDraftIds) persistFormOrder(clipFormDraftIds);
+                    draggedClipGroupIdRef.current = null;
+                    setDraggedClipGroupId(null);
+                    setClipFormDraftIds(null);
+                  }}
+                  className={`rounded-xl border overflow-hidden ${
+                    isDragging
+                      ? "opacity-50 border-dashed border-blue-400"
+                      : "border-slate-200 bg-slate-50/60"
+                  }`}
+                >
+                  <header className="flex items-center gap-0.5 px-1 py-1 bg-white border-b border-slate-100">
+                    <span
+                      draggable
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onDragStart={(e) => {
+                        e.stopPropagation();
+                        e.dataTransfer.effectAllowed = "move";
+                        e.dataTransfer.setData("text/plain", group.id);
+                        draggedClipGroupIdRef.current = group.id;
+                        setDraggedClipGroupId(group.id);
+                        setClipFormDraftIds(formGroups.map((g) => g.id));
+                      }}
+                      title="Drag to reorder this group on the form"
+                      className="text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-grab active:cursor-grabbing p-1.5 rounded-md shrink-0"
+                    >
+                      <GripVertical className="w-4 h-4 pointer-events-none" />
+                    </span>
+                    <button
+                      type="button"
+                      title={isCollapsed ? "Expand group" : "Collapse group"}
+                      onClick={() =>
+                        setCollapsedClipGroups((prev) => ({ ...prev, [group.id]: !prev[group.id] }))
+                      }
+                      className="p-0.5 text-slate-500 hover:text-slate-800 cursor-pointer shrink-0"
+                    >
+                      {isCollapsed ? (
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      ) : (
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      )}
+                    </button>
                     {isEditing ? (
                       <input
                         autoFocus
@@ -321,7 +440,16 @@ export default function StudioPropertyPanel({
                       />
                     ) : (
                       <>
-                        <p className="flex-1 text-[12px] font-bold text-slate-800 truncate">{group.name}</p>
+                        <button
+                          type="button"
+                          title={isCollapsed ? "Expand group" : "Collapse group"}
+                          onClick={() =>
+                            setCollapsedClipGroups((prev) => ({ ...prev, [group.id]: !prev[group.id] }))
+                          }
+                          className="flex-1 text-left text-[12px] font-bold text-slate-800 truncate cursor-pointer"
+                        >
+                          {group.name}
+                        </button>
                         <button
                           type="button"
                           title="Rename group for this artwork"
@@ -336,6 +464,7 @@ export default function StudioPropertyPanel({
                       </>
                     )}
                   </header>
+                  {!isCollapsed && (
                   <div className="p-2 flex flex-wrap gap-2">
                     {group.options.map((opt) => {
                       const active = opt.id === group.activeOptionId;
@@ -369,9 +498,13 @@ export default function StudioPropertyPanel({
                       );
                     })}
                   </div>
+                  )}
                 </section>
               );
             })}
+            </div>
+              );
+            })()}
             <PersonalizationControls
               allowPersonalized={props.allowPersonalized !== false}
               isRequired={props.isRequired !== false}

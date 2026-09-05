@@ -59,6 +59,19 @@ export function isFreeTransformField(field?: StudioFieldItem | null): boolean {
   return Boolean(field?.config?.freeTransform);
 }
 
+/** Option stores its own box (concat merge, free size, or a moved variant). */
+export function optionHasOwnGeometry(opt?: { posX?: number; posY?: number; width?: number; height?: number } | null): boolean {
+  if (!opt) return false;
+  return opt.posX !== undefined || opt.posY !== undefined || opt.width !== undefined || opt.height !== undefined;
+}
+
+/** Field lays out each option in its own canvas box, not one shared layer frame. */
+export function fieldHasOptionGeometry(field?: StudioFieldItem | null): boolean {
+  if (!field) return false;
+  if (isFreeTransformField(field)) return true;
+  return (field.config?.options || []).some((o: any) => optionHasOwnGeometry(o));
+}
+
 /** Artwork List/Item used only as a storefront form + condition source (nothing drawn). */
 export function isConditionOnlyField(field?: StudioFieldItem | null): boolean {
   return Boolean(field?.config?.isConditionOnly);

@@ -177,17 +177,25 @@ export default function StudioTopToolbar({
     const handleOptionPropChange = (key: string, value: any) => {
       const geomKey = ["posX", "posY", "width", "height", "rotation"].includes(key);
       const flipKey = key === "flipH" || key === "flipV";
-      if (linkedField && onUpdateField && activeOptIdx >= 0 && !lockOptionGeometry) {
-        const updatedOpts = [...options];
-        updatedOpts[activeOptIdx] = {
-          ...updatedOpts[activeOptIdx],
-          [key]: value,
-          ...(geomKey ? { hasCustomPosition: true } : {}),
-        };
-        onUpdateField(linkedField.id, {
-          config: { ...config, options: updatedOpts },
-          activeOptionId: activeOptId,
-        });
+      if (linkedField && onUpdateField && activeOptIdx >= 0) {
+        if (flipKey) {
+          const updatedOpts = options.map((o) => ({ ...o, [key]: value }));
+          onUpdateField(linkedField.id, {
+            config: { ...config, options: updatedOpts },
+            activeOptionId: activeOptId,
+          });
+        } else if (!lockOptionGeometry) {
+          const updatedOpts = [...options];
+          updatedOpts[activeOptIdx] = {
+            ...updatedOpts[activeOptIdx],
+            [key]: value,
+            ...(geomKey ? { hasCustomPosition: true } : {}),
+          };
+          onUpdateField(linkedField.id, {
+            config: { ...config, options: updatedOpts },
+            activeOptionId: activeOptId,
+          });
+        }
       }
       if (geomKey) {
         onUpdateLayer(selectedLayer.id, { [key]: value });

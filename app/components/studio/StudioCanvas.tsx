@@ -26,7 +26,7 @@ import {
   preloadDoodleLetterImages,
   layoutDoodleAlphabetRow,
 } from "../../utils/doodleAlphabetEngine";
-import { isEmptyOption, isConditionOnlyField, isOptionFieldType } from "../../utils/fieldHelpers";
+import { isEmptyOption, isConditionOnlyField, isOptionFieldType, optionHasOwnGeometry } from "../../utils/fieldHelpers";
 import { clipArtFingerprint, loadClipArtImage, rasterizeClipArtFrameToCanvas, rasterizePunchedPlate, type ClipArtInstance, type ClipArtPartOption } from "../../utils/clipArtInstance";
 
 export { processCustomMaskImage, preloadCustomMaskImage, createFabricMaskObject };
@@ -277,6 +277,32 @@ function applyFabricMultiSelection(
   }
 
   if (active) fc.discardActiveObject();
+}
+
+/** Prefer the already-selected object when a higher layer overlaps the pointer. */
+function preferActiveObjectOnOverlap(fc: fabric.Canvas) {
+  const originalFindTarget = fc.findTarget.bind(fc);
+  fc.findTarget = ((e: any) => {
+    const info = originalFindTarget(e);
+    const active = fc.getActiveObject();
+    if (!active || active instanceof fabric.ActiveSelection || info?.target === active) {
+      return info;
+    }
+    try {
+      const pointer = fc.getScenePoint(e);
+      if ((fc as any)._checkTarget(active, pointer)) {
+        return {
+          ...info,
+          target: active,
+          currentTarget: active,
+          currentContainer: active,
+        };
+      }
+    } catch {
+      return info;
+    }
+    return info;
+  }) as typeof fc.findTarget;
 }
 
 export default function StudioCanvas({
@@ -550,13 +576,17 @@ export default function StudioCanvas({
     fabric.FabricObject.prototype.borderColor = "#4f46e5";
     fabric.FabricObject.prototype.borderDashArray = [4, 4];
     fabric.FabricObject.prototype.cornerSize = 10;
+    // Clip-art PNGs are mostly transparent; hit the drawn pixels, not the whole bbox.
+    fabric.Image.prototype.perPixelTargetFind = true;
 
     const fabricCanvas = new fabric.Canvas(canvasElRef.current, {
       width: widthPx,
       height: heightPx,
       selection: true,
       preserveObjectStacking: true,
+      targetFindTolerance: 6,
     });
+    preferActiveObjectOnOverlap(fabricCanvas);
 
     fabricCanvasRef.current = fabricCanvas;
     globalActiveFabricCanvas = fabricCanvas;
@@ -984,17 +1014,18 @@ export default function StudioCanvas({
         }
         if (linkedF && isOptionFieldType(linkedF.fieldType)) {
           const config = linkedF.config || {};
-          const applyOptGeom = useOptionGeometry === "always" || Boolean(config.freeTransform);
-          if (applyOptGeom) {
-            const opts = config.options || [];
-            const activeOpt = opts.find((o: any) => o.id === linkedF.activeOptionId) || opts[0];
-            if (activeOpt && activeOpt.isVisible !== false) {
-              if (activeOpt.posX !== undefined) renderPosX = activeOpt.posX;
-              if (activeOpt.posY !== undefined) renderPosY = activeOpt.posY;
-              if (activeOpt.width !== undefined) renderWidth = activeOpt.width;
-              if (activeOpt.height !== undefined) renderHeight = activeOpt.height;
-              if (activeOpt.rotation !== undefined) renderRotation = activeOpt.rotation;
-            }
+          const opts = config.options || [];
+          const activeOpt = opts.find((o: any) => o.id === linkedF.activeOptionId) || opts[0];
+          const applyOptGeom =
+            useOptionGeometry === "always" ||
+            Boolean(config.freeTransform) ||
+            optionHasOwnGeometry(activeOpt);
+          if (applyOptGeom && activeOpt && activeOpt.isVisible !== false) {
+            if (activeOpt.posX !== undefined) renderPosX = activeOpt.posX;
+            if (activeOpt.posY !== undefined) renderPosY = activeOpt.posY;
+            if (activeOpt.width !== undefined) renderWidth = activeOpt.width;
+            if (activeOpt.height !== undefined) renderHeight = activeOpt.height;
+            if (activeOpt.rotation !== undefined) renderRotation = activeOpt.rotation;
           }
         }
       }
@@ -1927,6 +1958,7 @@ export default function StudioCanvas({
                 if (preloadUrl) void loadClipArtImage(preloadUrl).catch(() => {});
               });
               const activeOpt = opts.find((o: any) => o.id === linkedF.activeOptionId) || opts[0];
+              freeTransform = Boolean(config.freeTransform) || optionHasOwnGeometry(activeOpt);
               if (activeOpt && activeOpt.isVisible !== false) {
                 assetUrl = isEmptyOption(activeOpt) ? "" : activeOpt.assetImageUrl || "";
                 const applyOptGeom = useOptionGeometry === "always" || freeTransform;
@@ -1985,23 +2017,24 @@ export default function StudioCanvas({
                     ? ""
                     : active?.assetImageUrl || l.properties?.assetUrl || "";
                   if (!url) return null;
+                  const useOptGeom = Boolean(lf?.config?.freeTransform) || optionHasOwnGeometry(active);
                   return {
                     id: l.id,
                     label: l.name,
                     assetImageUrl: url,
-                    relX: (lf?.config?.freeTransform && active?.posX !== undefined ? active.posX : l.posX) as number,
-                    relY: lf?.config?.freeTransform && active?.posY !== undefined ? active.posY : l.posY,
-                    relW: lf?.config?.freeTransform && active?.width !== undefined ? active.width : l.width,
-                    relH: lf?.config?.freeTransform && active?.height !== undefined ? active.height : l.height,
+                    relX: (useOptGeom && active?.posX !== undefined ? active.posX : l.posX) as number,
+                    relY: useOptGeom && active?.posY !== undefined ? active.posY : l.posY,
+                    relW: useOptGeom && active?.width !== undefined ? active.width : l.width,
+                    relH: useOptGeom && active?.height !== undefined ? active.height : l.height,
                     rotation:
-                      lf?.config?.freeTransform && active?.rotation !== undefined
+                      useOptGeom && active?.rotation !== undefined
                         ? active.rotation
                         : l.rotation || 0,
                     flipH: Boolean(
-                      lf?.config?.freeTransform ? active?.flipH ?? l.properties?.flipH : l.properties?.flipH
+                      useOptGeom ? active?.flipH ?? l.properties?.flipH : l.properties?.flipH
                     ),
                     flipV: Boolean(
-                      lf?.config?.freeTransform ? active?.flipV ?? l.properties?.flipV : l.properties?.flipV
+                      useOptGeom ? active?.flipV ?? l.properties?.flipV : l.properties?.flipV
                     ),
                   } as ClipArtPartOption;
                 })

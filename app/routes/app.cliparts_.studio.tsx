@@ -36,7 +36,7 @@ import {
   type MergeGroup,
 } from "../utils/clipArtMerge";
 import type { StudioFieldItem } from "../utils/fieldHelpers";
-import { isEmptyOption, isFreeTransformField, stripOptionTransform } from "../utils/fieldHelpers";
+import { isEmptyOption, isFreeTransformField, fieldHasOptionGeometry, optionHasOwnGeometry, stripOptionTransform } from "../utils/fieldHelpers";
 import MergeOptionsModal, { type MergeOptionsSubmit } from "../components/studio/MergeOptionsModal";
 import { autoGenerateSquareThumbnail, trimToSquareDataUrl } from "../utils/thumbnailGenerator";
 import { cleanImportedName, guessGroupName, slugValue } from "../utils/optionRename";
@@ -113,25 +113,30 @@ function parseLayers(raw: any): CanvasLayerItem[] {
 }
 
 /** Visual geometry: Free size groups store pos/size on the active option, not the layer. */
-function layerVisualGeom(layer: CanvasLayerItem, fieldList: StudioFieldItem[]) {
+function layerVisualGeom(
+  layer: CanvasLayerItem,
+  fieldList: StudioFieldItem[],
+  allLayers: CanvasLayerItem[] = []
+) {
+  if (layer.properties?.sandwichRole === "front") {
+    const srcId = layer.properties?.sandwichSourceLayerId as string | undefined;
+    const src = srcId ? allLayers.find((l) => l.id === srcId) : undefined;
+    if (src) return layerVisualGeom(src, fieldList, allLayers);
+  }
   const field = fieldList.find((f) => f.id === layer.linkedFieldId);
-  if (
-    isFreeTransformField(field) &&
-    field?.activeOptionId &&
-    layer.properties?.sandwichRole !== "front"
-  ) {
-    const opt = (field.config?.options || []).find((o: any) => o.id === field.activeOptionId);
-    if (opt) {
-      return {
-        posX: opt.posX ?? layer.posX,
-        posY: opt.posY ?? layer.posY,
-        width: opt.width ?? layer.width,
-        height: opt.height ?? layer.height,
-        rotation: opt.rotation ?? layer.rotation,
-        flipH: opt.flipH ?? layer.properties?.flipH,
-        flipV: opt.flipV ?? layer.properties?.flipV,
-      };
-    }
+  const opt = field?.activeOptionId
+    ? (field.config?.options || []).find((o: any) => o.id === field.activeOptionId)
+    : undefined;
+  if (opt && (isFreeTransformField(field) || optionHasOwnGeometry(opt))) {
+    return {
+      posX: opt.posX ?? layer.posX,
+      posY: opt.posY ?? layer.posY,
+      width: opt.width ?? layer.width,
+      height: opt.height ?? layer.height,
+      rotation: opt.rotation ?? layer.rotation,
+      flipH: opt.flipH ?? layer.properties?.flipH,
+      flipV: opt.flipV ?? layer.properties?.flipV,
+    };
   }
   return {
     posX: layer.posX,
@@ -141,6 +146,18 @@ function layerVisualGeom(layer: CanvasLayerItem, fieldList: StudioFieldItem[]) {
     rotation: layer.rotation,
     flipH: layer.properties?.flipH,
     flipV: layer.properties?.flipV,
+  };
+}
+
+function optionVisualGeom(opt: any, layer: CanvasLayerItem, fallback: ReturnType<typeof layerVisualGeom>) {
+  return {
+    posX: opt?.posX ?? fallback.posX,
+    posY: opt?.posY ?? fallback.posY,
+    width: opt?.width ?? fallback.width,
+    height: opt?.height ?? fallback.height,
+    rotation: opt?.rotation ?? fallback.rotation,
+    flipH: opt?.flipH ?? fallback.flipH,
+    flipV: opt?.flipV ?? fallback.flipV,
   };
 }
 
@@ -408,7 +425,7 @@ export default function ClipArtStudioRoute() {
         const updates = layers
           .filter((layer) => ids.has(layer.id) && !layer.isLocked)
           .map((layer) => {
-            const geom = layerVisualGeom(layer, fields);
+            const geom = layerVisualGeom(layer, fields, layers);
             return {
               layerId: layer.id,
               patch: { posX: geom.posX + dx, posY: geom.posY + dy },
@@ -493,36 +510,49 @@ export default function ClipArtStudioRoute() {
     const ids = new Set(selectedLayerIds);
     if (ids.size === 0) return;
 
-    const skipFrontIds = new Set<string>();
-    layers.forEach((l) => {
-      const srcId = l.properties?.sandwichSourceLayerId;
-      if (l.properties?.sandwichRole === "front" && srcId && ids.has(srcId) && ids.has(l.id)) {
-        skipFrontIds.add(l.id);
-      }
-    });
+    const isFront = (l: CanvasLayerItem) => l.properties?.sandwichRole === "front";
+    const sourceIdOf = (l: CanvasLayerItem) => l.properties?.sandwichSourceLayerId as string | undefined;
 
-    const movers = layers.filter((l) => ids.has(l.id) && !l.isLocked);
-    if (movers.length === 0) return;
+    const movers = layers.filter((l) => ids.has(l.id) && !l.isLocked && !isFront(l));
+    const orphanFronts = layers.filter((l) => {
+      if (!ids.has(l.id) || l.isLocked || !isFront(l)) return false;
+      const srcId = sourceIdOf(l);
+      return !srcId || !ids.has(srcId);
+    });
+    const toFlip = [...movers, ...orphanFronts];
+    if (toFlip.length === 0) return;
 
     let minX = Infinity;
     let maxX = -Infinity;
-    movers.forEach((l) => {
-      const g = layerVisualGeom(l, fields);
+    toFlip.forEach((l) => {
+      const g = layerVisualGeom(l, fields, layers);
       minX = Math.min(minX, g.posX);
       maxX = Math.max(maxX, g.posX + g.width);
     });
     const cx = (minX + maxX) / 2;
 
-    const patchMap = new Map<string, { posX: number; rotation: number; flipH?: boolean }>();
-    movers.forEach((l) => {
-      const g = layerVisualGeom(l, fields);
-      const posX = 2 * cx - g.posX - g.width;
-      const rotation = -((g.rotation || 0) as number);
-      if (skipFrontIds.has(l.id)) {
-        patchMap.set(l.id, { posX, rotation });
+    type FlipPatch = { posX: number; rotation: number; flipH: boolean };
+    const patchMap = new Map<string, FlipPatch>();
+    const mirrorGeom = (g: ReturnType<typeof layerVisualGeom>): FlipPatch => ({
+      posX: 2 * cx - g.posX - g.width,
+      rotation: -((g.rotation || 0) as number),
+      flipH: !Boolean(g.flipH),
+    });
+
+    toFlip.forEach((l) => {
+      patchMap.set(l.id, mirrorGeom(layerVisualGeom(l, fields, layers)));
+    });
+    layers.forEach((l) => {
+      if (!isFront(l)) return;
+      const srcId = sourceIdOf(l);
+      if (!srcId) return;
+      const srcPatch = patchMap.get(srcId);
+      if (srcPatch) {
+        patchMap.set(l.id, { ...srcPatch });
         return;
       }
-      patchMap.set(l.id, { posX, rotation, flipH: !Boolean(g.flipH) });
+      const frontPatch = patchMap.get(l.id);
+      if (frontPatch && !patchMap.has(srcId)) patchMap.set(srcId, { ...frontPatch });
     });
 
     setLayers((prev) =>
@@ -533,33 +563,37 @@ export default function ClipArtStudioRoute() {
           ...l,
           posX: patch.posX,
           rotation: patch.rotation,
-          properties:
-            patch.flipH === undefined
-              ? l.properties
-              : { ...(l.properties || {}), flipH: patch.flipH },
+          properties: { ...(l.properties || {}), flipH: patch.flipH },
         };
       })
     );
+
+    const flippedFieldIds = new Set(toFlip.map((l) => l.linkedFieldId).filter(Boolean) as string[]);
     setFields((prev) =>
       prev.map((f) => {
-        const owner = layers.find((l) => l.linkedFieldId === f.id && patchMap.has(l.id));
-        if (!owner || !isFreeTransformField(f) || !f.activeOptionId) return f;
-        const patch = patchMap.get(owner.id);
-        if (!patch) return f;
+        if (!flippedFieldIds.has(f.id)) return f;
+        const owner =
+          toFlip.find((l) => l.linkedFieldId === f.id && !isFront(l)) ||
+          toFlip.find((l) => l.linkedFieldId === f.id);
+        if (!owner) return f;
+        const visual = layerVisualGeom(owner, fields, layers);
+        const mirrorWorld = toFlip.length > 1;
         return {
           ...f,
           config: {
             ...(f.config || {}),
-            options: (f.config?.options || []).map((o: any) =>
-              o.id === f.activeOptionId
-                ? {
-                    ...o,
-                    posX: patch.posX,
-                    rotation: patch.rotation,
-                    ...(patch.flipH === undefined ? {} : { flipH: patch.flipH }),
-                  }
-                : o
-            ),
+            options: (f.config?.options || []).map((o: any) => {
+              if (isEmptyOption(o)) return o;
+              const g = optionVisualGeom(o, owner, visual);
+              const next = { ...o, flipH: !Boolean(g.flipH) };
+              if (isFreeTransformField(f) || optionHasOwnGeometry(o)) {
+                next.rotation = -((g.rotation || 0) as number);
+                if (mirrorWorld) {
+                  next.posX = 2 * cx - g.posX - g.width;
+                }
+              }
+              return next;
+            }),
           },
         };
       })
@@ -619,9 +653,14 @@ export default function ClipArtStudioRoute() {
 
     setFields((prevFields) =>
       prevFields.map((f) => {
-        if (!isFreeTransformField(f) || !f.activeOptionId) return f;
-        const owner = layers.find((l) => l.linkedFieldId === f.id && patchMap.has(l.id));
-        if (!owner || owner.properties?.sandwichRole === "front") return f;
+        if (!fieldHasOptionGeometry(f) || !f.activeOptionId) return f;
+        const owner = layers.find(
+          (l) =>
+            l.linkedFieldId === f.id &&
+            patchMap.has(l.id) &&
+            l.properties?.sandwichRole !== "front"
+        );
+        if (!owner) return f;
         const patch = patchMap.get(owner.id);
         if (!patch || !geomTouched(patch)) return f;
         const merged = {
@@ -1466,6 +1505,10 @@ export default function ClipArtStudioRoute() {
           posY: payload.mergeType === "concat" ? first.posY : bbox.minY,
           width: payload.mergeType === "concat" ? first.width : bbox.width,
           height: payload.mergeType === "concat" ? first.height : bbox.height,
+          rotation: payload.mergeType === "concat" ? first.rotation : 0,
+          flipH: payload.mergeType === "concat" ? Boolean(first.flipH) : false,
+          flipV: payload.mergeType === "concat" ? Boolean(first.flipV) : false,
+          hasCustomPosition: payload.mergeType === "concat",
         };
       });
 
@@ -1525,7 +1568,10 @@ export default function ClipArtStudioRoute() {
           isRequired: true,
           allowPersonalized: true,
           activeOptionId: firstOpt?.id,
-          config: { options: built },
+          config: {
+            options: built,
+            freeTransform: payload.mergeType === "concat",
+          },
         },
       ]);
       setLayers((prev) => [...prev.filter((l) => !targetIds.includes(l.id)), flatLayer]);
@@ -1949,7 +1995,7 @@ export default function ClipArtStudioRoute() {
               onDeleteSelected={() => handleDeleteSelectedLayers(true)}
               lockOptionGeometry={
                 Boolean(selectedLayer?.linkedFieldId) &&
-                !isFreeTransformField(fields.find((f) => f.id === selectedLayer?.linkedFieldId))
+                !fieldHasOptionGeometry(fields.find((f) => f.id === selectedLayer?.linkedFieldId))
               }
             />
             <div className="flex-1 relative overflow-auto">

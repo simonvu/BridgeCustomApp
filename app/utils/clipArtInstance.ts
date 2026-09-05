@@ -39,6 +39,8 @@ export type ClipArtInstanceGroup = {
   id: string;
   name: string;
   zIndex: number;
+  /** Customer-form order in the artwork. Independent of canvas `zIndex`. */
+  formOrder?: number;
   activeOptionId: string;
   options: ClipArtPartOption[];
   /** Customer cannot choose this group; options follow related groups via showWhen. */
@@ -219,7 +221,7 @@ export function pruneClipArtRules(
   );
 }
 
-/** Artwork lists option groups opposite the clip-art editor (bottom of stack first). */
+/** Artwork lists option groups for the customer form. Canvas still draws by `zIndex`. */
 export function isClipArtGroupHiddenFromCustomer(g: ClipArtInstanceGroup | undefined): boolean {
   if (!g) return false;
   if (g.sandwichOf) return true;
@@ -230,10 +232,30 @@ export function clipArtGroupsForArtworkDisplay(
   groups: ClipArtInstanceGroup[] | undefined,
   rules?: ClipArtConditionRule[] | null
 ): ClipArtInstanceGroup[] {
-  const list = [...(groups || [])].reverse();
-  return list.filter(
-    (g) => !isClipArtGroupHiddenFromCustomer(g) && isClipArtGroupVisible(g.id, groups || [], rules)
+  const list = groups || [];
+  const visible = list.filter(
+    (g) => !isClipArtGroupHiddenFromCustomer(g) && isClipArtGroupVisible(g.id, list, rules)
   );
+  return [...visible].sort((a, b) => {
+    const ao = a.formOrder;
+    const bo = b.formOrder;
+    if (ao !== undefined && bo !== undefined && ao !== bo) return ao - bo;
+    if (ao !== undefined && bo === undefined) return -1;
+    if (ao === undefined && bo !== undefined) return 1;
+    return (a.zIndex || 0) - (b.zIndex || 0);
+  });
+}
+
+/** Reorder customer-form groups without touching canvas `zIndex`. */
+export function reorderClipArtFormGroups(
+  groups: ClipArtInstanceGroup[],
+  orderedVisibleIds: string[]
+): ClipArtInstanceGroup[] {
+  return groups.map((g) => {
+    const idx = orderedVisibleIds.indexOf(g.id);
+    if (idx < 0) return g;
+    return { ...g, formOrder: idx };
+  });
 }
 
 function remapClause(
@@ -681,6 +703,7 @@ export function mergeClipArtInstance(
     return {
       ...g,
       name: old.name || g.name,
+      formOrder: old.formOrder,
       activeOptionId:
         g.sandwichOf || !isClipArtGroupHiddenFromCustomer(g)
           ? preservedCustomerActiveId(old, g)
